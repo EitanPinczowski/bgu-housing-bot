@@ -12,13 +12,25 @@ Pacing is deliberately slow and randomized (see config.SCRAPER_*). Do not speed
 this up — the account is the user's only Facebook account (CLAUDE.md → SAFETY
 CONSTRAINTS).
 
-  ⚠️  FB's DOM is unstable. The selectors below WILL break periodically. They are
-  intentionally kept together and small so you can retune them in one place when
-  posts stop coming through. Nothing else in the codebase depends on FB's HTML.
+  ⚠️  FB's DOM is unstable. Everything in the "FRAGILE" block below WILL break
+  periodically — it's all kept together so you can retune it in one place.
+  Nothing else in the codebase depends on FB's HTML.
+
+How the extraction works (learned from the live DOM):
+  - A group feed is one `[role="feed"]`; each DIRECT child div is one "story"
+    (post). Comments are separate `[role="article"]`s with aria "Comment by".
+  - FB VIRTUALIZES the feed: a post that scrolls out of view has its text
+    emptied. So we read the currently-rendered stories at EACH scroll step and
+    accumulate, rather than once at the end.
+  - Story text is noisy: repeated "Facebook" avatar alt-text, single-character
+    lines (FB's CSS-scrambled anti-scrape timestamps), and a comments/reactions
+    tail. We strip those and cut the tail; the Hebrew post body remains, which
+    is all the LLM needs.
 """
 from __future__ import annotations
 
 import random
+import re
 import time
 from typing import Optional
 
@@ -26,11 +38,43 @@ from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeout
 
 import config
 
-# --- FB selectors — the fragile part. Edit HERE when the DOM changes. ---------
-_ARTICLE_SELECTOR = '[role="article"]'
-# A post permalink is the first anchor whose href looks like one of these.
+# ============================ FRAGILE: FB specifics ==========================
+# Edit HERE when Facebook changes its DOM / UI strings.
+
+_FEED_SELECTOR = '[role="feed"]'
+_STORY_SELECTOR = '[role="feed"] > div'      # each direct child = one post story
+_SCROLL_PX = 1100                            # small steps so posts render before we read
+_MIN_POST_CHARS = 40                         # shorter than this = not a real post
+
+# A post permalink is the first anchor whose href contains one of these.
 _PERMALINK_HINTS = ("/posts/", "/permalink/", "story_fbid")
-# ------------------------------------------------------------------------------
+
+# Everything from the first of these markers onward is the comments/reactions
+# tail — dropped so we keep just the post body. English (this account's UI) +
+# common Hebrew fallbacks in case the UI language changes.
+_TAIL_MARKERS = (
+    "View more comments", "View 1 more comment", "View previous comments",
+    "Write a comment", "Write a public comment", "Write an answer", "All reactions",
+    "הצג עוד תגובות", "צפייה בתגובות נוספות", "כתיבת תגובה", "כתוב תגובה",
+    "כל התגובות", "כתוב תשובה",
+)
+
+# Whole lines dropped as UI chrome / noise.
+_DROP_EXACT = {
+    "Facebook", "Reply", "Like", "Comment", "Share", "Send", "Follow", "·",
+    "Most relevant", "sort group feed by", "See more", "See More", "Active",
+    "הגב", "אהבתי", "תגובה", "שיתוף", "עוד", "ראה עוד", "הצג עוד",
+}
+
+# Request newest-first. FB group feeds default to "Most relevant", which can keep
+# re-showing old popular posts; chronological is what a fresh-listing monitor
+# wants. Harmlessly ignored by FB if the param name ever changes.
+_SORT_CHRONOLOGICAL = True
+_SORT_PARAM = "sorting_setting=CHRONOLOGICAL"
+# =============================================================================
+
+_NUM_RE = re.compile(r"^\+?\d[\d,]*$")       # like counts, "+5", "1,234"
+_HEBREW_RE = re.compile(r"[֐-׿]")  # at least one Hebrew letter
 
 
 def open_browser():
@@ -49,11 +93,33 @@ def open_browser():
     return p, context
 
 
-def _extract_permalink(article) -> Optional[str]:
-    """First anchor in the post that looks like a permalink; cleaned of query
-    junk. Returns None if none found (post still usable — permalink is a bonus)."""
+def _clean_story(raw: str) -> str:
+    """Strip FB noise from one story's inner_text and cut the comments tail,
+    leaving (mostly) the post body. Author name / a stray inline comment may
+    remain — harmless for the LLM, which reads the body and ignores the rest."""
+    cut = len(raw)
+    for marker in _TAIL_MARKERS:
+        i = raw.find(marker)
+        if i != -1:
+            cut = min(cut, i)
+    out = []
+    for line in raw[:cut].splitlines():
+        s = line.strip().replace("… See more", "").replace("See more", "").strip()
+        if not s or s in _DROP_EXACT:
+            continue
+        if len(s) == 1:            # CSS-scrambled anti-scrape timestamp chars
+            continue
+        if _NUM_RE.match(s):       # reaction/comment counts
+            continue
+        out.append(s)
+    return "\n".join(out).strip()
+
+
+def _permalink(story) -> Optional[str]:
+    """First anchor in the story that looks like a post permalink, cleaned of
+    query junk. None if not found (post still usable — permalink is a bonus)."""
     try:
-        for a in article.query_selector_all("a[href]"):
+        for a in story.query_selector_all("a[href]"):
             href = a.get_attribute("href") or ""
             if any(hint in href for hint in _PERMALINK_HINTS):
                 if href.startswith("/"):
@@ -65,34 +131,46 @@ def _extract_permalink(article) -> Optional[str]:
 
 
 def scrape_group(page: Page, url: str) -> list[dict]:
-    """Open one group, scroll a few times, and return its visible posts.
+    """Open one group and return its visible posts, newest-first.
 
-    Each item: {"text": <cleaned inner_text>, "permalink": <url or None>}.
-    Deduplicated by text WITHIN this group (FB repeats articles as you scroll).
+    Each item: {"text": <cleaned post body>, "permalink": <url or None>}.
+    Deduplicated by permalink (falling back to text) WITHIN this group. Reads
+    incrementally across scrolls because FB virtualizes the feed.
     """
-    page.goto(url, wait_until="domcontentloaded")
-    # let the feed hydrate before the first scroll
-    try:
-        page.wait_for_selector(_ARTICLE_SELECTOR, timeout=15000)
-    except PWTimeout:
-        print(f"[scraper] no articles appeared for {url} (login expired? group layout changed?)")
-        return []
+    if _SORT_CHRONOLOGICAL and "sorting_setting" not in url:
+        url = url + ("&" if "?" in url else "?") + _SORT_PARAM
 
-    for _ in range(config.SCRAPER_MAX_SCROLLS):
-        page.mouse.wheel(0, 2500)
+    page.goto(url, wait_until="domcontentloaded")
+    try:
+        page.wait_for_selector(_FEED_SELECTOR, timeout=15000)
+    except PWTimeout:
+        print(f"[scraper] no feed appeared for {url} "
+              "(login expired? not a member? group layout changed?)")
+        return []
+    time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))  # let the feed hydrate
+
+    collected: dict[str, dict] = {}
+    # read, then scroll — SCRAPER_MAX_SCROLLS scrolls means MAX_SCROLLS+1 reads
+    for _ in range(config.SCRAPER_MAX_SCROLLS + 1):
+        for story in page.query_selector_all(_STORY_SELECTOR):
+            try:
+                raw = story.inner_text() or ""
+            except Exception:
+                continue
+            text = _clean_story(raw)
+            if len(text) < _MIN_POST_CHARS or not _HEBREW_RE.search(text):
+                continue
+            link = _permalink(story)
+            # Key on the text (stable across scroll passes), not the permalink —
+            # FB often renders a post's body before its timestamp/permalink
+            # anchor. Backfill the permalink when a later pass exposes it.
+            key = text[:80]
+            entry = collected.get(key)
+            if entry is None:
+                collected[key] = {"text": text, "permalink": link}
+            elif entry["permalink"] is None and link:
+                entry["permalink"] = link
+        page.mouse.wheel(0, _SCROLL_PX)
         time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))
 
-    posts: list[dict] = []
-    seen_text: set[str] = set()
-    for article in page.query_selector_all(_ARTICLE_SELECTOR):
-        try:
-            text = (article.inner_text() or "").strip()
-        except Exception:
-            continue
-        # collapse whitespace-heavy FB chrome; skip tiny/empty fragments
-        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-        if len(text) < 40 or text in seen_text:
-            continue
-        seen_text.add(text)
-        posts.append({"text": text, "permalink": _extract_permalink(article)})
-    return posts
+    return list(collected.values())
