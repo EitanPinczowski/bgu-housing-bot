@@ -63,6 +63,19 @@ def mark_seen(dedup_key: str) -> None:
         c.execute("INSERT OR IGNORE INTO seen(dedup_key) VALUES (?)", (dedup_key,))
 
 
+# URL-level dedup, checked BEFORE the LLM runs so a post we already processed in
+# an earlier run doesn't cost another API call. Reuses the `seen` table with a
+# "url:" prefix (a permalink is unique enough; no hashing needed). This only
+# catches the same permalink again — cross-posted reposts with a different URL
+# are still caught later by the phone/content dedup_key.
+def is_url_seen(source_url: str) -> bool:
+    return is_seen("url:" + source_url)
+
+
+def mark_url_seen(source_url: str) -> None:
+    mark_seen("url:" + source_url)
+
+
 def save_listing(res: PipelineResult) -> None:
     e = res.extract
     with _conn() as c:

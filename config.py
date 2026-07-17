@@ -71,11 +71,16 @@ OSRM_BASE_URL = "http://localhost:5000"
 # OpenAI-compatible endpoint (Ollama, Groq) without touching pipeline code.
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "gemini"            # "gemini" | "openai_compatible"
-# "gemini-flash-latest" tracks Google's current free flash model, so it won't
-# break when a specific version is retired (gemini-2.5-flash was pinned here but
-# Google stopped serving it to new API keys — 404). Pin to a dated version like
-# "gemini-2.5-flash-001" only if you need reproducibility over auto-updates.
-GEMINI_MODEL = "gemini-flash-latest"
+# Model chosen for FREE-TIER DAILY QUOTA, not quality — quota is the binding
+# constraint. This API key's free buckets (measured 2026-07, per-key specific):
+#   gemini-flash-latest   -> gemini-3.5-flash : only 20 requests/DAY (too few)
+#   gemini-2.0-flash / -lite                  : limit 0 (no free quota at all)
+#   gemini-2.5-flash / -lite                  : 404 (not served to new keys)
+#   gemini-flash-lite-latest                  : works, generous lite bucket  ✅
+# The "lite" latest alias gets a much larger free daily allowance and handles
+# this structured Hebrew extraction fine. If it ever regresses, check current
+# free RPD at https://ai.google.dev/gemini-api/docs/rate-limits before changing.
+GEMINI_MODEL = "gemini-flash-lite-latest"
 # For "openai_compatible" (Ollama / Groq): set base_url + model in llm.py/.env
 
 # ---------------------------------------------------------------------------

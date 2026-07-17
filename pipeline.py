@@ -43,7 +43,18 @@ def process_post(raw_text: str,
         no DB writes, no Telegram — so a dry run never mutates anything and a
         post you've already stored is still shown, not silently swallowed.
     """
+    # 0) URL-level dedup BEFORE the LLM. A 2×/day scraper re-sees the same posts
+    #    near the top of a group; skipping them here saves an API call each,
+    #    which matters on the free tier's tight daily quota. Only in commit mode
+    #    (a dry run must classify everything). Cross-posts with a different URL
+    #    still get caught by the phone/content dedup below.
+    if commit and source_url and storage.is_url_seen(source_url):
+        return PipelineResult(status=Status.DROP, reason="already seen (url)",
+                              source_url=source_url, group=group)
+
     e = llm.extract(raw_text)
+    if commit and source_url:
+        storage.mark_url_seen(source_url)
 
     def result(status: Status, reason: str = "", walk=None, lat=None, lon=None,
                key=None, tier=None, preferred=None):
