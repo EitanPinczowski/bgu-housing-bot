@@ -63,7 +63,19 @@ def _nominatim(location_text: str) -> Optional[Tuple[float, float]]:
         time.sleep(1.1)  # policy: max ~1 req/sec
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": f"{location_text}, באר שבע", "format": "json", "limit": 1},
+            params={
+                "q": f"{location_text}, באר שבע",
+                "format": "json",
+                "limit": 1,
+                # Hard-constrain to a Be'er Sheva bounding box. Without this,
+                # Nominatim happily returns a same-named street in another city
+                # (a "יעקב כהן" 30km south geocoded far outside the zone and got
+                # falsely dropped). bounded=1 makes the viewbox a filter, not a
+                # hint; countrycodes=il is a cheap extra guard.
+                "viewbox": config.BEER_SHEVA_VIEWBOX,
+                "bounded": 1,
+                "countrycodes": "il",
+            },
             headers={"User-Agent": config.NOMINATIM_USER_AGENT},
             timeout=15,
         )

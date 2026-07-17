@@ -71,7 +71,11 @@ OSRM_BASE_URL = "http://localhost:5000"
 # OpenAI-compatible endpoint (Ollama, Groq) without touching pipeline code.
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "gemini"            # "gemini" | "openai_compatible"
-GEMINI_MODEL = "gemini-2.5-flash"  # stable & free; bump to a newer flash later
+# "gemini-flash-latest" tracks Google's current free flash model, so it won't
+# break when a specific version is retired (gemini-2.5-flash was pinned here but
+# Google stopped serving it to new API keys — 404). Pin to a dated version like
+# "gemini-2.5-flash-001" only if you need reproducibility over auto-updates.
+GEMINI_MODEL = "gemini-flash-latest"
 # For "openai_compatible" (Ollama / Groq): set base_url + model in llm.py/.env
 
 # ---------------------------------------------------------------------------
@@ -83,6 +87,11 @@ GEMINI_MODEL = "gemini-2.5-flash"  # stable & free; bump to a newer flash later
 # ---------------------------------------------------------------------------
 USE_NOMINATIM_FALLBACK = True
 NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"
+# Bounding box around Be'er Sheva, as Nominatim wants it:
+# "lon_left,lat_top,lon_right,lat_bottom". Used with bounded=1 so a street name
+# that also exists in another city can't geocode outside the city (which would
+# silently drop a good listing). Widen slightly if a real edge address is missed.
+BEER_SHEVA_VIEWBOX = "34.74,31.30,34.86,31.19"
 
 # ---------------------------------------------------------------------------
 # Facebook groups to scan (used by the auto-scraper — next increment).
