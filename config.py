@@ -1,0 +1,116 @@
+"""
+Global configuration and hard filter thresholds.
+
+Coordinate convention in THIS file: everything is stored as (lat, lon) with
+named keys, human-readable. We only flip to OSRM's (lon, lat) order at the
+single call site in osrm.py. This is deliberate — mixing the two orders is the
+classic silent bug in routing code.
+"""
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+AUTH_DIR = ROOT / "auth"
+DB_PATH = DATA_DIR / "listings.sqlite"
+DATA_DIR.mkdir(exist_ok=True)
+AUTH_DIR.mkdir(exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Hard filter thresholds (from the spec)
+# ---------------------------------------------------------------------------
+MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities
+MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
+MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
+MAX_WALK_MINUTES = 25             # OSRM edge safety-net (see below)
+
+# In-range is decided PRIMARILY by your hand-drawn green zone (point-in-polygon,
+# see green_zone.json / zones.py). OSRM walk time is informational + a safety
+# net: a listing just OUTSIDE the polygon but within MAX_WALK_MINUTES is kept
+# as a borderline NEEDS_DATA rather than dropped, so a good one near the line
+# isn't lost to hand-drawing imprecision.
+GREEN_ZONE_PATH = ROOT / "green_zone.json"
+
+# Outside the green zone but within this distance of it = "acceptable, not
+# preferred" (still a match, flagged amber). Beyond it = dropped.
+BUFFER_METERS = 500
+
+# ---------------------------------------------------------------------------
+# BGU / Soroka gates  (lat, lon).  Take the MINIMUM walk over all of them.
+# The main-gate value is the one from your spec. The others are approximate —
+# please verify by dropping pins in Google Maps and updating the numbers.
+# ---------------------------------------------------------------------------
+GATES = {
+    "bgu_main":   {"lat": 31.2622, "lon": 34.8015},   # from your spec
+    "bgu_north":  {"lat": 31.2645, "lon": 34.8040},   # TODO verify
+    "soroka":     {"lat": 31.2585, "lon": 34.8005},   # TODO verify
+}
+
+# ---------------------------------------------------------------------------
+# Neighborhood blacklist — dropped BEFORE routing (fast pre-filter only;
+# OSRM remains the source of truth for anything that isn't an obvious no).
+# Add the Hebrew spellings from your red-area map here.
+# ---------------------------------------------------------------------------
+BLACKLIST_NEIGHBORHOODS = [
+    "רמות",        # Ramot
+    "נווה זאב",    # Neve Zeev
+    "נחל עשן",     # Nahal Ashan
+    "פלח 7",       # Pelach 7
+    # TODO: add every red-area name from your map, incl. common misspellings
+]
+
+# ---------------------------------------------------------------------------
+# OSRM — local, self-hosted foot-routing server (see README).
+# ---------------------------------------------------------------------------
+OSRM_BASE_URL = "http://localhost:5000"
+
+# ---------------------------------------------------------------------------
+# LLM provider.  "gemini" (free tier) is the default. Swappable to a local /
+# OpenAI-compatible endpoint (Ollama, Groq) without touching pipeline code.
+# ---------------------------------------------------------------------------
+LLM_PROVIDER = "gemini"            # "gemini" | "openai_compatible"
+GEMINI_MODEL = "gemini-2.5-flash"  # stable & free; bump to a newer flash later
+# For "openai_compatible" (Ollama / Groq): set base_url + model in llm.py/.env
+
+# ---------------------------------------------------------------------------
+# Geocoding. Static name table is primary (see geocode.py) for slang/
+# neighborhood names. Nominatim is the fallback for real street addresses.
+# It's ON now because the green-zone gate only needs a point on the right side
+# of your boundary (coarse), not pinpoint accuracy — street-level Nominatim in
+# Be'er Sheva is good enough for that. Unknown locations still flag NEEDS_DATA.
+# ---------------------------------------------------------------------------
+USE_NOMINATIM_FALLBACK = True
+NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"
+
+# ---------------------------------------------------------------------------
+# Facebook groups to scan (used by the auto-scraper — next increment).
+# ---------------------------------------------------------------------------
+FB_GROUPS = [
+    "https://www.facebook.com/groups/227042837307326",
+    "https://www.facebook.com/groups/138595033004411",
+    "https://www.facebook.com/groups/1730789290457027",
+    "https://www.facebook.com/groups/167457006612972",
+    # add the rest of your ~20 here
+]
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+NOTIFY_ON_MATCH = True
+NOTIFY_ON_NEEDS_DATA = True        # you asked for near-miss pings too
+
+# ---------------------------------------------------------------------------
+# Auto-scraper (increment 2). Conservative by design — see the SAFETY
+# CONSTRAINTS section in CLAUDE.md. A persistent real browser profile (log in
+# once via login.py), long randomized delays, a rotating subset of groups per
+# run, dry-run unless --live. Do NOT crank these up: the account is the user's
+# only Facebook account.
+# ---------------------------------------------------------------------------
+SCRAPER_PROFILE_DIR = AUTH_DIR / "chrome_profile"  # persistent login session
+SCRAPER_HEADLESS = False                # never headless — see CLAUDE.md
+SCRAPER_MAX_SCROLLS = 4                  # how far down each group to scroll
+SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
+SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
+SCRAPER_GROUPS_PER_RUN = 6               # rotating subset of FB_GROUPS per run

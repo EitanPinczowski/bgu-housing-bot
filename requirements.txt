@@ -1,0 +1,11 @@
+# --- pipeline (needed now) ---
+google-genai>=0.3.0        # Gemini free-tier client (default LLM)
+pydantic>=2.0             # schema + guaranteed structured output
+requests>=2.31           # OSRM / Telegram / Nominatim calls
+python-dotenv>=1.0        # load secrets from .env
+
+# --- optional: only if you swap to a local/Groq model ---
+# openai>=1.0            # OpenAI-compatible client for Ollama / Groq
+
+# --- auto-scraper (installed now so setup is one-and-done; used next increment) ---
+playwright>=1.44
