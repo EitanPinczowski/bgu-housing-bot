@@ -13,6 +13,7 @@ import geocode
 import llm
 import notifier
 import osrm
+import sheets
 import storage
 import zones
 from models import PipelineResult, Status
@@ -140,5 +141,6 @@ def process_post(raw_text: str,
 
     if commit:
         storage.save_listing(res)
+        sheets.save_listing(res)   # optional Google Sheets sink (no-op if unset)
         notifier.notify(res)
     return res

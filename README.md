@@ -139,6 +139,27 @@ only affect the displayed walk time, not the in/out decision.
 All thresholds live at the top of `config.py`
 (price ≤ 2000/room, ≥ 2 rooms free, ≤ 4 roommates, ≤ 25 min walk).
 
+## Google Sheets (optional organized DB)
+
+Mirror every match / near-miss into a shared Google Sheet you can sort and
+filter by hand, with its own row-level dedup. SQLite stays the fast local cache;
+the Sheet is additive. Disabled until you set it up — the bot runs fine without.
+
+1. In **Google Cloud Console**: create a project → enable the **Google Sheets
+   API** → create a **service account** → add a **JSON key** and download it.
+2. Save that file as **`auth\google_service_account.json`** (the `auth\` folder
+   is git-ignored, so the key never gets committed).
+3. Create a Google Sheet. Open the JSON and copy the `client_email` value, then
+   **Share** the sheet with that email as **Editor**.
+4. Copy the sheet's id from its URL
+   (`docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`) into `.env`:
+   ```
+   GOOGLE_SHEET_ID=THIS_PART
+   ```
+5. `pip install gspread` (already in `requirements.txt`). Done — the next `--live`
+   run appends a header row and one row per listing, skipping any dedup_key it
+   already has.
+
 ## Swapping the LLM (local model via Ollama)
 
 The default is Gemini (`gemini-flash-lite-latest`, free tier). You can switch to

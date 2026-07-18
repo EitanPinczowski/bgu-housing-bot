@@ -218,7 +218,7 @@ def _expand_see_more(page) -> None:
             buttons = page.get_by_text(label, exact=True).all()
         except Exception:
             continue
-        for btn in buttons[:25]:            # bound the number of clicks per pass
+        for btn in buttons[:12]:            # bound the number of clicks per pass
             try:
                 btn.click(timeout=800, no_wait_after=True)
             except Exception:
@@ -262,8 +262,6 @@ def scrape_group(page: Page, url: str) -> list[dict]:
     collected: dict[str, dict] = {}
     # read, then scroll — SCRAPER_MAX_SCROLLS scrolls means MAX_SCROLLS+1 reads
     for _ in range(config.SCRAPER_MAX_SCROLLS + 1):
-        if config.SCRAPER_EXPAND_SEE_MORE:
-            _expand_see_more(page)          # open truncated posts before reading
         for story in page.query_selector_all(_STORY_SELECTOR):
             try:
                 raw = story.inner_text() or ""
@@ -290,11 +288,18 @@ def scrape_group(page: Page, url: str) -> list[dict]:
             entry = collected.get(key)
             if entry is None:
                 collected[key] = {"text": text, "permalink": link, "image": img}
-            else:  # backfill fields that render on a later pass
+            else:  # backfill fields that render / expand on a later pass
                 if entry["permalink"] is None and link:
                     entry["permalink"] = link
                 if entry.get("image") is None and img:
                     entry["image"] = img
+                if len(text) > len(entry["text"]):   # See-more expanded it later
+                    entry["text"] = text
+        # Expand truncated posts AFTER reading, so the permalink/image are read
+        # from the stable DOM first (clicking disrupts it) and the fuller text is
+        # picked up on the next pass.
+        if config.SCRAPER_EXPAND_SEE_MORE:
+            _expand_see_more(page)
         page.mouse.wheel(0, _SCROLL_PX)
         time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))
 

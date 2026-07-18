@@ -7,5 +7,8 @@ python-dotenv>=1.0        # load secrets from .env
 # --- for a local (Ollama) or Groq model via LLM_PROVIDER=openai_compatible ---
 openai>=1.0            # OpenAI-compatible client for Ollama / Groq
 
+# --- optional: Google Sheets sink (see sheets.py / README) ---
+gspread>=6.0           # append listings to a shared Google Sheet
+
 # --- auto-scraper (installed now so setup is one-and-done; used next increment) ---
 playwright>=1.44

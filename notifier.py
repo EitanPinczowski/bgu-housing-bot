@@ -49,13 +49,15 @@ def format_alert(res: PipelineResult) -> str:
         gate = f" מ{res.walk_gate}" if res.walk_gate else ""
         lines.append(f"🚶 {_esc(f'{res.walk_minutes:.0f} דק׳ הליכה' + gate)}")
 
-    # Map link: exact coords if geocoded, else a Be'er Sheva address search.
+    # Map link: prefer a SEARCH of the actual address text — Google geocodes it
+    # far better than our static table / Nominatim, which only gave an approximate
+    # (often wrong) pin. Fall back to our coords only if there's no address text.
     map_url = None
-    if res.lat is not None and res.lon is not None:
-        map_url = f"https://www.google.com/maps?q={res.lat},{res.lon}"
-    elif e.street_address_or_neighborhood:
+    if e.street_address_or_neighborhood:
         map_url = ("https://www.google.com/maps/search/?api=1&query="
                    + quote(f"{e.street_address_or_neighborhood}, באר שבע"))
+    elif res.lat is not None and res.lon is not None:
+        map_url = f"https://www.google.com/maps?q={res.lat},{res.lon}"
     if map_url:
         lines.append(f"🗺️ [מפה]({_esc_url(map_url)})")
     if e.lease_start_date:
@@ -68,7 +70,11 @@ def format_alert(res: PipelineResult) -> str:
     if res.source_url:
         lines.append(f"🔗 [צפייה בפוסט]({_esc_url(res.source_url)})")
     elif res.group:
-        lines.append(f"🔗 [פתיחת הקבוצה]({_esc_url(res.group)})")
+        # FB lazy-loads the post permalink for comment-less posts (anti-scraping),
+        # so we couldn't capture it — open the group newest-first instead, where a
+        # last-24h post sits near the top.
+        gurl = res.group + ("&" if "?" in res.group else "?") + "sorting_setting=CHRONOLOGICAL"
+        lines.append(f"🔗 [פתיחת הקבוצה \\(הפוסט קרוב לראש\\)]({_esc_url(gurl)})")
 
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")
