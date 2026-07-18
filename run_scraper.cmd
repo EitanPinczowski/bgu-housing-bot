@@ -18,6 +18,11 @@ cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PY=C:\Users\eitan\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 
+REM Self-heal the OSRM walk-time server: if the container exists but stopped
+REM (e.g. Docker was restarted), bring it back. Harmless if Docker is down or
+REM it's already running — the bot works without OSRM (just no walk minutes).
+docker start osrm_bgu >nul 2>&1
+
 echo ==== run start %DATE% %TIME% ====>> "data\scraper_runs.log"
 "%PY%" main.py --live >> "data\scraper_runs.log" 2>&1
 echo ==== run end   %DATE% %TIME% (exit %ERRORLEVEL%) ====>> "data\scraper_runs.log"
