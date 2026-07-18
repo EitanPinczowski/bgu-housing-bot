@@ -38,14 +38,16 @@ GREEN_ZONE_PATH = ROOT / "green_zone.json"
 BUFFER_METERS = 500
 
 # ---------------------------------------------------------------------------
-# BGU / Soroka gates  (lat, lon).  Take the MINIMUM walk over all of them.
-# The main-gate value is the one from your spec. The others are approximate —
-# please verify by dropping pins in Google Maps and updating the numbers.
+# Campus destinations (lat, lon). Reported walk time is the MINIMUM over all of
+# them — i.e. the shortest walk to any access point you actually use. These are
+# the real BGU gates + your department building, from Google Maps pins you sent.
+# Informational only (the green zone decides in/out). Add/remove points freely.
 # ---------------------------------------------------------------------------
 GATES = {
-    "bgu_main":   {"lat": 31.2622, "lon": 34.8015},   # from your spec
-    "bgu_north":  {"lat": 31.2645, "lon": 34.8040},   # TODO verify
-    "soroka":     {"lat": 31.2585, "lon": 34.8005},   # TODO verify
+    "rager_north": {"lat": 31.2639703, "lon": 34.7992252},  # שער רגר צפוני
+    "mexico":      {"lat": 31.2623329, "lon": 34.8056559},  # שער מקסיקו
+    "aliya":       {"lat": 31.2612680, "lon": 34.8011969},  # שער העלייה
+    "se_building": {"lat": 31.2649620, "lon": 34.8020603},  # Software & Info Systems Eng bldg
 }
 
 # ---------------------------------------------------------------------------
