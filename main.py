@@ -97,7 +97,7 @@ def run(dry_run: bool) -> None:
                         post["text"],
                         source_url=post.get("permalink"),
                         group=url,
-                        image_url=post.get("image"),
+                        images=post.get("images") or [],
                         commit=not dry_run,
                     )
                     counts[res.status.value] += 1

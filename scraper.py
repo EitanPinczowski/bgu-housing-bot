@@ -190,10 +190,10 @@ def _post_age_hours(story) -> Optional[float]:
     return None
 
 
-def _first_image(story) -> Optional[str]:
-    """URL of the largest <img> in the story — the apartment photo — or None.
-    Skips avatars/emoji/UI assets and anything too small to be a real photo."""
-    best_url, best_area = None, 0
+def _images(story, limit: int = 6) -> list[str]:
+    """Up to `limit` apartment-photo URLs in the story, largest first — skipping
+    avatars/emoji/UI assets and anything too small to be a real photo."""
+    scored = []
     try:
         for img in story.query_selector_all("img"):
             src = img.get_attribute("src") or ""
@@ -202,12 +202,18 @@ def _first_image(story) -> Optional[str]:
             box = img.bounding_box()
             if not box or box["width"] < _IMG_MIN_SIDE or box["height"] < _IMG_MIN_SIDE:
                 continue
-            area = box["width"] * box["height"]
-            if area > best_area:
-                best_area, best_url = area, src
+            scored.append((box["width"] * box["height"], src))
     except Exception:
         pass
-    return best_url
+    scored.sort(key=lambda x: x[0], reverse=True)
+    seen, out = set(), []
+    for _, src in scored:
+        if src not in seen:
+            seen.add(src)
+            out.append(src)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _expand_see_more(page) -> None:
@@ -284,15 +290,15 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                     collected.pop(key, None)
                     continue  # "1d"+ => 24h or older => outside the last 24h
             link = _permalink(story)
-            img = _first_image(story)
+            imgs = _images(story)
             entry = collected.get(key)
             if entry is None:
-                collected[key] = {"text": text, "permalink": link, "image": img}
+                collected[key] = {"text": text, "permalink": link, "images": imgs}
             else:  # backfill fields that render / expand on a later pass
                 if entry["permalink"] is None and link:
                     entry["permalink"] = link
-                if entry.get("image") is None and img:
-                    entry["image"] = img
+                if len(imgs) > len(entry.get("images") or []):
+                    entry["images"] = imgs        # keep the richest photo set seen
                 if len(text) > len(entry["text"]):   # See-more expanded it later
                     entry["text"] = text
         # Expand truncated posts AFTER reading, so the permalink/image are read

@@ -125,11 +125,40 @@ def send_photo(photo_url: str, caption: str) -> bool:
         return False
 
 
+def send_media_group(photo_urls: list, caption: str) -> bool:
+    """Send 2–10 photos as an album, with the details as the first photo's
+    caption. Returns False on failure so the caller can fall back."""
+    token, chat_id = _creds()
+    if not token or not chat_id:
+        return False
+    media = []
+    for i, url in enumerate(photo_urls[:10]):
+        item = {"type": "photo", "media": url}
+        if i == 0:
+            item["caption"] = caption
+            item["parse_mode"] = "MarkdownV2"
+        media.append(item)
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMediaGroup",
+            json={"chat_id": chat_id, "media": media}, timeout=30,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        print(f"[notifier] send_media_group failed ({exc})")
+        return False
+
+
 def _send_alert(res: PipelineResult) -> None:
-    """Send one listing alert — as a photo if we have one, else as text; a photo
-    that fails to send falls back to text so the alert still gets through."""
+    """Send one listing alert: an album if there are several photos, a single
+    photo if there's one, else text — each falling back to the next if it fails,
+    so the alert always gets through."""
     text = format_alert(res)
-    if res.image_url and send_photo(res.image_url, text):
+    imgs = res.images or []
+    if len(imgs) >= 2 and send_media_group(imgs, text):
+        return
+    if len(imgs) >= 1 and send_photo(imgs[0], text):
         return
     send(text)
 

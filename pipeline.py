@@ -38,7 +38,7 @@ def _missing_critical(e) -> bool:
 def process_post(raw_text: str,
                  source_url: Optional[str] = None,
                  group: Optional[str] = None,
-                 image_url: Optional[str] = None,
+                 images: Optional[list] = None,
                  commit: bool = True) -> PipelineResult:
     """Run one post through the funnel.
 
@@ -48,6 +48,8 @@ def process_post(raw_text: str,
         no DB writes, no Telegram — so a dry run never mutates anything and a
         post you've already stored is still shown, not silently swallowed.
     """
+    images = images or []
+
     # 0) URL-level dedup BEFORE the LLM. A 2×/day scraper re-sees the same posts
     #    near the top of a group; skipping them here saves an API call each,
     #    which matters on the free tier's tight daily quota. Only in commit mode
@@ -63,7 +65,7 @@ def process_post(raw_text: str,
     #     fallback. Not marked url-seen: re-checking is free (just a keyword scan).
     if config.PREFILTER_KEYWORDS and not any(k in raw_text for k in config.PREFILTER_KEYWORDS):
         return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
-                              source_url=source_url, group=group, image_url=image_url)
+                              source_url=source_url, group=group, images=images)
 
     e = llm.extract(raw_text)
     if commit and source_url:
@@ -74,7 +76,7 @@ def process_post(raw_text: str,
         return PipelineResult(status=status, reason=reason, walk_minutes=walk,
                               walk_gate=walk_gate, location_tier=tier, preferred=preferred,
                               lat=lat, lon=lon, dedup_key=key,
-                              source_url=source_url, group=group, image_url=image_url,
+                              source_url=source_url, group=group, images=images,
                               extract=e)
 
     # 1) not an apartment ad at all
