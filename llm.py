@@ -54,6 +54,18 @@ def _extract_gemini(post_text: str) -> ListingExtract:
     return ListingExtract.model_validate_json(resp.text)
 
 
+# Local/OpenAI-compatible models don't get the guaranteed-schema treatment
+# Gemini does, so spell the exact JSON keys out for them.
+_SCHEMA_HINT = (
+    "החזר אך ורק אובייקט JSON יחיד, ללא טקסט לפניו או אחריו, עם המפתחות האלה:\n"
+    '{"is_apartment_ad": true/false, "price_per_room_ils": מספר או null, '
+    '"available_rooms_count": מספר או null, "total_roommates_in_apt": מספר או null, '
+    '"street_address_or_neighborhood": מחרוזת או null, "lease_start_date": מחרוזת או null, '
+    '"contact_phone_or_link": מחרוזת או null, "missing_critical_data": true/false, '
+    '"summary_hebrew": מחרוזת או null}'
+)
+
+
 def _extract_openai_compatible(post_text: str) -> ListingExtract:
     """For Ollama (http://localhost:11434/v1) or Groq — set LLM_BASE_URL,
     LLM_MODEL, and (if needed) LLM_API_KEY in your .env."""
@@ -64,16 +76,20 @@ def _extract_openai_compatible(post_text: str) -> ListingExtract:
         api_key=os.environ.get("LLM_API_KEY", "ollama"),
     )
     resp = client.chat.completions.create(
-        model=os.environ.get("LLM_MODEL", "llama3.1"),
+        model=os.environ.get("LLM_MODEL", "gemma2:9b"),
         messages=[
-            {"role": "system", "content": _SYSTEM_HE},
-            {"role": "user", "content": post_text},
+            {"role": "system", "content": _SYSTEM_HE + "\n\n" + _SCHEMA_HINT},
+            {"role": "user", "content": "המודעה:\n" + post_text},
         ],
         response_format={"type": "json_object"},
         temperature=0.0,
     )
-    raw = resp.choices[0].message.content
-    return ListingExtract.model_validate(json.loads(raw))
+    raw = (resp.choices[0].message.content or "").strip()
+    # Some local models wrap JSON in ``` fences or add a preamble — pull out the
+    # object between the first "{" and the last "}".
+    if "{" in raw and "}" in raw:
+        raw = raw[raw.index("{"): raw.rindex("}") + 1]
+    return ListingExtract.model_validate_json(raw)
 
 
 def extract(post_text: str) -> ListingExtract:

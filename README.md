@@ -139,11 +139,44 @@ only affect the displayed walk time, not the in/out decision.
 All thresholds live at the top of `config.py`
 (price ≤ 2000/room, ≥ 2 rooms free, ≤ 4 roommates, ≤ 25 min walk).
 
-## Swapping the LLM
+## Swapping the LLM (local model via Ollama)
 
-Set `LLM_PROVIDER = "openai_compatible"` in `config.py`, uncomment `openai` in
-`requirements.txt`, and set `LLM_BASE_URL` / `LLM_MODEL` in `.env`. Works with a
-local **Ollama** model (private, no rate limits) or **Groq** (free, fast).
+The default is Gemini (`gemini-flash-lite-latest`, free tier). You can switch to
+a **fully local** model instead — nothing leaves your PC (phone numbers stay
+private) and there's no daily quota. The pipeline code doesn't change.
+
+**Hardware note (this PC):** Snapdragon X Plus (ARM64), 31 GB RAM, no CUDA GPU.
+Ollama runs **CPU-only** here (the Adreno GPU and Hexagon NPU aren't used by
+Ollama/llama.cpp), so it's slower than a cloud model — fine for a background
+scraper that handles a few dozen posts a few times a day, not for real-time use.
+RAM is plenty for a 9B model.
+
+### Steps
+
+1. **Install Ollama** (Windows ARM64 build) from <https://ollama.com/download>
+   — or `winget install Ollama.Ollama`. It runs as a background service.
+2. **Pull a Hebrew-capable model:**
+   ```powershell
+   ollama pull gemma2:9b        # good Hebrew + JSON following (~5.5 GB)
+   # ollama pull gemma2:2b      # much faster, weaker Hebrew (fallback)
+   ```
+3. **Install the client + point the bot at Ollama:**
+   ```powershell
+   pip install openai
+   ```
+   In `.env`, uncomment and set:
+   ```
+   LLM_BASE_URL=http://localhost:11434/v1
+   LLM_MODEL=gemma2:9b
+   LLM_API_KEY=ollama
+   ```
+4. **Flip the provider** in `config.py`: `LLM_PROVIDER = "openai_compatible"`.
+5. Test with `python manual.py` (paste a real Hebrew post). Watch the extraction
+   quality and speed; if it's too slow, drop to `gemma2:2b`.
+
+To go back to Gemini, set `LLM_PROVIDER = "gemini"`. **Groq** (free, fast cloud,
+OpenAI-compatible) works the same way — set `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`
+to your Groq values instead.
 
 ## Auto-scraper (increment 2)
 
