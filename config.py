@@ -155,3 +155,8 @@ SCRAPER_GROUPS_PER_RUN = 6               # rotating subset of FB_GROUPS per run
 # read (timestamp not rendered) are KEPT, not dropped, so a recent listing is
 # never lost to a missed timestamp. Set to None to disable the age filter.
 SCRAPER_MAX_POST_AGE_HOURS = 24
+# Click "See more" to expand truncated long posts before reading them, so buried
+# details (price, dates) aren't lost. This is the ONLY place the scraper clicks
+# anything — it's a harmless in-place expand, not a post/comment/like, but it is
+# still an interaction, so it's toggleable. Set False for strictly scroll-only.
+SCRAPER_EXPAND_SEE_MORE = True

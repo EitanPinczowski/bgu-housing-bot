@@ -73,6 +73,7 @@ def run(dry_run: bool) -> None:
 
     counts: Counter[str] = Counter()
     total_posts = 0
+    groups_with_posts = 0          # for failure detection (0 across all => trouble)
 
     p, context = scraper.open_browser()
     try:
@@ -86,6 +87,8 @@ def run(dry_run: bool) -> None:
                 print(f"[main] group failed, skipping: {exc}")
                 continue
             print(f"    {len(posts)} posts read")
+            if posts:
+                groups_with_posts += 1
             for post in posts:
                 total_posts += 1
                 try:
@@ -93,6 +96,7 @@ def run(dry_run: bool) -> None:
                         post["text"],
                         source_url=post.get("permalink"),
                         group=url,
+                        image_url=post.get("image"),
                         commit=not dry_run,
                     )
                     counts[res.status.value] += 1
@@ -117,17 +121,25 @@ def run(dry_run: bool) -> None:
     needs = counts.get("NEEDS_DATA", 0)
     print("\n=== summary ===")
     print(f"mode: {mode}")
-    print(f"posts processed: {total_posts}")
+    print(f"posts processed: {total_posts} (groups with posts: {groups_with_posts}/{len(selected)})")
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")
 
-    # Heartbeat only on live runs — so silence in Telegram means something broke.
     if not dry_run:
-        notifier.send(notifier._esc(
-            f"🏠 run done: {total_posts} posts, {matches} matches, {needs} needs-data "
-            f"({len(selected)} groups)"
-        ))
+        # Failure detection: zero posts across EVERY group almost always means
+        # the session was logged out or FB changed its DOM — not a quiet day.
+        # Send a distinct warning so silence stays trustworthy.
+        if groups_with_posts == 0:
+            notifier.send(notifier._esc(
+                "⚠️ הסקרייפר לא קרא אף פוסט מאף קבוצה. ייתכן שפייסבוק ניתקה את "
+                "החיבור (הריצו שוב את login.py) או ששינתה מבנה. בדקו את הלוג."))
+        else:
+            # Heartbeat digest — so silence means something broke, and you get a
+            # one-line pulse of each run.
+            notifier.send(notifier._esc(
+                f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
+                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות"))
 
 
 def main() -> None:

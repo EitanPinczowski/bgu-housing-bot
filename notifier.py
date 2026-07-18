@@ -2,6 +2,7 @@
 never from code."""
 from __future__ import annotations
 import os
+from urllib.parse import quote
 
 import requests
 
@@ -47,6 +48,16 @@ def format_alert(res: PipelineResult) -> str:
     if res.walk_minutes is not None:
         gate = f" מ{res.walk_gate}" if res.walk_gate else ""
         lines.append(f"🚶 {_esc(f'{res.walk_minutes:.0f} דק׳ הליכה' + gate)}")
+
+    # Map link: exact coords if geocoded, else a Be'er Sheva address search.
+    map_url = None
+    if res.lat is not None and res.lon is not None:
+        map_url = f"https://www.google.com/maps?q={res.lat},{res.lon}"
+    elif e.street_address_or_neighborhood:
+        map_url = ("https://www.google.com/maps/search/?api=1&query="
+                   + quote(f"{e.street_address_or_neighborhood}, באר שבע"))
+    if map_url:
+        lines.append(f"🗺️ [מפה]({_esc_url(map_url)})")
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:
@@ -65,9 +76,12 @@ def format_alert(res: PipelineResult) -> str:
     return "\n".join(lines)
 
 
+def _creds():
+    return os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+
+
 def send(text: str) -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    token, chat_id = _creds()
     if not token or not chat_id:
         print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
         return False
@@ -84,6 +98,36 @@ def send(text: str) -> bool:
         return False
 
 
+def send_photo(photo_url: str, caption: str) -> bool:
+    """Send the alert as a photo with the details as caption (max 1024 chars —
+    our alerts are well under). Returns False if it fails, so the caller can
+    fall back to a plain text message (FB image URLs can expire / be blocked)."""
+    token, chat_id = _creds()
+    if not token or not chat_id:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            json={"chat_id": chat_id, "photo": photo_url, "caption": caption,
+                  "parse_mode": "MarkdownV2"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        print(f"[notifier] send_photo failed ({exc}); falling back to text")
+        return False
+
+
+def _send_alert(res: PipelineResult) -> None:
+    """Send one listing alert — as a photo if we have one, else as text; a photo
+    that fails to send falls back to text so the alert still gets through."""
+    text = format_alert(res)
+    if res.image_url and send_photo(res.image_url, text):
+        return
+    send(text)
+
+
 def _promising_near_miss(res: PipelineResult) -> bool:
     """A NEEDS_DATA worth pinging: geocoded in/near the green zone AND with
     enough rooms free — a good place that merely didn't state a price. Anything
@@ -97,8 +141,8 @@ def _promising_near_miss(res: PipelineResult) -> bool:
 
 def notify(res: PipelineResult) -> None:
     if res.status == Status.MATCH and config.NOTIFY_ON_MATCH:
-        send(format_alert(res))
+        _send_alert(res)
     elif res.status == Status.NEEDS_DATA and config.NOTIFY_ON_NEEDS_DATA:
         if config.NEEDS_DATA_ONLY_PROMISING and not _promising_near_miss(res):
             return  # saved to SQLite by the pipeline, just not pinged
-        send(format_alert(res))
+        _send_alert(res)

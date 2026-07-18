@@ -39,4 +39,5 @@ class PipelineResult(BaseModel):
     dedup_key: Optional[str] = None
     source_url: Optional[str] = None
     group: Optional[str] = None
+    image_url: Optional[str] = None        # first apartment photo, for the alert
     extract: Optional[ListingExtract] = None

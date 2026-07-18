@@ -53,6 +53,14 @@ _MIN_POST_CHARS = 40                         # shorter than this = not a real po
 # (?comment_id=, __cft__, __tn__) is stripped by _permalink via split("?").
 _PERMALINK_HINTS = ("/posts/", "/permalink/", "/stories/", "story_fbid")
 
+# Post photos: the biggest <img> in the story is the apartment photo. Skip small
+# avatars/emoji and non-photo CDN assets. Min side keeps out avatars (~40px).
+_IMG_MIN_SIDE = 130
+_IMG_SKIP = ("emoji", "/rsrc.php/", "static.xx", "safe_image")   # avatars/UI assets
+
+# "See more" expander labels (English UI here; Hebrew fallbacks just in case).
+_SEE_MORE_LABELS = ("See more", "See More", "ראה עוד", "הצג עוד", "עוד")
+
 # Everything from the first of these markers onward is the comments/reactions
 # tail — dropped so we keep just the post body. English (this account's UI) +
 # common Hebrew fallbacks in case the UI language changes.
@@ -182,6 +190,41 @@ def _post_age_hours(story) -> Optional[float]:
     return None
 
 
+def _first_image(story) -> Optional[str]:
+    """URL of the largest <img> in the story — the apartment photo — or None.
+    Skips avatars/emoji/UI assets and anything too small to be a real photo."""
+    best_url, best_area = None, 0
+    try:
+        for img in story.query_selector_all("img"):
+            src = img.get_attribute("src") or ""
+            if not src.startswith("http") or any(s in src for s in _IMG_SKIP):
+                continue
+            box = img.bounding_box()
+            if not box or box["width"] < _IMG_MIN_SIDE or box["height"] < _IMG_MIN_SIDE:
+                continue
+            area = box["width"] * box["height"]
+            if area > best_area:
+                best_area, best_url = area, src
+    except Exception:
+        pass
+    return best_url
+
+
+def _expand_see_more(page) -> None:
+    """Click visible "See more" links to expand truncated posts before reading.
+    Bounded and best-effort — a failed/stale click is ignored."""
+    for label in _SEE_MORE_LABELS:
+        try:
+            buttons = page.get_by_text(label, exact=True).all()
+        except Exception:
+            continue
+        for btn in buttons[:25]:            # bound the number of clicks per pass
+            try:
+                btn.click(timeout=800, no_wait_after=True)
+            except Exception:
+                pass
+
+
 def _permalink(story) -> Optional[str]:
     """First anchor in the story that looks like a post permalink, cleaned of
     query junk. None if not found (post still usable — permalink is a bonus)."""
@@ -219,6 +262,8 @@ def scrape_group(page: Page, url: str) -> list[dict]:
     collected: dict[str, dict] = {}
     # read, then scroll — SCRAPER_MAX_SCROLLS scrolls means MAX_SCROLLS+1 reads
     for _ in range(config.SCRAPER_MAX_SCROLLS + 1):
+        if config.SCRAPER_EXPAND_SEE_MORE:
+            _expand_see_more(page)          # open truncated posts before reading
         for story in page.query_selector_all(_STORY_SELECTOR):
             try:
                 raw = story.inner_text() or ""
@@ -241,11 +286,15 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                     collected.pop(key, None)
                     continue  # "1d"+ => 24h or older => outside the last 24h
             link = _permalink(story)
+            img = _first_image(story)
             entry = collected.get(key)
             if entry is None:
-                collected[key] = {"text": text, "permalink": link}
-            elif entry["permalink"] is None and link:
-                entry["permalink"] = link
+                collected[key] = {"text": text, "permalink": link, "image": img}
+            else:  # backfill fields that render on a later pass
+                if entry["permalink"] is None and link:
+                    entry["permalink"] = link
+                if entry.get("image") is None and img:
+                    entry["image"] = img
         page.mouse.wheel(0, _SCROLL_PX)
         time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))
 

@@ -37,6 +37,7 @@ def _missing_critical(e) -> bool:
 def process_post(raw_text: str,
                  source_url: Optional[str] = None,
                  group: Optional[str] = None,
+                 image_url: Optional[str] = None,
                  commit: bool = True) -> PipelineResult:
     """Run one post through the funnel.
 
@@ -64,7 +65,8 @@ def process_post(raw_text: str,
         return PipelineResult(status=status, reason=reason, walk_minutes=walk,
                               walk_gate=walk_gate, location_tier=tier, preferred=preferred,
                               lat=lat, lon=lon, dedup_key=key,
-                              source_url=source_url, group=group, extract=e)
+                              source_url=source_url, group=group, image_url=image_url,
+                              extract=e)
 
     # 1) not an apartment ad at all
     if not e.is_apartment_ad:
