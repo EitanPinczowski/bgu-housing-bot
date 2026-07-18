@@ -102,11 +102,23 @@ BEER_SHEVA_VIEWBOX = "34.74,31.30,34.86,31.19"
 # Facebook groups to scan (used by the auto-scraper — next increment).
 # ---------------------------------------------------------------------------
 FB_GROUPS = [
-    "https://www.facebook.com/groups/227042837307326",
+    "https://www.facebook.com/groups/227042837307326",   # verified test group (שכונה ב' + הבלוק)
     "https://www.facebook.com/groups/138595033004411",
+    "https://www.facebook.com/groups/582276193473149",
+    "https://www.facebook.com/groups/864908790226104",
+    "https://www.facebook.com/groups/532324530266141",
     "https://www.facebook.com/groups/1730789290457027",
+    "https://www.facebook.com/groups/322313854934686",
+    "https://www.facebook.com/groups/2302505389980235",
+    "https://www.facebook.com/groups/1637994659811132",
+    "https://www.facebook.com/groups/170744879507",
+    "https://www.facebook.com/groups/708432163853635",
     "https://www.facebook.com/groups/167457006612972",
-    # add the rest of your ~20 here
+    "https://www.facebook.com/groups/279135451973",
+    "https://www.facebook.com/groups/989159401625656",
+    "https://www.facebook.com/groups/501446271648548",
+    "https://www.facebook.com/groups/712487315492862",
+    "https://www.facebook.com/groups/2835281153355520",
 ]
 
 # ---------------------------------------------------------------------------
