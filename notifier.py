@@ -61,8 +61,21 @@ def send(text: str) -> bool:
         return False
 
 
+def _promising_near_miss(res: PipelineResult) -> bool:
+    """A NEEDS_DATA worth pinging: geocoded in/near the green zone AND with
+    enough rooms free — a good place that merely didn't state a price. Anything
+    ungeocodable (UNKNOWN) or short on rooms is stored but not pinged."""
+    e = res.extract
+    in_zone = res.location_tier in ("GREEN", "AMBER")
+    enough_rooms = (e is not None and e.available_rooms_count is not None
+                    and e.available_rooms_count >= config.MIN_AVAILABLE_ROOMS)
+    return in_zone and enough_rooms
+
+
 def notify(res: PipelineResult) -> None:
     if res.status == Status.MATCH and config.NOTIFY_ON_MATCH:
         send(format_alert(res))
     elif res.status == Status.NEEDS_DATA and config.NOTIFY_ON_NEEDS_DATA:
+        if config.NEEDS_DATA_ONLY_PROMISING and not _promising_near_miss(res):
+            return  # saved to SQLite by the pipeline, just not pinged
         send(format_alert(res))

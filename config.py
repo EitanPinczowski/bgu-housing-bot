@@ -113,7 +113,14 @@ FB_GROUPS = [
 # Notifications
 # ---------------------------------------------------------------------------
 NOTIFY_ON_MATCH = True
-NOTIFY_ON_NEEDS_DATA = True        # you asked for near-miss pings too
+NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
+# Most real posts omit the price (negotiated in DMs), so they land in
+# NEEDS_DATA. To keep those pings worth reading, only alert on a near-miss that
+# is actually promising: in/near the green zone AND with enough rooms free
+# (i.e. a good place that just didn't state a price). Non-promising near-misses
+# are still saved to SQLite — you just aren't pinged. Set False to ping on every
+# NEEDS_DATA regardless.
+NEEDS_DATA_ONLY_PROMISING = True
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY
