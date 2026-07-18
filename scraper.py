@@ -46,8 +46,11 @@ _STORY_SELECTOR = '[role="feed"] > div'      # each direct child = one post stor
 _SCROLL_PX = 1100                            # small steps so posts render before we read
 _MIN_POST_CHARS = 40                         # shorter than this = not a real post
 
-# A post permalink is the first anchor whose href contains one of these.
-_PERMALINK_HINTS = ("/posts/", "/permalink/", "story_fbid")
+# A post permalink is the first anchor whose href contains one of these. FB uses
+# several formats: /groups/<id>/posts/<id>/, /permalink/, ?story_fbid=, and the
+# newer /stories/<set>/<base64>/ form — cover them all. Tracking query junk
+# (?comment_id=, __cft__, __tn__) is stripped by _permalink via split("?").
+_PERMALINK_HINTS = ("/posts/", "/permalink/", "/stories/", "story_fbid")
 
 # Everything from the first of these markers onward is the comments/reactions
 # tail — dropped so we keep just the post body. English (this account's UI) +
