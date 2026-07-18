@@ -17,6 +17,13 @@ def _esc(text) -> str:
     return s
 
 
+def _esc_url(url) -> str:
+    """Escape a URL for the (...) part of a MarkdownV2 inline link. Only ')' and
+    '\\' need escaping there — NOT '.'/'-', so the link stays valid/clickable."""
+    s = "" if url is None else str(url)
+    return s.replace("\\", "\\\\").replace(")", "\\)")
+
+
 def format_alert(res: PipelineResult) -> str:
     e = res.extract
     if res.status == Status.MATCH:
@@ -34,8 +41,12 @@ def format_alert(res: PipelineResult) -> str:
         f"📅 {_esc(e.lease_start_date or '?')}",
         f"📞 {_esc(e.contact_phone_or_link or '?')}",
     ]
+    # Always give a tappable link: the post permalink if we caught it, else the
+    # group — so an alert is never a dead end.
     if res.source_url:
-        lines.append(f"🔗 {_esc(res.source_url)}")
+        lines.append(f"🔗 [צפייה בפוסט]({_esc_url(res.source_url)})")
+    elif res.group:
+        lines.append(f"🔗 [פתיחת הקבוצה]({_esc_url(res.group)})")
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")
         lines.append("_" + _esc(res.reason) + "_")
