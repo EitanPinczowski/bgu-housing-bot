@@ -20,6 +20,8 @@ _SYSTEM_HE = """אתה מנתח מודעות שכירות של דירות שות
 - אם שדה כלשהו אינו מופיע במפורש במודעה — החזר null. אסור לנחש או להמציא מספרים.
 - price_per_room_ils = העלות החודשית לשותף אחד (חדר אחד), ללא חשבונות (ארנונה/ועד/מים).
   אם מצוין רק שכר הדירה הכולל, חלק במספר הדיירים הכולל בדירה. אם אין מספיק מידע — null.
+- ייתכן שבסוף יופיע חלק "[תגובות למודעה]". אם המחיר אינו בגוף המודעה אך מופיע בתגובות —
+  קח אותו משם וסמן price_from_comment=true. אחרת price_from_comment=false. אל תמציא מחיר.
 - available_rooms_count = מספר החדרים הפנויים כרגע להשכרה. אם הפוסט מחפש שותפים לדירה,
   זהו מספר השותפים המבוקשים (מחפשים "שותף/ה" ביחיד = 1; "שני שותפים" = 2).
 - total_roommates_in_apt = מספר הדיירים הכולל בדירה כשהיא מלאה.
@@ -62,7 +64,7 @@ _SCHEMA_HINT = (
     '"available_rooms_count": מספר או null, "total_roommates_in_apt": מספר או null, '
     '"street_address_or_neighborhood": מחרוזת או null, "lease_start_date": מחרוזת או null, '
     '"contact_phone_or_link": מחרוזת או null, "missing_critical_data": true/false, '
-    '"summary_hebrew": מחרוזת או null}'
+    '"price_from_comment": true/false, "summary_hebrew": מחרוזת או null}'
 )
 
 
@@ -124,8 +126,10 @@ _primary_exhausted = False
 fallback_used = 0
 
 
-def extract(post_text: str) -> ListingExtract:
+def extract(post_text: str, comments: str | None = None) -> ListingExtract:
     global _primary_exhausted, fallback_used
+    if comments:
+        post_text = post_text + "\n\n[תגובות למודעה]:\n" + comments
     primary = config.LLM_PROVIDER
     fallback = getattr(config, "LLM_FALLBACK_PROVIDER", None)
 

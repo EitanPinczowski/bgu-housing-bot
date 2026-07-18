@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import config
+import fit
 import notifier
 
 _MAX_ROWS = 25   # keep the message under Telegram's length limit
@@ -25,14 +26,16 @@ _MAX_ROWS = 25   # keep the message under Telegram's length limit
 def _recent(days: int):
     since = (datetime.now() - timedelta(days=days)).isoformat()
     with sqlite3.connect(config.DB_PATH) as c:
-        return c.execute(
+        rows = c.execute(
             """SELECT status, price_per_room, available_rooms, address, walk_minutes,
-                      summary, source_url, "group"
+                      summary, source_url, "group", location_tier
                FROM listings
-               WHERE first_seen >= ? AND status IN ('MATCH', 'NEEDS_DATA')
-               ORDER BY (status='MATCH') DESC, first_seen DESC""",
+               WHERE first_seen >= ? AND status IN ('MATCH', 'NEEDS_DATA')""",
             (since,),
         ).fetchall()
+    # best-first: MATCHes above near-misses, each sorted by fit score
+    return sorted(rows, key=lambda r: ((r[0] == "MATCH"), fit.score(r[1], r[4], r[8])),
+                  reverse=True)
 
 
 def build(rows, days: int) -> str:
@@ -41,10 +44,11 @@ def build(rows, days: int) -> str:
         return esc(f"📋 סיכום {days} ימים אחרונים: לא נמצאו דירות מתאימות.")
     header = f"📋 *סיכום {days} ימים — {len(rows)} דירות*"
     lines = [header, ""]
-    for status, price, rooms, addr, walk, summary, url, group in rows[:_MAX_ROWS]:
+    for status, price, rooms, addr, walk, summary, url, group, tier in rows[:_MAX_ROWS]:
         icon = "✅" if status == "MATCH" else "⚠️"
+        stars = fit.stars(fit.score(price, walk, tier))
         price_s = f'{price} ש"ח לחדר' if price else "מחיר לא צוין"
-        lines.append(f"{icon} {esc(summary or addr or '?')}")
+        lines.append(f"{icon} {stars} {esc(summary or addr or '?')}")
         detail = f"   💰 {esc(price_s)} · 🛏 {esc(rooms if rooms is not None else '?')} · 📍 {esc(addr or '?')}"
         if walk is not None:
             detail += f" · 🚶 {esc(round(walk))} דק׳"

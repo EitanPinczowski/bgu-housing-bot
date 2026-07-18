@@ -39,6 +39,7 @@ def process_post(raw_text: str,
                  source_url: Optional[str] = None,
                  group: Optional[str] = None,
                  images: Optional[list] = None,
+                 comments: Optional[str] = None,
                  commit: bool = True) -> PipelineResult:
     """Run one post through the funnel.
 
@@ -67,7 +68,7 @@ def process_post(raw_text: str,
         return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
                               source_url=source_url, group=group, images=images)
 
-    e = llm.extract(raw_text)
+    e = llm.extract(raw_text, comments=comments)
     if commit and source_url:
         storage.mark_url_seen(source_url)
 

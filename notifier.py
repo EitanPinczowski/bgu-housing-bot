@@ -2,12 +2,30 @@
 never from code."""
 from __future__ import annotations
 import os
+import re
 from urllib.parse import quote
 
 import requests
 
 import config
+import fit
 from models import PipelineResult, Status
+
+
+def _contact_link(contact):
+    """A tappable WhatsApp/chat link for the contact, or None. Handles Israeli
+    mobiles (05X… -> wa.me/9725X…) and existing wa.me/m.me/t.me links."""
+    if not contact:
+        return None
+    c = contact.strip()
+    if c.startswith("http"):
+        return c if any(d in c for d in ("wa.me", "whatsapp", "m.me", "t.me")) else None
+    digits = re.sub(r"\D", "", c)
+    if len(digits) == 10 and digits.startswith("05"):
+        return "https://wa.me/972" + digits[1:]
+    if len(digits) == 12 and digits.startswith("972"):
+        return "https://wa.me/" + digits
+    return None
 
 
 def _esc(text) -> str:
@@ -32,12 +50,20 @@ def format_alert(res: PipelineResult) -> str:
     else:
         header = "⚠️ *דירה — חסרים פרטים*"
 
+    if res.status == Status.MATCH:                       # fit score (#4)
+        header += "  " + fit.stars(fit.score(e.price_per_room_ils,
+                                             res.walk_minutes, res.location_tier))
     lines = [header]
     if e.summary_hebrew:
         lines.append(_esc(e.summary_hebrew))
     lines.append("")  # spacer between the summary and the details
 
-    price = f'{e.price_per_room_ils} ש"ח לחדר' if e.price_per_room_ils is not None else "מחיר לא צוין"
+    if e.price_per_room_ils is not None:
+        price = f'{e.price_per_room_ils} ש"ח לחדר'
+        if e.price_from_comment:
+            price += " (מהתגובות — ייתכן שאינו מדויק)"
+    else:
+        price = "מחיר לא צוין"
     rooms = e.available_rooms_count if e.available_rooms_count is not None else "?"
     mates = e.total_roommates_in_apt if e.total_roommates_in_apt is not None else "?"
 
@@ -64,6 +90,9 @@ def format_alert(res: PipelineResult) -> str:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:
         lines.append(f"📞 {_esc(e.contact_phone_or_link)}")
+        wa = _contact_link(e.contact_phone_or_link)
+        if wa:
+            lines.append(f"💬 [שליחת הודעה בוואטסאפ]({_esc_url(wa)})")
 
     # Always give a tappable link: the post permalink if we caught it, else the
     # group — so an alert is never a dead end.

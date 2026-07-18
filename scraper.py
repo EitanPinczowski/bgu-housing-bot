@@ -216,6 +216,29 @@ def _images(story, limit: int = 6) -> list[str]:
     return out
 
 
+_CMT_DROP = {"Reply", "Like", "Facebook", "Follow", "See more", "Author"}
+
+
+def _comments(story, limit: int = 4) -> str:
+    """Text of the first few visible comments (people often post the price
+    there). Comments are nested [role=article]s with an aria 'Comment by …'."""
+    out = []
+    try:
+        for art in story.query_selector_all('[role="article"]'):
+            if not (art.get_attribute("aria-label") or "").startswith("Comment"):
+                continue
+            lines = [l.strip() for l in (art.inner_text() or "").splitlines()
+                     if l.strip() and len(l.strip()) > 1 and l.strip() not in _CMT_DROP]
+            t = " ".join(lines)
+            if t:
+                out.append(t)
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
+    return "\n".join(out)
+
+
 def _expand_see_more(page) -> None:
     """Click visible "See more" links to expand truncated posts before reading.
     Bounded and best-effort — a failed/stale click is ignored."""
@@ -291,14 +314,18 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                     continue  # "1d"+ => 24h or older => outside the last 24h
             link = _permalink(story)
             imgs = _images(story)
+            cmts = _comments(story)
             entry = collected.get(key)
             if entry is None:
-                collected[key] = {"text": text, "permalink": link, "images": imgs}
+                collected[key] = {"text": text, "permalink": link,
+                                  "images": imgs, "comments": cmts}
             else:  # backfill fields that render / expand on a later pass
                 if entry["permalink"] is None and link:
                     entry["permalink"] = link
                 if len(imgs) > len(entry.get("images") or []):
                     entry["images"] = imgs        # keep the richest photo set seen
+                if len(cmts) > len(entry.get("comments") or ""):
+                    entry["comments"] = cmts
                 if len(text) > len(entry["text"]):   # See-more expanded it later
                     entry["text"] = text
         # Expand truncated posts AFTER reading, so the permalink/image are read

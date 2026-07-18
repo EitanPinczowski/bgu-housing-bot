@@ -17,6 +17,7 @@ class ListingExtract(BaseModel):
     lease_start_date: Optional[str] = None
     contact_phone_or_link: Optional[str] = None
     missing_critical_data: bool = False
+    price_from_comment: bool = False       # price came from a comment, not the post
     summary_hebrew: Optional[str] = None
 
 
