@@ -19,6 +19,20 @@ DATA_DIR.mkdir(exist_ok=True)
 AUTH_DIR.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------------------------
+# Cheap keyword pre-filter — runs BEFORE the LLM. A post with none of these
+# housing words at all (lost-pet posts, furniture sales, chit-chat) is dropped
+# as NOT_AD without spending an LLM call — saving Gemini quota and, especially,
+# the slow local fallback. Deliberately broad: only posts matching NONE are
+# skipped, so real ads (which almost always say דירה/שותף/חדר…) get through.
+# Set to [] to disable.
+# ---------------------------------------------------------------------------
+PREFILTER_KEYWORDS = [
+    "דירה", "דירת", "שותף", "שותפה", "שותפים", "שותפות", "חדר", "חדרים",
+    "להשכרה", "השכרה", "שכירות", "מפנים", "מתפנה", "מתפנים", "מושכר",
+    'שכ"ד', "שכ״ד", "שכד", "סאבלט", "סבלט", "כניסה",
+]
+
+# ---------------------------------------------------------------------------
 # Hard filter thresholds (from the spec)
 # ---------------------------------------------------------------------------
 MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities

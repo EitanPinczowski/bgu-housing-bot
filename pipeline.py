@@ -56,6 +56,14 @@ def process_post(raw_text: str,
         return PipelineResult(status=Status.DROP, reason="already seen (url)",
                               source_url=source_url, group=group)
 
+    # 0b) Cheap keyword pre-filter BEFORE the LLM: a post with no housing word at
+    #     all isn't a rental ad (lost pet, furniture sale, chit-chat) — drop it
+    #     without spending an LLM call. Saves Gemini quota and the slow local
+    #     fallback. Not marked url-seen: re-checking is free (just a keyword scan).
+    if config.PREFILTER_KEYWORDS and not any(k in raw_text for k in config.PREFILTER_KEYWORDS):
+        return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
+                              source_url=source_url, group=group, image_url=image_url)
+
     e = llm.extract(raw_text)
     if commit and source_url:
         storage.mark_url_seen(source_url)
