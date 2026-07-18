@@ -274,3 +274,16 @@ OSRM only affects the displayed walk time, so the scraper still works if the
 OSRM Docker container isn't running — you just won't get walk minutes. The
 `osrm_bgu` container is set to restart with Docker Desktop; make sure Docker
 Desktop is set to start on login if you want walk times on scheduled runs.
+
+### Helper tasks (also scheduled)
+
+- **`BGU Watchdog`** (`watchdog.py`) — runs 08:30/11:30/14:30/17:30, 30 min before
+  each scrape. Checks OSRM + Ollama and pings Telegram if a dependency is down,
+  so you can fix it before a run degrades. (Facebook-login loss is caught by the
+  scraper's own "0 posts" alert.)
+- **`BGU Digest`** (`digest.py`) — Sundays at 20:00, sends a Telegram recap of the
+  last 7 days of listings from SQLite. Run any time by hand: `python digest.py 3`
+  (last 3 days). Change the schedule/cadence in Task Scheduler as you like.
+
+Alerts include the apartment **photos as an album** automatically when the post
+has several.
