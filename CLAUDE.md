@@ -80,12 +80,12 @@ the scraper MUST be conservative and the user must stay in control:
 
 - Non-headless, **persistent real browser profile** (log in once manually), NOT
   headless cookie injection.
-- Long randomized delays; limited scroll depth; a **rotating subset** of groups
-  per run. Runs **4×/day** (09:00/12:00/15:00/18:00, each with up to 25 min
-  random delay so it isn't clockwork — the main automation tell). This was
-  raised from the original ~2×/day at the user's request; it's still low-volume
-  and the real protections (real logged-in profile, home IP, read-only,
-  human-like pacing) are unchanged. Do not push frequency higher without reason.
+- Long randomized delays; a **rotating subset** of groups per run. Runs **6×/day
+  daytime** (09/11/13/15/17/19, each +up to 25 min jitter so it isn't clockwork;
+  no night runs). GROUPS_PER_RUN=8, MAX_SCROLLS=6. Raised over time at the user's
+  request (2→4→6×/day) for more coverage — they accept the added risk. The real
+  protections (real logged-in profile, home IP, read-only, human-like pacing)
+  are unchanged. This is roughly the ceiling; don't push higher without a reason.
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.

@@ -165,10 +165,10 @@ NEEDS_DATA_ONLY_PROMISING = True
 # ---------------------------------------------------------------------------
 SCRAPER_PROFILE_DIR = AUTH_DIR / "chrome_profile"  # persistent login session
 SCRAPER_HEADLESS = False                # never headless — see CLAUDE.md
-SCRAPER_MAX_SCROLLS = 4                  # how far down each group to scroll
+SCRAPER_MAX_SCROLLS = 6                  # how far down each group to scroll
 SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
 SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
-SCRAPER_GROUPS_PER_RUN = 6               # rotating subset of FB_GROUPS per run
+SCRAPER_GROUPS_PER_RUN = 8               # rotating subset of FB_GROUPS per run
 # Only process posts newer than this many hours. FB shows relative times
 # (minutes/hours under 24h, then days/dates), which the scraper reads from the
 # post's timestamp link — so a 24h cutoff is exact. Posts whose age can't be
