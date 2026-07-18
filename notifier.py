@@ -75,49 +75,42 @@ def format_alert(res: PipelineResult) -> str:
         gate = f" מ{res.walk_gate}" if res.walk_gate else ""
         lines.append(f"🚶 {_esc(f'{res.walk_minutes:.0f} דק׳ הליכה' + gate)}")
 
-    # Map link: prefer a SEARCH of the actual address text — Google geocodes it
-    # far better than our static table / Nominatim, which only gave an approximate
-    # (often wrong) pin. Fall back to our coords only if there's no address text.
-    map_url = None
-    if e.street_address_or_neighborhood:
-        map_url = ("https://www.google.com/maps/search/?api=1&query="
-                   + quote(f"{e.street_address_or_neighborhood}, באר שבע"))
-    elif res.lat is not None and res.lon is not None:
-        map_url = f"https://www.google.com/maps?q={res.lat},{res.lon}"
-    if map_url:
-        lines.append(f"🗺️ [מפה]({_esc_url(map_url)})")
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:
         lines.append(f"📞 {_esc(e.contact_phone_or_link)}")
-        wa = _contact_link(e.contact_phone_or_link)
-        if wa:
-            lines.append(f"💬 [שליחת הודעה בוואטסאפ]({_esc_url(wa)})")
-
-    # Always give a tappable link: the post permalink if we caught it, else the
-    # group — so an alert is never a dead end.
-    if res.source_url:
-        lines.append(f"🔗 [צפייה בפוסט]({_esc_url(res.source_url)})")
-    elif res.group:
-        # FB lazy-loads the permalink for comment-less posts (anti-scraping), so
-        # we couldn't capture it. Best consolation: SEARCH the group for the
-        # post's own text, which usually lands right on it. Fall back to opening
-        # the group newest-first if we have no text to search.
-        q = ""
-        if e:
-            q = (e.summary_hebrew or e.street_address_or_neighborhood or "").strip()[:60]
-        if q:
-            gurl = res.group.rstrip("/") + "/search/?q=" + quote(q)
-            label = "חיפוש הפוסט בקבוצה"
-        else:
-            gurl = res.group + ("&" if "?" in res.group else "?") + "sorting_setting=CHRONOLOGICAL"
-            label = "פתיחת הקבוצה \\(הפוסט קרוב לראש\\)"
-        lines.append(f"🔗 [{label}]({_esc_url(gurl)})")
+    # Map / WhatsApp / post links are rendered as BUTTONS (see _alert_keyboard).
 
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")
         lines.append("_" + _esc(res.reason) + "_")
     return "\n".join(lines)
+
+
+def _map_url(res) -> str | None:
+    """Google Maps SEARCH of the address (Google geocodes it well), else coords."""
+    e = res.extract
+    if e and e.street_address_or_neighborhood:
+        return ("https://www.google.com/maps/search/?api=1&query="
+                + quote(f"{e.street_address_or_neighborhood}, באר שבע"))
+    if res.lat is not None and res.lon is not None:
+        return f"https://www.google.com/maps?q={res.lat},{res.lon}"
+    return None
+
+
+def _post_button(res):
+    """(label, url) for the post: the permalink if captured, else a group search
+    for the post text (FB hides permalinks for comment-less posts), else None."""
+    if res.source_url:
+        return ("🔗 צפייה בפוסט", res.source_url)
+    if res.group:
+        e = res.extract
+        q = ((e.summary_hebrew or e.street_address_or_neighborhood or "") if e else "").strip()[:60]
+        if q:
+            return ("🔍 חיפוש בקבוצה", res.group.rstrip("/") + "/search/?q=" + quote(q))
+        return ("🔗 פתיחת הקבוצה",
+                res.group + ("&" if "?" in res.group else "?") + "sorting_setting=CHRONOLOGICAL")
+    return None
 
 
 def _token():
@@ -147,14 +140,29 @@ def _post_to_all(method: str, payload: dict, timeout: int) -> bool:
     return ok
 
 
-def _keyboard(dedup_key):
-    """The ⭐/🗑 triage buttons for a listing (handled by bot_listener.py)."""
-    if not dedup_key:
-        return None
-    return {"inline_keyboard": [[
-        {"text": "⭐ מעניין", "callback_data": f"save|{dedup_key}"},
-        {"text": "🗑 הסר", "callback_data": f"dismiss|{dedup_key}"},
-    ]]}
+def _alert_keyboard(res):
+    """All action buttons for an alert: map / WhatsApp / post as URL buttons,
+    plus ⭐/🗑 triage as callback buttons (handled by bot_listener.py)."""
+    e = res.extract
+    rows = []
+    url_row = []
+    murl = _map_url(res)
+    if murl:
+        url_row.append({"text": "🗺️ מפה", "url": murl})
+    wa = _contact_link(e.contact_phone_or_link) if e else None
+    if wa:
+        url_row.append({"text": "💬 וואטסאפ", "url": wa})
+    if url_row:
+        rows.append(url_row)
+    pb = _post_button(res)
+    if pb:
+        rows.append([{"text": pb[0], "url": pb[1]}])
+    if res.dedup_key:
+        rows.append([
+            {"text": "⭐ מעניין", "callback_data": f"save|{res.dedup_key}"},
+            {"text": "🗑 הסר", "callback_data": f"dismiss|{res.dedup_key}"},
+        ])
+    return {"inline_keyboard": rows} if rows else None
 
 
 def send(text: str, reply_markup=None) -> bool:
@@ -190,7 +198,7 @@ def _send_alert(res: PipelineResult) -> None:
     photo if there's one, else text — each falling back to the next if it fails,
     so the alert always gets through."""
     text = format_alert(res)
-    kb = _keyboard(res.dedup_key)
+    kb = _alert_keyboard(res)
     imgs = res.images or []
     if len(imgs) >= 2 and send_media_group(imgs, text):
         # albums can't carry buttons — send them as a small follow-up message
