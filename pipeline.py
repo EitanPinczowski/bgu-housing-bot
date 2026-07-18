@@ -26,12 +26,12 @@ def _blacklisted(location: Optional[str]) -> bool:
 
 
 def _missing_critical(e) -> bool:
-    # Price is deliberately NOT required: most posts omit it (negotiated in DMs),
-    # so requiring it would flag almost everything NEEDS_DATA. Rooms + street stay
-    # critical — they gate the >=2-rooms rule and the green-zone geocode. A known
-    # price is still enforced against MAX_PRICE_PER_ROOM_ILS in process_post.
-    return (e.missing_critical_data
-            or e.available_rooms_count is None
+    # NEEDS_DATA only when a field we truly need is absent: rooms (for the >=2
+    # gate) or street/neighborhood (to geocode). We deliberately do NOT trust the
+    # LLM's own missing_critical_data flag — it was over-eager and pushed
+    # complete-enough posts into NEEDS_DATA. Price stays optional; a known price
+    # is still enforced against MAX_PRICE_PER_ROOM_ILS in process_post.
+    return (e.available_rooms_count is None
             or e.street_address_or_neighborhood is None)
 
 

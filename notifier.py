@@ -70,11 +70,20 @@ def format_alert(res: PipelineResult) -> str:
     if res.source_url:
         lines.append(f"🔗 [צפייה בפוסט]({_esc_url(res.source_url)})")
     elif res.group:
-        # FB lazy-loads the post permalink for comment-less posts (anti-scraping),
-        # so we couldn't capture it — open the group newest-first instead, where a
-        # last-24h post sits near the top.
-        gurl = res.group + ("&" if "?" in res.group else "?") + "sorting_setting=CHRONOLOGICAL"
-        lines.append(f"🔗 [פתיחת הקבוצה \\(הפוסט קרוב לראש\\)]({_esc_url(gurl)})")
+        # FB lazy-loads the permalink for comment-less posts (anti-scraping), so
+        # we couldn't capture it. Best consolation: SEARCH the group for the
+        # post's own text, which usually lands right on it. Fall back to opening
+        # the group newest-first if we have no text to search.
+        q = ""
+        if e:
+            q = (e.summary_hebrew or e.street_address_or_neighborhood or "").strip()[:60]
+        if q:
+            gurl = res.group.rstrip("/") + "/search/?q=" + quote(q)
+            label = "חיפוש הפוסט בקבוצה"
+        else:
+            gurl = res.group + ("&" if "?" in res.group else "?") + "sorting_setting=CHRONOLOGICAL"
+            label = "פתיחת הקבוצה \\(הפוסט קרוב לראש\\)"
+        lines.append(f"🔗 [{label}]({_esc_url(gurl)})")
 
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")
