@@ -185,11 +185,14 @@ heartbeat when done, so **silence means something broke.**
 ### Schedule it ~2×/day (Windows Task Scheduler)
 
 **Already set up.** A scheduled task named **`BGU Housing Scraper`** runs the
-scraper at **09:00** and **19:00** daily. It calls `run_scraper.cmd`, which pins
-the correct Python, sets UTF-8, and runs `python main.py --live`, appending all
-output to `data\scraper_runs.log`. The task is configured to *run only when
-you're logged on* (the browser is non-headless by design), to *start as soon as
-possible after a missed start* (your PC may be asleep), and to run on battery.
+scraper at **09:00, 12:00, 15:00, and 18:00** daily, each with **up to 25 min of
+random delay** so the runs don't fire on the exact minute (clockwork timing is
+the main thing that looks automated to Facebook). It calls `run_scraper.cmd`,
+which pins the correct Python, sets UTF-8, and runs `python main.py --live`,
+appending all output to `data\scraper_runs.log`. The task is configured to *run
+only when you're logged on* (the browser is non-headless by design), to *start
+as soon as possible after a missed start* (your PC may be asleep), and to run on
+battery.
 
 Manage it from PowerShell:
 
