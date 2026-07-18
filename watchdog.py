@@ -52,7 +52,8 @@ def main() -> None:
         problems.append("Ollama לא מגיב — אין מודל גיבוי אם מכסת Gemini תיגמר.")
 
     if problems:
-        notifier.send(notifier._esc("🩺 בדיקת תלויות מצאה בעיה:\n- " + "\n- ".join(problems)))
+        notifier.send(notifier._esc("🩺 בדיקת תלויות מצאה בעיה:\n- " + "\n- ".join(problems)),
+                      primary_only=True)   # operational — your DM only
         print("ALERT sent:", problems)
     else:
         print("watchdog: all dependencies OK")

@@ -137,14 +137,16 @@ def run(dry_run: bool) -> None:
         if groups_with_posts == 0:
             notifier.send(notifier._esc(
                 "⚠️ הסקרייפר לא קרא אף פוסט מאף קבוצה. ייתכן שפייסבוק ניתקה את "
-                "החיבור (הריצו שוב את login.py) או ששינתה מבנה. בדקו את הלוג."))
+                "החיבור (הריצו שוב את login.py) או ששינתה מבנה. בדקו את הלוג."),
+                primary_only=True)
         else:
             # Heartbeat digest — so silence means something broke, and you get a
             # one-line pulse of each run.
             fb = f" · {llm.fallback_used} במודל מקומי" if llm.fallback_used else ""
             notifier.send(notifier._esc(
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
-                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb))
+                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
+                primary_only=True)
 
 
 def main() -> None:

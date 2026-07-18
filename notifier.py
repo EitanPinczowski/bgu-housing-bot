@@ -123,12 +123,16 @@ def _chat_ids():
     return [c.strip() for c in (os.environ.get("TELEGRAM_CHAT_ID") or "").split(",") if c.strip()]
 
 
-def _post_to_all(method: str, payload: dict, timeout: int) -> bool:
-    """Send `payload` to every recipient; True if at least one succeeded."""
+def _post_to_all(method: str, payload: dict, timeout: int, primary_only: bool = False) -> bool:
+    """Send `payload` to every recipient (or just the first — your own DM — when
+    primary_only, for operational pings a shared group shouldn't get). True if at
+    least one delivery succeeded."""
     token, ids = _token(), _chat_ids()
     if not token or not ids:
         print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
         return False
+    if primary_only:
+        ids = ids[:1]
     ok = False
     for cid in ids:
         try:
@@ -165,11 +169,11 @@ def _alert_keyboard(res):
     return {"inline_keyboard": rows} if rows else None
 
 
-def send(text: str, reply_markup=None) -> bool:
+def send(text: str, reply_markup=None, primary_only: bool = False) -> bool:
     payload = {"text": text, "parse_mode": "MarkdownV2"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return _post_to_all("sendMessage", payload, 15)
+    return _post_to_all("sendMessage", payload, 15, primary_only=primary_only)
 
 
 def send_photo(photo_url: str, caption: str, reply_markup=None) -> bool:
