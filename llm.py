@@ -75,15 +75,27 @@ def _extract_openai_compatible(post_text: str) -> ListingExtract:
         base_url=os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1"),
         api_key=os.environ.get("LLM_API_KEY", "ollama"),
     )
-    resp = client.chat.completions.create(
+    kwargs = dict(
         model=os.environ.get("LLM_MODEL", "gemma2:9b"),
         messages=[
             {"role": "system", "content": _SYSTEM_HE + "\n\n" + _SCHEMA_HINT},
             {"role": "user", "content": "המודעה:\n" + post_text},
         ],
-        response_format={"type": "json_object"},
         temperature=0.0,
     )
+    # Prefer SCHEMA-CONSTRAINED output: the runtime is forced to emit valid JSON
+    # matching ListingExtract, which fixes the classic break where Hebrew
+    # gershayim (e.g. מגדלי ח"ן, 1500 ש"ח) puts an unescaped " inside a string.
+    # Fall back to plain json_object if the provider doesn't support schemas.
+    try:
+        resp = client.chat.completions.create(
+            response_format={"type": "json_schema", "json_schema":
+                             {"name": "ListingExtract",
+                              "schema": ListingExtract.model_json_schema()}},
+            **kwargs)
+    except Exception:
+        resp = client.chat.completions.create(
+            response_format={"type": "json_object"}, **kwargs)
     raw = (resp.choices[0].message.content or "").strip()
     # Some local models wrap JSON in ``` fences or add a preamble — pull out the
     # object between the first "{" and the last "}".
