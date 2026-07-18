@@ -73,6 +73,12 @@ OSRM_BASE_URL = "http://localhost:5000"
 # OpenAI-compatible endpoint (Ollama, Groq) without touching pipeline code.
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "gemini"            # "gemini" | "openai_compatible"
+# Fallback when the primary hits its daily/rate quota (429). Gemini is fast and
+# free but capped per day; when it's exhausted mid-run we switch to the local
+# Ollama model so no post is missed. Once the primary 429s in a run, we route
+# straight to the fallback for the rest of that run (Gemini's slow retry-backoff
+# isn't paid per post). Next run tries the primary again. Set None to disable.
+LLM_FALLBACK_PROVIDER = "openai_compatible"   # local Ollama (see LLM_* in .env)
 # Model chosen for FREE-TIER DAILY QUOTA, not quality — quota is the binding
 # constraint. This API key's free buckets (measured 2026-07, per-key specific):
 #   gemini-flash-latest   -> gemini-3.5-flash : only 20 requests/DAY (too few)

@@ -104,7 +104,36 @@ def _extract_openai_compatible(post_text: str) -> ListingExtract:
     return ListingExtract.model_validate_json(raw)
 
 
-def extract(post_text: str) -> ListingExtract:
-    if config.LLM_PROVIDER == "gemini":
+def _run(provider: str, post_text: str) -> ListingExtract:
+    if provider == "gemini":
         return _extract_gemini(post_text)
     return _extract_openai_compatible(post_text)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    s = str(exc)
+    return "RESOURCE_EXHAUSTED" in s or "429" in s or "quota" in s.lower()
+
+
+# Set for the rest of the process once the primary provider hits its quota, so
+# we don't re-hit (and pay the retry-backoff on) an exhausted primary each post.
+# Fresh per run (each scheduled run is a new process, so it retries the primary).
+_primary_exhausted = False
+
+
+def extract(post_text: str) -> ListingExtract:
+    global _primary_exhausted
+    primary = config.LLM_PROVIDER
+    fallback = getattr(config, "LLM_FALLBACK_PROVIDER", None)
+
+    if _primary_exhausted and fallback:
+        return _run(fallback, post_text)
+    try:
+        return _run(primary, post_text)
+    except Exception as exc:
+        if fallback and fallback != primary and _is_quota_error(exc):
+            _primary_exhausted = True
+            print(f"[llm] {primary} quota reached — using {fallback} "
+                  "for the rest of this run.")
+            return _run(fallback, post_text)
+        raise
