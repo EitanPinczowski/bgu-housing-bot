@@ -120,8 +120,31 @@ def format_alert(res: PipelineResult) -> str:
     return "\n".join(lines)
 
 
-def _creds():
-    return os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+def _token():
+    return os.environ.get("TELEGRAM_BOT_TOKEN")
+
+
+def _chat_ids():
+    """Recipients. TELEGRAM_CHAT_ID may be a COMMA-SEPARATED list, so alerts can
+    also go to a friend and/or a shared group — a good way to share the search."""
+    return [c.strip() for c in (os.environ.get("TELEGRAM_CHAT_ID") or "").split(",") if c.strip()]
+
+
+def _post_to_all(method: str, payload: dict, timeout: int) -> bool:
+    """Send `payload` to every recipient; True if at least one succeeded."""
+    token, ids = _token(), _chat_ids()
+    if not token or not ids:
+        print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
+        return False
+    ok = False
+    for cid in ids:
+        try:
+            requests.post(f"https://api.telegram.org/bot{token}/{method}",
+                          json={**payload, "chat_id": cid}, timeout=timeout).raise_for_status()
+            ok = True
+        except Exception as exc:
+            print(f"[notifier] {method} to {cid} failed: {exc}")
+    return ok
 
 
 def _keyboard(dedup_key):
@@ -135,50 +158,23 @@ def _keyboard(dedup_key):
 
 
 def send(text: str, reply_markup=None) -> bool:
-    token, chat_id = _creds()
-    if not token or not chat_id:
-        print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
-        return False
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"}
+    payload = {"text": text, "parse_mode": "MarkdownV2"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage", json=payload, timeout=15)
-        r.raise_for_status()
-        return True
-    except Exception as exc:
-        print(f"[notifier] send failed: {exc}")
-        return False
+    return _post_to_all("sendMessage", payload, 15)
 
 
 def send_photo(photo_url: str, caption: str, reply_markup=None) -> bool:
-    """Send the alert as a photo with the details as caption (max 1024 chars —
-    our alerts are well under). Returns False if it fails, so the caller can
-    fall back to a plain text message (FB image URLs can expire / be blocked)."""
-    token, chat_id = _creds()
-    if not token or not chat_id:
-        return False
-    payload = {"chat_id": chat_id, "photo": photo_url, "caption": caption,
-               "parse_mode": "MarkdownV2"}
+    """Send the alert as a photo with the details as caption. Returns False if it
+    reaches no one, so the caller can fall back to a text message."""
+    payload = {"photo": photo_url, "caption": caption, "parse_mode": "MarkdownV2"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendPhoto", json=payload, timeout=20)
-        r.raise_for_status()
-        return True
-    except Exception as exc:
-        print(f"[notifier] send_photo failed ({exc}); falling back to text")
-        return False
+    return _post_to_all("sendPhoto", payload, 20)
 
 
 def send_media_group(photo_urls: list, caption: str) -> bool:
-    """Send 2–10 photos as an album, with the details as the first photo's
-    caption. Returns False on failure so the caller can fall back."""
-    token, chat_id = _creds()
-    if not token or not chat_id:
-        return False
+    """Send 2–10 photos as an album, details as the first photo's caption."""
     media = []
     for i, url in enumerate(photo_urls[:10]):
         item = {"type": "photo", "media": url}
@@ -186,16 +182,7 @@ def send_media_group(photo_urls: list, caption: str) -> bool:
             item["caption"] = caption
             item["parse_mode"] = "MarkdownV2"
         media.append(item)
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMediaGroup",
-            json={"chat_id": chat_id, "media": media}, timeout=30,
-        )
-        r.raise_for_status()
-        return True
-    except Exception as exc:
-        print(f"[notifier] send_media_group failed ({exc})")
-        return False
+    return _post_to_all("sendMediaGroup", {"media": media}, 30)
 
 
 def _send_alert(res: PipelineResult) -> None:
