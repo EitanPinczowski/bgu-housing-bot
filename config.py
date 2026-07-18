@@ -41,15 +41,13 @@ BUFFER_METERS = 500
 # Campus gates (lat, lon, name). The alert reports the walk to the CLOSEST one
 # and names it ("12 דק׳ הליכה משער רגר"). Informational only — the green zone
 # decides in/out. "name" is what shows in Telegram.
-# Rager + Mexico coords are from the Google Maps pins you sent. Still need pins
-# for שער 90 (north) and שער סורוקה (south) — send the Maps links and I'll add
-# them (placeholders below).
+# All four coords are from the Google Maps pins you sent.
 # ---------------------------------------------------------------------------
 GATES = {
     "rager":  {"lat": 31.2639703, "lon": 34.7992252, "name": "שער רגר"},
     "mexico": {"lat": 31.2623329, "lon": 34.8056559, "name": "שער מקסיקו"},
-    # "gate90": {"lat": 0.0, "lon": 0.0, "name": "שער 90"},       # north — TODO pin
-    # "soroka": {"lat": 0.0, "lon": 0.0, "name": "שער סורוקה"},   # south — TODO pin
+    "gate90": {"lat": 31.2649620, "lon": 34.8020603, "name": "שער 90"},
+    "soroka": {"lat": 31.2612680, "lon": 34.8011969, "name": "שער סורוקה"},
 }
 
 # ---------------------------------------------------------------------------
@@ -151,3 +149,9 @@ SCRAPER_MAX_SCROLLS = 4                  # how far down each group to scroll
 SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
 SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
 SCRAPER_GROUPS_PER_RUN = 6               # rotating subset of FB_GROUPS per run
+# Only process posts newer than this many hours. FB shows relative times
+# (minutes/hours under 24h, then days/dates), which the scraper reads from the
+# post's timestamp link — so a 24h cutoff is exact. Posts whose age can't be
+# read (timestamp not rendered) are KEPT, not dropped, so a recent listing is
+# never lost to a missed timestamp. Set to None to disable the age filter.
+SCRAPER_MAX_POST_AGE_HOURS = 24

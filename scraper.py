@@ -29,6 +29,7 @@ How the extraction works (learned from the live DOM):
 """
 from __future__ import annotations
 
+import datetime as dt
 import random
 import re
 import time
@@ -74,6 +75,24 @@ _DROP_EXACT = {
 # wants. Harmlessly ignored by FB if the param name ever changes.
 _SORT_CHRONOLOGICAL = True
 _SORT_PARAM = "sorting_setting=CHRONOLOGICAL"
+
+# Post age from the timestamp link's short relative text ("13h", "3d", "July 5").
+# FB shows minutes/hours under 24h, then days, then a date — so the unit alone
+# gives the age. The absolute date also sits in that link's aria-label, but the
+# relative text is cleaner and locale-simpler.
+_TS_UNIT_HOURS = {"s": 1 / 3600, "m": 1 / 60, "h": 1.0, "d": 24.0, "w": 168.0, "y": 8760.0}
+_TS_REL = re.compile(r"^(\d+)\s*([smhdwy])\b", re.I)         # "13h", "3d", "45m"
+_TS_NOW = re.compile(r"^(just now|now|a few seconds|a minute|an hour)\b", re.I)
+_TS_DATE = re.compile(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d"
+                      r"|yesterday", re.I)                    # "July 5" / "Yesterday"
+# Absolute-date fallback from the timestamp link's aria-label, e.g.
+# "Friday, July 17, 2026 at 11:19 PM". Relative text is preferred (it's timezone
+# independent); this catches posts whose relative text didn't render.
+_TS_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+_TS_ABS = re.compile(r"([a-z]{3,})\s+(\d{1,2})(?:,\s*(\d{4}))?[^\d]*?"
+                     r"(\d{1,2}):(\d{2})\s*([ap])m", re.I)
 # =============================================================================
 
 _NUM_RE = re.compile(r"^\+?\d[\d,]*$")       # like counts, "+5", "1,234"
@@ -116,6 +135,51 @@ def _clean_story(raw: str) -> str:
             continue
         out.append(s)
     return "\n".join(out).strip()
+
+
+def _age_from_aria(aria: str) -> Optional[float]:
+    """Hours since the absolute date in a timestamp aria-label, or None.
+    Compared against local now — the machine clock and FB's rendered time are
+    both Israel time, so a few hours' slack at the boundary is the worst case."""
+    s = (aria.replace(" ", " ").replace(" ", " ")
+             .replace("‎", "").replace("‏", ""))
+    m = _TS_ABS.search(s)
+    if not m:
+        return None
+    mon = _TS_MONTHS.get(m.group(1)[:3].lower())
+    if not mon:
+        return None
+    day = int(m.group(2))
+    year = int(m.group(3)) if m.group(3) else dt.datetime.now().year
+    hour = int(m.group(4)) % 12 + (12 if m.group(6).lower() == "p" else 0)
+    try:
+        when = dt.datetime(year, mon, day, hour, int(m.group(5)))
+    except ValueError:
+        return None
+    return (dt.datetime.now() - when).total_seconds() / 3600.0
+
+
+def _post_age_hours(story) -> Optional[float]:
+    """Approximate post age in hours, read from its timestamp link. None if it
+    can't be determined (timestamp not rendered) — caller keeps the post then.
+    Prefers the relative text ("13h"); falls back to the aria-label date."""
+    try:
+        for a in story.query_selector_all("a[href]"):
+            t = (a.inner_text() or "").strip()
+            if t and len(t) <= 25:        # timestamps are short ("13h", "July 5")
+                if (m := _TS_REL.match(t)):
+                    return int(m.group(1)) * _TS_UNIT_HOURS[m.group(2).lower()]
+                if _TS_NOW.match(t):
+                    return 0.0
+                if _TS_DATE.search(t):
+                    return 1e9            # a bare date => older than any cutoff
+            aria = a.get_attribute("aria-label") or ""
+            if aria:
+                if (h := _age_from_aria(aria)) is not None:
+                    return h
+    except Exception:
+        pass
+    return None
 
 
 def _permalink(story) -> Optional[str]:
@@ -163,11 +227,20 @@ def scrape_group(page: Page, url: str) -> list[dict]:
             text = _clean_story(raw)
             if len(text) < _MIN_POST_CHARS or not _HEBREW_RE.search(text):
                 continue
-            link = _permalink(story)
             # Key on the text (stable across scroll passes), not the permalink —
             # FB often renders a post's body before its timestamp/permalink
             # anchor. Backfill the permalink when a later pass exposes it.
             key = text[:80]
+            # age filter: skip posts we can READ as >= the cutoff. A post's
+            # timestamp may only render on a LATER pass, so also drop one we'd
+            # already added if a later read reveals it's old. Unknown age is
+            # kept, so a recent listing is never lost to a missed timestamp.
+            if config.SCRAPER_MAX_POST_AGE_HOURS is not None:
+                age = _post_age_hours(story)
+                if age is not None and age >= config.SCRAPER_MAX_POST_AGE_HOURS:
+                    collected.pop(key, None)
+                    continue  # "1d"+ => 24h or older => outside the last 24h
+            link = _permalink(story)
             entry = collected.get(key)
             if entry is None:
                 collected[key] = {"text": text, "permalink": link}
