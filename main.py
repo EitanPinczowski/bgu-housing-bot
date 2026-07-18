@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import config
+import llm
 import notifier
 import pipeline
 import scraper
@@ -125,6 +126,8 @@ def run(dry_run: bool) -> None:
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")
+    if llm.fallback_used:
+        print(f"  (served by local fallback: {llm.fallback_used} — Gemini quota was hit)")
 
     if not dry_run:
         # Failure detection: zero posts across EVERY group almost always means
@@ -137,9 +140,10 @@ def run(dry_run: bool) -> None:
         else:
             # Heartbeat digest — so silence means something broke, and you get a
             # one-line pulse of each run.
+            fb = f" · {llm.fallback_used} במודל מקומי" if llm.fallback_used else ""
             notifier.send(notifier._esc(
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
-                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות"))
+                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb))
 
 
 def main() -> None:

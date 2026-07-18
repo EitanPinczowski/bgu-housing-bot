@@ -119,20 +119,25 @@ def _is_quota_error(exc: Exception) -> bool:
 # we don't re-hit (and pay the retry-backoff on) an exhausted primary each post.
 # Fresh per run (each scheduled run is a new process, so it retries the primary).
 _primary_exhausted = False
+# How many extractions this run were served by the fallback — so the run summary
+# can tell you whether (and how hard) you're leaning on the local model.
+fallback_used = 0
 
 
 def extract(post_text: str) -> ListingExtract:
-    global _primary_exhausted
+    global _primary_exhausted, fallback_used
     primary = config.LLM_PROVIDER
     fallback = getattr(config, "LLM_FALLBACK_PROVIDER", None)
 
     if _primary_exhausted and fallback:
+        fallback_used += 1
         return _run(fallback, post_text)
     try:
         return _run(primary, post_text)
     except Exception as exc:
         if fallback and fallback != primary and _is_quota_error(exc):
             _primary_exhausted = True
+            fallback_used += 1
             print(f"[llm] {primary} quota reached — using {fallback} "
                   "for the rest of this run.")
             return _run(fallback, post_text)
