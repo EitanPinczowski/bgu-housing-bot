@@ -184,19 +184,36 @@ heartbeat when done, so **silence means something broke.**
 
 ### Schedule it ~2×/day (Windows Task Scheduler)
 
-The scraper is meant to run about twice a day — no more. Open **Task Scheduler**
-→ *Create Task* (not *Basic Task*):
+**Already set up.** A scheduled task named **`BGU Housing Scraper`** runs the
+scraper at **09:00** and **19:00** daily. It calls `run_scraper.cmd`, which pins
+the correct Python, sets UTF-8, and runs `python main.py --live`, appending all
+output to `data\scraper_runs.log`. The task is configured to *run only when
+you're logged on* (the browser is non-headless by design), to *start as soon as
+possible after a missed start* (your PC may be asleep), and to run on battery.
 
-- **General:** name it e.g. `BGU housing scraper`. Leave *Run only when user is
-  logged on* selected — the browser needs a visible desktop session (it is
-  non-headless by design).
-- **Triggers:** add two daily triggers (e.g. 09:00 and 19:00).
-- **Actions:** *Start a program*
-  - Program/script: `powershell.exe`
-  - Arguments: `-Command "cd 'C:\path\to\bgu_housing_bot'; python main.py --live"`
-- **Settings:** tick **“Run task as soon as possible after a scheduled start is
-  missed”** — your PC may be asleep at the trigger time. Leave *Stop the task if
-  it runs longer than* at a couple of hours as a safety net.
+Manage it from PowerShell:
+
+```powershell
+# see it / its next run time
+Get-ScheduledTask -TaskName "BGU Housing Scraper"
+Get-ScheduledTaskInfo -TaskName "BGU Housing Scraper"
+
+# run it right now to test (this does a real --live run: writes + Telegram)
+Start-ScheduledTask -TaskName "BGU Housing Scraper"
+
+# watch the log
+Get-Content data\scraper_runs.log -Tail 40 -Wait
+
+# change the times, disable, or remove
+Disable-ScheduledTask -TaskName "BGU Housing Scraper"
+Unregister-ScheduledTask -TaskName "BGU Housing Scraper" -Confirm:$false
+```
+
+To recreate it on another machine (or after editing), the exact registration
+command is in the project history; or use Task Scheduler's GUI → the task is
+under the root folder.
 
 OSRM only affects the displayed walk time, so the scraper still works if the
-OSRM Docker window isn't running — you just won't get walk minutes.
+OSRM Docker container isn't running — you just won't get walk minutes. The
+`osrm_bgu` container is set to restart with Docker Desktop; make sure Docker
+Desktop is set to start on login if you want walk times on scheduled runs.
