@@ -287,3 +287,13 @@ Desktop is set to start on login if you want walk times on scheduled runs.
 
 Alerts include the apartment **photos as an album** automatically when the post
 has several.
+
+### Alert buttons + listener
+
+Each alert carries **⭐ מעניין / 🗑 הסר** buttons. Tapping one records your triage
+in the `marks` table (SQLite) and the sheet's `mark` column. This is handled by
+**`bot_listener.py`**, a small always-on process that long-polls Telegram for the
+taps — it autostarts at login via a **Startup shortcut** ("BGU Bot Listener",
+windowless `pythonw`). It's the only process that *reads* Telegram; everything
+else only sends. If it's not running, taps just queue and are processed next
+time it starts. Run it by hand to see logs: `python bot_listener.py`.

@@ -24,9 +24,10 @@ from models import PipelineResult
 
 HEADERS = ["first_seen", "status", "tier", "price_per_room", "rooms_free",
            "roommates", "address", "walk_min", "gate", "lease_start", "contact",
-           "summary", "source_url", "group", "dedup_key"]
+           "summary", "source_url", "group", "dedup_key", "mark"]
 
-_DEDUP_COL = len(HEADERS)   # dedup_key is the last column
+_DEDUP_COL = HEADERS.index("dedup_key") + 1   # 1-based column of dedup_key
+_MARK_COL = HEADERS.index("mark") + 1         # user triage: saved / dismissed
 
 _ws = None            # cached worksheet handle
 _seen_keys = None     # cached set of dedup_keys already in the sheet
@@ -52,8 +53,8 @@ def _worksheet():
         import gspread
         gc = gspread.service_account(filename=cred)
         ws = gc.open_by_key(sheet_id).sheet1
-        if ws.acell("A1").value != HEADERS[0]:
-            ws.update([HEADERS], "A1")   # write header row once
+        if ws.row_values(1) != HEADERS:      # (re)write header if missing/outdated
+            ws.update([HEADERS], "A1")
         _ws = ws
         return ws
     except Exception as exc:
@@ -89,10 +90,23 @@ def save_listing(res: PipelineResult) -> None:
         e.total_roommates_in_apt, e.street_address_or_neighborhood,
         None if res.walk_minutes is None else round(res.walk_minutes),
         res.walk_gate, e.lease_start_date, e.contact_phone_or_link,
-        e.summary_hebrew, res.source_url, res.group, key,
+        e.summary_hebrew, res.source_url, res.group, key, "",   # trailing "" = mark
     ]
     try:
         ws.append_row(row, value_input_option="USER_ENTERED")
         _seen().add(key)
     except Exception as exc:
         print(f"[sheets] append failed: {exc}")
+
+
+def set_mark(dedup_key: str, mark: str) -> None:
+    """Record the user's ⭐/🗑 triage in the sheet's `mark` column for this row."""
+    ws = _worksheet()
+    if ws is None or not dedup_key:
+        return
+    try:
+        cell = ws.find(dedup_key)          # dedup_key is unique
+        if cell:
+            ws.update_cell(cell.row, _MARK_COL, mark)
+    except Exception as exc:
+        print(f"[sheets] set_mark failed: {exc}")

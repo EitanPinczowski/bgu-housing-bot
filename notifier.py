@@ -86,17 +86,27 @@ def _creds():
     return os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
 
 
-def send(text: str) -> bool:
+def _keyboard(dedup_key):
+    """The ⭐/🗑 triage buttons for a listing (handled by bot_listener.py)."""
+    if not dedup_key:
+        return None
+    return {"inline_keyboard": [[
+        {"text": "⭐ מעניין", "callback_data": f"save|{dedup_key}"},
+        {"text": "🗑 הסר", "callback_data": f"dismiss|{dedup_key}"},
+    ]]}
+
+
+def send(text: str, reply_markup=None) -> bool:
     token, chat_id = _creds()
     if not token or not chat_id:
         print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
         return False
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"},
-            timeout=15,
-        )
+            f"https://api.telegram.org/bot{token}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
         return True
     except Exception as exc:
@@ -104,20 +114,20 @@ def send(text: str) -> bool:
         return False
 
 
-def send_photo(photo_url: str, caption: str) -> bool:
+def send_photo(photo_url: str, caption: str, reply_markup=None) -> bool:
     """Send the alert as a photo with the details as caption (max 1024 chars —
     our alerts are well under). Returns False if it fails, so the caller can
     fall back to a plain text message (FB image URLs can expire / be blocked)."""
     token, chat_id = _creds()
     if not token or not chat_id:
         return False
+    payload = {"chat_id": chat_id, "photo": photo_url, "caption": caption,
+               "parse_mode": "MarkdownV2"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendPhoto",
-            json={"chat_id": chat_id, "photo": photo_url, "caption": caption,
-                  "parse_mode": "MarkdownV2"},
-            timeout=20,
-        )
+            f"https://api.telegram.org/bot{token}/sendPhoto", json=payload, timeout=20)
         r.raise_for_status()
         return True
     except Exception as exc:
@@ -155,12 +165,16 @@ def _send_alert(res: PipelineResult) -> None:
     photo if there's one, else text — each falling back to the next if it fails,
     so the alert always gets through."""
     text = format_alert(res)
+    kb = _keyboard(res.dedup_key)
     imgs = res.images or []
     if len(imgs) >= 2 and send_media_group(imgs, text):
+        # albums can't carry buttons — send them as a small follow-up message
+        if kb:
+            send("👆 פעולות לדירה שלמעלה:", reply_markup=kb)
         return
-    if len(imgs) >= 1 and send_photo(imgs[0], text):
+    if len(imgs) >= 1 and send_photo(imgs[0], text, reply_markup=kb):
         return
-    send(text)
+    send(text, reply_markup=kb)
 
 
 def _promising_near_miss(res: PipelineResult) -> bool:

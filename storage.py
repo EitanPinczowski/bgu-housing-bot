@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS listings (
     "group" TEXT,
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS marks (
+    dedup_key TEXT PRIMARY KEY,
+    mark TEXT,
+    ts TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -74,6 +79,20 @@ def is_url_seen(source_url: str) -> bool:
 
 def mark_url_seen(source_url: str) -> None:
     mark_seen("url:" + source_url)
+
+
+# User triage from the alert buttons: 'saved' (interested) / 'dismissed'.
+def set_mark(dedup_key: str, mark: str) -> None:
+    with _conn() as c:
+        c.execute("INSERT INTO marks(dedup_key, mark, ts) VALUES (?,?,CURRENT_TIMESTAMP) "
+                  "ON CONFLICT(dedup_key) DO UPDATE SET mark=excluded.mark, ts=CURRENT_TIMESTAMP",
+                  (dedup_key, mark))
+
+
+def get_mark(dedup_key: str) -> Optional[str]:
+    with _conn() as c:
+        row = c.execute("SELECT mark FROM marks WHERE dedup_key=?", (dedup_key,)).fetchone()
+        return row[0] if row else None
 
 
 def save_listing(res: PipelineResult) -> None:
