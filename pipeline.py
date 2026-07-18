@@ -25,8 +25,11 @@ def _blacklisted(location: Optional[str]) -> bool:
 
 
 def _missing_critical(e) -> bool:
+    # Price is deliberately NOT required: most posts omit it (negotiated in DMs),
+    # so requiring it would flag almost everything NEEDS_DATA. Rooms + street stay
+    # critical — they gate the >=2-rooms rule and the green-zone geocode. A known
+    # price is still enforced against MAX_PRICE_PER_ROOM_ILS in process_post.
     return (e.missing_critical_data
-            or e.price_per_room_ils is None
             or e.available_rooms_count is None
             or e.street_address_or_neighborhood is None)
 
@@ -56,10 +59,10 @@ def process_post(raw_text: str,
     if commit and source_url:
         storage.mark_url_seen(source_url)
 
-    def result(status: Status, reason: str = "", walk=None, lat=None, lon=None,
-               key=None, tier=None, preferred=None):
+    def result(status: Status, reason: str = "", walk=None, walk_gate=None,
+               lat=None, lon=None, key=None, tier=None, preferred=None):
         return PipelineResult(status=status, reason=reason, walk_minutes=walk,
-                              location_tier=tier, preferred=preferred,
+                              walk_gate=walk_gate, location_tier=tier, preferred=preferred,
                               lat=lat, lon=lon, dedup_key=key,
                               source_url=source_url, group=group, extract=e)
 
@@ -96,13 +99,13 @@ def process_post(raw_text: str,
     #    informational only now; your green zone + 500m buffer make the call.
     coords = geocode.geocode(e.street_address_or_neighborhood)
     lat, lon = (coords if coords else (None, None))
-    walk = osrm.walk_minutes(lat, lon)
+    walk, walk_gate = osrm.walk_to_nearest(lat, lon)
     tier = zones.classify_location(lat, lon)
     mark_seen(key)
 
     if tier == "RED":
         return result(Status.DROP, f"beyond {config.BUFFER_METERS:.0f}m of green zone",
-                      walk=walk, lat=lat, lon=lon, key=key, tier=tier, preferred=False)
+                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=False)
 
     # 6) classify. GREEN/AMBER + complete -> MATCH (amber = acceptable, not
     #    preferred). Missing fields or ungeocodable -> NEEDS_DATA, kept not lost.
@@ -112,18 +115,18 @@ def process_post(raw_text: str,
     if missing or tier == "UNKNOWN":
         reasons = []
         if missing:
-            reasons.append("missing price/rooms/street")
+            reasons.append("missing rooms/street")
         if tier == "UNKNOWN":
             reasons.append("location not geocoded")
         elif tier == "AMBER":
             reasons.append("within 500m of green zone (acceptable, not preferred)")
         res = result(Status.NEEDS_DATA, "; ".join(reasons),
-                     walk=walk, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
+                     walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
     else:
         label = ("in green zone (preferred)" if tier == "GREEN"
                  else "within 500m of green zone (acceptable, not preferred)")
         res = result(Status.MATCH, label,
-                     walk=walk, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
+                     walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
 
     if commit:
         storage.save_listing(res)

@@ -6,7 +6,7 @@ can be far from another. This is the ONLY place we convert to OSRM's (lon,lat)
 coordinate order.
 """
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 
@@ -28,10 +28,21 @@ def _foot_minutes(lat: float, lon: float, gate: dict) -> Optional[float]:
     return None
 
 
+def walk_to_nearest(lat: Optional[float], lon: Optional[float]
+                    ) -> Tuple[Optional[float], Optional[str]]:
+    """(minutes, gate name) for the CLOSEST configured gate, or (None, None).
+    The gate name (config.GATES[...]["name"], else the key) lets the alert say
+    which gate the walk time is to."""
+    if lat is None or lon is None:
+        return None, None
+    best_min, best_name = None, None
+    for key, g in config.GATES.items():
+        m = _foot_minutes(lat, lon, g)
+        if m is not None and (best_min is None or m < best_min):
+            best_min, best_name = m, g.get("name", key)
+    return best_min, best_name
+
+
 def walk_minutes(lat: Optional[float], lon: Optional[float]) -> Optional[float]:
     """Minimum walking minutes to the nearest configured gate, or None."""
-    if lat is None or lon is None:
-        return None
-    times = [m for g in config.GATES.values()
-             if (m := _foot_minutes(lat, lon, g)) is not None]
-    return min(times) if times else None
+    return walk_to_nearest(lat, lon)[0]

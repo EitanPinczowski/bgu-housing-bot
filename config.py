@@ -38,16 +38,18 @@ GREEN_ZONE_PATH = ROOT / "green_zone.json"
 BUFFER_METERS = 500
 
 # ---------------------------------------------------------------------------
-# Campus destinations (lat, lon). Reported walk time is the MINIMUM over all of
-# them — i.e. the shortest walk to any access point you actually use. These are
-# the real BGU gates + your department building, from Google Maps pins you sent.
-# Informational only (the green zone decides in/out). Add/remove points freely.
+# Campus gates (lat, lon, name). The alert reports the walk to the CLOSEST one
+# and names it ("12 דק׳ הליכה משער רגר"). Informational only — the green zone
+# decides in/out. "name" is what shows in Telegram.
+# Rager + Mexico coords are from the Google Maps pins you sent. Still need pins
+# for שער 90 (north) and שער סורוקה (south) — send the Maps links and I'll add
+# them (placeholders below).
 # ---------------------------------------------------------------------------
 GATES = {
-    "rager_north": {"lat": 31.2639703, "lon": 34.7992252},  # שער רגר צפוני
-    "mexico":      {"lat": 31.2623329, "lon": 34.8056559},  # שער מקסיקו
-    "aliya":       {"lat": 31.2612680, "lon": 34.8011969},  # שער העלייה
-    "se_building": {"lat": 31.2649620, "lon": 34.8020603},  # Software & Info Systems Eng bldg
+    "rager":  {"lat": 31.2639703, "lon": 34.7992252, "name": "שער רגר"},
+    "mexico": {"lat": 31.2623329, "lon": 34.8056559, "name": "שער מקסיקו"},
+    # "gate90": {"lat": 0.0, "lon": 0.0, "name": "שער 90"},       # north — TODO pin
+    # "soroka": {"lat": 0.0, "lon": 0.0, "name": "שער סורוקה"},   # south — TODO pin
 }
 
 # ---------------------------------------------------------------------------

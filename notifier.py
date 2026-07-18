@@ -27,26 +27,38 @@ def _esc_url(url) -> str:
 def format_alert(res: PipelineResult) -> str:
     e = res.extract
     if res.status == Status.MATCH:
-        header = "✅ *MATCH*" if res.preferred else "🟡 *MATCH \\(nearby\\)*"
+        header = "✅ *דירה מתאימה*" if res.preferred else "🟡 *דירה מתאימה* \\(קרוב לאזור\\)"
     else:
-        header = "⚠️ *NEEDS DATA*"
-    walk = f"{res.walk_minutes:.0f} דק׳ הליכה" if res.walk_minutes is not None else "מרחק לא ידוע"
-    lines = [
-        header,
-        _esc(e.summary_hebrew or ""),
-        "",
-        f"💰 {_esc(e.price_per_room_ils or '?')} ש\"ח לחדר",
-        f"🛏 {_esc(e.available_rooms_count or '?')} חדרים פנויים · {_esc(e.total_roommates_in_apt or '?')} שותפים",
-        f"📍 {_esc(e.street_address_or_neighborhood or '?')} · {_esc(walk)}",
-        f"📅 {_esc(e.lease_start_date or '?')}",
-        f"📞 {_esc(e.contact_phone_or_link or '?')}",
-    ]
+        header = "⚠️ *דירה — חסרים פרטים*"
+
+    lines = [header]
+    if e.summary_hebrew:
+        lines.append(_esc(e.summary_hebrew))
+    lines.append("")  # spacer between the summary and the details
+
+    price = f'{e.price_per_room_ils} ש"ח לחדר' if e.price_per_room_ils is not None else "מחיר לא צוין"
+    rooms = e.available_rooms_count if e.available_rooms_count is not None else "?"
+    mates = e.total_roommates_in_apt if e.total_roommates_in_apt is not None else "?"
+
+    lines.append(f"💰 {_esc(price)}")
+    lines.append(f"🛏 {_esc(rooms)} חדרים פנויים · {_esc(mates)} שותפים בדירה")
+    lines.append(f"📍 {_esc(e.street_address_or_neighborhood or 'לא צוין')}")
+
+    if res.walk_minutes is not None:
+        gate = f" מ{res.walk_gate}" if res.walk_gate else ""
+        lines.append(f"🚶 {_esc(f'{res.walk_minutes:.0f} דק׳ הליכה' + gate)}")
+    if e.lease_start_date:
+        lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
+    if e.contact_phone_or_link:
+        lines.append(f"📞 {_esc(e.contact_phone_or_link)}")
+
     # Always give a tappable link: the post permalink if we caught it, else the
     # group — so an alert is never a dead end.
     if res.source_url:
         lines.append(f"🔗 [צפייה בפוסט]({_esc_url(res.source_url)})")
     elif res.group:
         lines.append(f"🔗 [פתיחת הקבוצה]({_esc_url(res.group)})")
+
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")
         lines.append("_" + _esc(res.reason) + "_")
