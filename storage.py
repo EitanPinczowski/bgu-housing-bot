@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS listings (
     source_url TEXT,
     "group" TEXT,
     price_from_comment INTEGER DEFAULT 0,
+    score INTEGER,
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS marks (
@@ -51,6 +52,8 @@ def _conn() -> sqlite3.Connection:
     cols = {r[1] for r in c.execute("PRAGMA table_info(listings)").fetchall()}
     if "price_from_comment" not in cols:
         c.execute("ALTER TABLE listings ADD COLUMN price_from_comment INTEGER DEFAULT 0")
+    if "score" not in cols:
+        c.execute("ALTER TABLE listings ADD COLUMN score INTEGER")
     return c
 
 
@@ -106,11 +109,11 @@ def save_listing(res: PipelineResult) -> None:
         c.execute(
             """INSERT OR REPLACE INTO listings
                (dedup_key,status,location_tier,price_per_room,available_rooms,total_roommates,
-                address,walk_minutes,lease_start,contact,summary,source_url,"group",price_from_comment)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                address,walk_minutes,lease_start,contact,summary,source_url,"group",price_from_comment,score)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (res.dedup_key, res.status.value, res.location_tier,
              e.price_per_room_ils, e.available_rooms_count, e.total_roommates_in_apt,
              e.street_address_or_neighborhood, res.walk_minutes, e.lease_start_date,
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
-             1 if e.price_from_comment else 0),
+             1 if e.price_from_comment else 0, res.score),
         )

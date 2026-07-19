@@ -11,6 +11,7 @@ import re
 from typing import Optional
 
 import config
+import fit
 import geocode
 import llm
 import notifier
@@ -163,6 +164,9 @@ def process_post(raw_text: str,
                  else "within 500m of green zone (acceptable, not preferred)")
         res = result(Status.MATCH, label,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
+
+    res.score = fit.score(e.price_per_room_ils, walk, tier,
+                          e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment)
 
     if commit:
         storage.save_listing(res)

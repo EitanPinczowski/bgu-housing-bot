@@ -24,7 +24,7 @@ from models import PipelineResult
 
 HEADERS = ["first_seen", "status", "tier", "price_per_room", "rooms_free",
            "roommates", "address", "walk_min", "gate", "lease_start", "contact",
-           "summary", "source_url", "group", "dedup_key", "mark"]
+           "summary", "source_url", "group", "dedup_key", "mark", "score"]
 
 _DEDUP_COL = HEADERS.index("dedup_key") + 1   # 1-based column of dedup_key
 _MARK_COL = HEADERS.index("mark") + 1         # user triage: saved / dismissed
@@ -90,7 +90,7 @@ def save_listing(res: PipelineResult) -> None:
         e.total_roommates_in_apt, e.street_address_or_neighborhood,
         None if res.walk_minutes is None else round(res.walk_minutes),
         res.walk_gate, e.lease_start_date, e.contact_phone_or_link,
-        e.summary_hebrew, res.source_url, res.group, key, "",   # trailing "" = mark
+        e.summary_hebrew, res.source_url, res.group, key, "", res.score,   # "" = mark
     ]
     try:
         ws.append_row(row, value_input_option="USER_ENTERED")

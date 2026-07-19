@@ -33,6 +33,7 @@ class PipelineResult(BaseModel):
     reason: str = ""                 # why it was dropped / flagged
     walk_minutes: Optional[float] = None
     walk_gate: Optional[str] = None       # name of the nearest campus gate
+    score: Optional[int] = None           # 0–100 fit score (fit.py)
     location_tier: Optional[str] = None   # GREEN | AMBER | RED | UNKNOWN
     preferred: Optional[bool] = None      # True only for GREEN matches
     lat: Optional[float] = None

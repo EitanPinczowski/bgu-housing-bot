@@ -31,7 +31,7 @@ def _recent(days: int):
         rows = c.execute(
             """SELECT status, price_per_room, available_rooms, address, walk_minutes,
                       summary, source_url, "group", location_tier, total_roommates,
-                      price_from_comment
+                      price_from_comment, score
                FROM listings
                WHERE first_seen >= ? AND status IN ('MATCH', 'NEEDS_DATA')""",
             (since,),
@@ -41,7 +41,9 @@ def _recent(days: int):
 
 
 def _row_score(r) -> int:
-    # r = status,price,avail,addr,walk,summary,url,group,tier,total,price_from_comment
+    # r = status,price,avail,addr,walk,summary,url,group,tier,total,price_from_comment,score
+    if r[11] is not None:        # use the stored score; compute for older rows
+        return r[11]
     return fit.score(r[1], r[4], r[8], r[2], r[9], bool(r[10]))
 
 

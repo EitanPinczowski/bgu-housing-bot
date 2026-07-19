@@ -51,9 +51,10 @@ def format_alert(res: PipelineResult) -> str:
         header = "⚠️ *דירה — חסרים פרטים*"
 
     if res.status == Status.MATCH:                       # fit score (#4)
-        header += "  " + fit.stars(fit.score(
+        sc = res.score if res.score is not None else fit.score(
             e.price_per_room_ils, res.walk_minutes, res.location_tier,
-            e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment))
+            e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment)
+        header += "  " + fit.stars(sc)
     lines = [header]
     if e.summary_hebrew:
         lines.append(_esc(e.summary_hebrew))
