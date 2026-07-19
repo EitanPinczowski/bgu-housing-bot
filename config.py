@@ -83,6 +83,15 @@ BLACKLIST_NEIGHBORHOODS = [
     # TODO: add every red-area name from your map, incl. common misspellings
 ]
 
+# Neighborhoods where the 500m amber grace does NOT apply: anything OUTSIDE the
+# green polygon there is treated as RED (dropped), not amber. Matched against the
+# extracted address text (geresh/quote marks are ignored). A location still
+# scores GREEN if it's actually inside the polygon — this only removes the buffer.
+NO_AMBER_NEIGHBORHOODS = [
+    "שכונה ד",     # neighborhood ד' — outside the polygon here is red, no buffer
+    "שכונת ד",
+]
+
 # ---------------------------------------------------------------------------
 # OSRM — local, self-hosted foot-routing server (see README).
 # ---------------------------------------------------------------------------

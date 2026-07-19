@@ -47,6 +47,15 @@ def _blacklisted(location: Optional[str]) -> bool:
     return any(bad in location for bad in config.BLACKLIST_NEIGHBORHOODS)
 
 
+def _no_amber_area(location: Optional[str]) -> bool:
+    """True if the address is in a neighborhood that gets NO 500m amber grace
+    (e.g. שכונה ד'): outside the green polygon there is red, not amber."""
+    if not location:
+        return False
+    norm = location.replace("״", "").replace("׳", "").replace("'", "").replace("`", "")
+    return any(m in norm for m in config.NO_AMBER_NEIGHBORHOODS)
+
+
 def _missing_critical(e) -> bool:
     # NEEDS_DATA only when a field we truly need is absent: rooms (for the >=2
     # gate) or street/neighborhood (to geocode). We deliberately do NOT trust the
@@ -164,10 +173,17 @@ def process_post(raw_text: str,
     lat, lon = (coords if coords else (None, None))
     walk, walk_gate = osrm.walk_to_nearest(lat, lon)
     tier = zones.classify_location(lat, lon)
+    # No-amber neighborhoods (e.g. שכונה ד'): the buffer doesn't rescue them —
+    # outside the green polygon there = red.
+    no_amber = tier == "AMBER" and _no_amber_area(e.street_address_or_neighborhood)
+    if no_amber:
+        tier = "RED"
     mark_seen(key)
 
     if tier == "RED":
-        return result(Status.DROP, f"beyond {config.BUFFER_METERS:.0f}m of green zone",
+        reason = ("שכונה ד' מחוץ לפוליגון הירוק (ללא מרווח)" if no_amber
+                  else f"beyond {config.BUFFER_METERS:.0f}m of green zone")
+        return result(Status.DROP, reason,
                       walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=False)
 
     # 6) classify. GREEN/AMBER + complete -> MATCH (amber = acceptable, not
