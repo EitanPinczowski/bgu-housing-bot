@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import sys
 import time
@@ -44,7 +45,11 @@ def _select_groups() -> list[str]:
     groups = config.FB_GROUPS
     if not groups:
         return []
-    n = min(config.SCRAPER_GROUPS_PER_RUN, len(groups))
+    # a random fraction of all groups each run (⅓–½), so coverage varies
+    total = len(groups)
+    lo = max(1, math.ceil(total * config.SCRAPER_GROUPS_FRACTION[0]))
+    hi = max(lo, math.floor(total * config.SCRAPER_GROUPS_FRACTION[1]))
+    n = min(random.randint(lo, hi), total)
 
     offset = 0
     try:

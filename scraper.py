@@ -289,8 +289,10 @@ def scrape_group(page: Page, url: str) -> list[dict]:
     time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))  # let the feed hydrate
 
     collected: dict[str, dict] = {}
-    # read, then scroll — SCRAPER_MAX_SCROLLS scrolls means MAX_SCROLLS+1 reads
-    for _ in range(config.SCRAPER_MAX_SCROLLS + 1):
+    # read, then scroll. Do at least MAX_SCROLLS passes, and keep going (up to the
+    # hard cap) until we've gathered MIN_POSTS_PER_GROUP.
+    passes = 0
+    while True:
         for story in page.query_selector_all(_STORY_SELECTOR):
             try:
                 raw = story.inner_text() or ""
@@ -328,6 +330,10 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                     entry["comments"] = cmts
                 if len(text) > len(entry["text"]):   # See-more expanded it later
                     entry["text"] = text
+        passes += 1
+        enough = len(collected) >= config.SCRAPER_MIN_POSTS_PER_GROUP
+        if passes >= config.SCRAPER_SCROLL_CAP or (passes > config.SCRAPER_MAX_SCROLLS and enough):
+            break
         # Expand truncated posts AFTER reading, so the permalink/image are read
         # from the stable DOM first (clicking disrupts it) and the fuller text is
         # picked up on the next pass.

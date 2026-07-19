@@ -166,10 +166,17 @@ NEEDS_DATA_ONLY_PROMISING = True
 # ---------------------------------------------------------------------------
 SCRAPER_PROFILE_DIR = AUTH_DIR / "chrome_profile"  # persistent login session
 SCRAPER_HEADLESS = False                # never headless — see CLAUDE.md
-SCRAPER_MAX_SCROLLS = 6                  # how far down each group to scroll
+SCRAPER_MAX_SCROLLS = 6                  # normal scroll depth per group
+SCRAPER_SCROLL_CAP = 12                  # hard cap when still chasing MIN posts
+SCRAPER_MIN_POSTS_PER_GROUP = 5          # keep scrolling until at least this many
 SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
 SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
-SCRAPER_GROUPS_PER_RUN = 8               # rotating subset of FB_GROUPS per run
+# groups per run: a RANDOM fraction of all groups, between these bounds (⅓–½)
+SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
+
+# Each Telegram save/dismiss tap nudges a listing's score by this much, per user
+# (2 people saving in the group = +50), so the group's votes shape the ranking.
+MARK_SCORE_DELTA = 25
 # Only process posts newer than this many hours. FB shows relative times
 # (minutes/hours under 24h, then days/dates), which the scraper reads from the
 # post's timestamp link — so a 24h cutoff is exact. Posts whose age can't be

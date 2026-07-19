@@ -38,21 +38,20 @@ def _api(method: str, **params):
 def _handle(cb: dict) -> None:
     action, _, key = (cb.get("data") or "").partition("|")
     mark = _MARK.get(action)
-    if mark and key:
-        storage.set_mark(key, mark)
-        try:
-            sheets.set_mark(key, mark)
-        except Exception as exc:
-            print("[listener] sheet update failed:", exc)
-        _api("answerCallbackQuery", callback_query_id=cb["id"], text=_DONE[action])
-        msg = cb.get("message") or {}
-        if msg:
-            _api("editMessageReplyMarkup",
-                 chat_id=msg["chat"]["id"], message_id=msg["message_id"],
-                 reply_markup={"inline_keyboard": [[{"text": _DONE[action],
-                                                     "callback_data": "noop"}]]})
-    else:
+    user = str((cb.get("from") or {}).get("id", ""))
+    if not (mark and key and user):
         _api("answerCallbackQuery", callback_query_id=cb["id"])   # clear the spinner
+        return
+    # Record this person's vote (one per user), then reflect the group's net
+    # adjustment in the sheet's score. Buttons are left in place so others can vote.
+    storage.set_mark(key, user, mark)
+    adj = storage.mark_adjustment(key)
+    adj_s = f"+{adj}" if adj >= 0 else str(adj)
+    try:
+        sheets.set_mark(key, adj_s, storage.effective_score(key))
+    except Exception as exc:
+        print("[listener] sheet update failed:", exc)
+    _api("answerCallbackQuery", callback_query_id=cb["id"], text=f"{_DONE[action]} · ניקוד {adj_s}")
 
 
 def main() -> None:

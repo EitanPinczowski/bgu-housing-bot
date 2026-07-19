@@ -99,8 +99,9 @@ def save_listing(res: PipelineResult) -> None:
         print(f"[sheets] append failed: {exc}")
 
 
-def set_mark(dedup_key: str, mark: str) -> None:
-    """Record the user's ⭐/🗑 triage in the sheet's `mark` column for this row."""
+def set_mark(dedup_key: str, mark: str, score=None) -> None:
+    """Record the group's net vote in the sheet's `mark` column, and (optionally)
+    update the `score` column to the vote-adjusted effective score."""
     ws = _worksheet()
     if ws is None or not dedup_key:
         return
@@ -108,5 +109,7 @@ def set_mark(dedup_key: str, mark: str) -> None:
         cell = ws.find(dedup_key)          # dedup_key is unique
         if cell:
             ws.update_cell(cell.row, _MARK_COL, mark)
+            if score is not None:
+                ws.update_cell(cell.row, HEADERS.index("score") + 1, score)
     except Exception as exc:
         print(f"[sheets] set_mark failed: {exc}")

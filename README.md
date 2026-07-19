@@ -236,12 +236,15 @@ in `scraper.py` need retuning — they're all in one clearly-marked block). Only
 switch to `--live` once you trust it. On a live run it sends one Telegram
 heartbeat when done, so **silence means something broke.**
 
-### Schedule it ~2×/day (Windows Task Scheduler)
+### Schedule it hourly 08:00–20:00 (Windows Task Scheduler)
 
 **Already set up.** A scheduled task named **`BGU Housing Scraper`** runs the
-scraper at **09:00, 12:00, 15:00, and 18:00** daily, each with **up to 25 min of
-random delay** so the runs don't fire on the exact minute (clockwork timing is
-the main thing that looks automated to Facebook). It calls `run_scraper.cmd`,
+scraper **every hour from 08:00 to 20:00** daily (13 runs), each with **up to 25
+min of random delay** so the runs don't fire on the exact minute (clockwork
+timing is the main thing that looks automated to Facebook). Each run sweeps a
+random **⅓–½ of the groups** (`SCRAPER_GROUPS_FRACTION`) and keeps scrolling a
+group until it has at least **5 posts** (`SCRAPER_MIN_POSTS_PER_GROUP`, hard cap
+`SCRAPER_SCROLL_CAP`). It calls `run_scraper.cmd`,
 which pins the correct Python, sets UTF-8, and runs `python main.py --live`,
 appending all output to `data\scraper_runs.log`. The task is configured to *run
 only when you're logged on* (the browser is non-headless by design), to *start
@@ -281,9 +284,17 @@ Desktop is set to start on login if you want walk times on scheduled runs.
   each scrape. Checks OSRM + Ollama and pings Telegram if a dependency is down,
   so you can fix it before a run degrades. (Facebook-login loss is caught by the
   scraper's own "0 posts" alert.)
-- **`BGU Digest`** (`digest.py`) — Sundays at 20:00, sends a Telegram recap of the
-  last 7 days of listings from SQLite. Run any time by hand: `python digest.py 3`
-  (last 3 days). Change the schedule/cadence in Task Scheduler as you like.
+- **`BGU Morning`** (`top_listings.py 3 24`) — every day at 08:00, posts the
+  **top 3** listings of the last 24 h to Telegram as **full listings** (photo
+  album + details + ⭐/🗑 vote buttons), ranked by the **vote-adjusted** score.
+- **`BGU Digest`** (`top_listings.py 5 13`) — every evening at 20:00, posts the
+  **top 5 of the day** (last 13 h) the same way. Run either by hand, e.g.
+  `python top_listings.py 5 24` (top 5 over the last 24 h). The old text recap is
+  still there as `python digest.py 3` (last 3 days) if you want a plain list.
+
+Ranking uses the fit score (`fit.py`) **plus the group's votes**: each ⭐ on a
+listing adds `MARK_SCORE_DELTA` (25) and each 🗑 subtracts it, per person. Older
+tops may fall back to text if Facebook's photo URLs have since expired.
 
 Alerts include the apartment **photos as an album** automatically when the post
 has several.
