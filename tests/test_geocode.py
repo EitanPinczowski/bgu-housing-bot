@@ -39,9 +39,11 @@ def test_google_result_inside_box_is_used_and_cached(monkeypatch, tmp_path):
         calls["n"] += 1
         return _Resp(_gmap(31.255, 34.79))          # a point inside Be'er Sheva
     monkeypatch.setattr(requests, "get", fake_get)
-    assert geocode.geocode("הבלוק") == (31.255, 34.79)
+    # a name NOT in the static table, so it actually reaches (mocked) Google
+    q = "כתובת בדיקה ייחודית 999"
+    assert geocode.geocode(q) == (31.255, 34.79)
     # second lookup is served from cache — no extra HTTP call
-    assert geocode.geocode("הבלוק") == (31.255, 34.79)
+    assert geocode.geocode(q) == (31.255, 34.79)
     assert calls["n"] == 1
 
 
