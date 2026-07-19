@@ -72,19 +72,20 @@ def _to_result(r) -> PipelineResult:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     test = "--test" in sys.argv           # send to your own DM only, not the group
+    target = "primary" if test else "group"
     n = int(args[0]) if len(args) > 0 else 5
     hours = int(args[1]) if len(args) > 1 else 24
     rows = _top(n, hours)
     tag = " [בדיקה]" if test else ""
     if not rows:
         notifier.send(notifier._esc(f"אין דירות מובילות ב-{hours} השעות האחרונות.{tag}"),
-                      primary_only=test)
+                      target=target)
         print("no top listings")
         return
     notifier.send(notifier._esc(f"🏆 {len(rows)} הדירות המובילות ({hours} שעות אחרונות):{tag}"),
-                  primary_only=test)
+                  target=target)
     for r in rows:
-        notifier._send_alert(_to_result(r), primary_only=test)
+        notifier._send_alert(_to_result(r), target=target)
     print(f"posted top {len(rows)} over {hours}h{' (test/DM only)' if test else ''}")
 
 

@@ -25,7 +25,7 @@ import random
 import sys
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
@@ -38,7 +38,7 @@ import pipeline
 import scraper
 import sheets
 
-_ROTATION_PATH = config.DATA_DIR / "rotation.json"
+_SCRAPES_PATH = config.DATA_DIR / "group_scrapes.json"   # {url: [iso_ts, ...]}
 _SEARCH_LOG = config.DATA_DIR / "search_log.txt"
 
 
@@ -54,33 +54,56 @@ def _log_search(event: str, detail: str = "") -> None:
         print(f"[main] could not write search log: {exc}")
 
 
+def _load_scrapes() -> dict:
+    try:
+        return json.loads(_SCRAPES_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_scrapes(hist: dict) -> None:
+    try:
+        _SCRAPES_PATH.write_text(json.dumps(hist))
+    except Exception as exc:
+        print(f"[main] could not persist scrape history: {exc}")
+
+
+def _record_scrape(url: str) -> None:
+    """Timestamp a successful group read, and prune history older than 24h."""
+    hist = _load_scrapes()
+    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+    kept = [t for t in hist.get(url, []) if t >= cutoff]
+    kept.append(datetime.now().isoformat())
+    hist[url] = kept
+    _save_scrapes(hist)
+
+
+def _scrapes_last_24h(url: str, hist: dict, cutoff_iso: str) -> list:
+    return [t for t in hist.get(url, []) if t >= cutoff_iso]
+
+
 def _select_groups() -> list[str]:
-    """Return the next rotating subset of FB_GROUPS and advance the saved
-    offset. Wraps around so every group is covered over successive runs."""
+    """Pick the MOST-OVERDUE groups this run — fewest reads in the last 24h,
+    oldest first — sized so that across SCRAPER_RUNS_PER_DAY runs every group is
+    read at least SCRAPER_MIN_SCRAPES_PER_DAY times. Guarantees coverage instead
+    of leaving a quiet group unseen until its posts age out of the 24h window."""
     groups = config.FB_GROUPS
     if not groups:
         return []
-    # a random fraction of all groups each run (⅓–½), so coverage varies
     total = len(groups)
-    lo = max(1, math.ceil(total * config.SCRAPER_GROUPS_FRACTION[0]))
-    hi = max(lo, math.floor(total * config.SCRAPER_GROUPS_FRACTION[1]))
-    n = min(random.randint(lo, hi), total)
+    hist = _load_scrapes()
+    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+    counts = {g: len(_scrapes_last_24h(g, hist, cutoff)) for g in groups}
+    last = {g: max(_scrapes_last_24h(g, hist, cutoff), default="") for g in groups}
 
-    offset = 0
-    try:
-        offset = int(json.loads(_ROTATION_PATH.read_text()).get("offset", 0))
-    except Exception:
-        offset = 0
-    offset %= len(groups)
+    # enough groups per run to guarantee the daily minimum, plus a little jitter
+    need = math.ceil(total * config.SCRAPER_MIN_SCRAPES_PER_DAY / config.SCRAPER_RUNS_PER_DAY)
+    hi = max(need, math.ceil(total * config.SCRAPER_GROUPS_FRACTION[1]))
+    n = min(total, random.randint(need, hi))
 
-    # take n groups starting at offset, wrapping around
-    selected = [groups[(offset + i) % len(groups)] for i in range(n)]
-
-    try:
-        _ROTATION_PATH.write_text(json.dumps({"offset": (offset + n) % len(groups)}))
-    except Exception as exc:
-        print(f"[main] could not persist rotation offset: {exc}")
-    return selected
+    # most-overdue first: fewest reads in 24h, then longest since last read
+    order = sorted(groups, key=lambda g: (counts[g], last[g]))
+    return order[:n]
 
 
 def run(dry_run: bool) -> None:
@@ -122,6 +145,7 @@ def run(dry_run: bool) -> None:
                 print(f"[main] group failed, skipping: {exc}")
                 continue
             print(f"    {len(posts)} posts read")
+            _record_scrape(url)          # count this read toward the daily coverage
             if posts:
                 groups_with_posts += 1
             for post in posts:
@@ -174,7 +198,7 @@ def run(dry_run: bool) -> None:
             notifier.send(notifier._esc(
                 "⛔ פייסבוק חסמה את הסריקה (מסך אימות/התחברות). אל תריצו שוב — "
                 f"היכנסו ידנית והריצו login.py. סיבה: {blocked_reason}"),
-                primary_only=True)
+                target="primary")
         # Failure detection: zero posts across EVERY group almost always means
         # the session was logged out or FB changed its DOM — not a quiet day.
         # Send a distinct warning so silence stays trustworthy.
@@ -182,7 +206,7 @@ def run(dry_run: bool) -> None:
             notifier.send(notifier._esc(
                 "⚠️ הסקרייפר לא קרא אף פוסט מאף קבוצה. ייתכן שפייסבוק ניתקה את "
                 "החיבור (הריצו שוב את login.py) או ששינתה מבנה. בדקו את הלוג."),
-                primary_only=True)
+                target="primary")
         else:
             # Heartbeat digest — so silence means something broke, and you get a
             # one-line pulse of each run.
@@ -190,7 +214,7 @@ def run(dry_run: bool) -> None:
             notifier.send(notifier._esc(
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
                 f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
-                primary_only=True)
+                target="primary")
         # Keep the Google Sheet ordered best-first after this run's new rows.
         sheets.sort_by_score()
 

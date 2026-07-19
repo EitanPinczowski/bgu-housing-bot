@@ -245,7 +245,10 @@ heartbeat when done, so **silence means something broke.**
 scraper **every 2 hours from 08:00 to 20:00** daily (08/10/12/14/16/18/20, 7
 runs), each with **up to 25 min of random delay** so the runs don't fire on the
 exact minute (clockwork timing is the main thing that looks automated to
-Facebook). Each run sweeps a
+Facebook). Each run picks the **most-overdue groups** (fewest reads in the last
+24 h, oldest first), sized so every group is read at least
+`SCRAPER_MIN_SCRAPES_PER_DAY` (3) times a day — no group is left unseen until its
+posts age out. Each run sweeps a
 random **⅓–½ of the groups** (`SCRAPER_GROUPS_FRACTION`) and keeps scrolling a
 group until it has at least **5 posts** (`SCRAPER_MIN_POSTS_PER_GROUP`, hard cap
 `SCRAPER_SCROLL_CAP`). It calls `run_scraper.cmd`,
@@ -295,6 +298,15 @@ Desktop is set to start on login if you want walk times on scheduled runs.
   **top 5 of the day** (last 13 h) the same way. Run either by hand, e.g.
   `python top_listings.py 5 24` (top 5 over the last 24 h). The old text recap is
   still there as `python digest.py 3` (last 3 days) if you want a plain list.
+- **`BGU DM Digest`** (`dm_digest.py 1`) — every evening at 20:05, sends **to your
+  private DM only** the day's **unmapped locations** — names the bot extracted but
+  couldn't geocode (e.g. a new area nickname), most frequent first, so you can pin
+  the common ones to `geocode.STATIC_TABLE` and stop missing that area.
+
+**Where things go:** listings (scraper alerts + the morning/evening top-N) go to
+the **group**; operational pings and the DM digest go to **your private DM**.
+Routing is by chat-id sign (groups are negative, DMs positive). Each alert shows
+its numeric fit score next to the stars, e.g. `⭐⭐⭐⭐ (73)`.
 
 Ranking uses the fit score (`fit.py`) **plus the group's votes**: each ⭐ on a
 listing adds `MARK_SCORE_DELTA` (25) and each 🗑 subtracts it, per person. The

@@ -50,11 +50,12 @@ def format_alert(res: PipelineResult) -> str:
     else:
         header = "⚠️ *דירה — חסרים פרטים*"
 
-    if res.status == Status.MATCH:                       # fit score (#4)
-        sc = res.score if res.score is not None else fit.score(
-            e.price_per_room_ils, res.walk_minutes, res.location_tier,
-            e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment)
-        header += "  " + fit.stars(sc)
+    # Fit rating: stars + the numeric score (0–100), shown for matches and
+    # near-misses alike so you can see how strong each one is at a glance.
+    sc = res.score if res.score is not None else fit.score(
+        e.price_per_room_ils, res.walk_minutes, res.location_tier,
+        e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment)
+    header += f"  {fit.stars(sc)} \\({sc}\\)"
     lines = [header]
     if e.summary_hebrew:
         lines.append(_esc(e.summary_hebrew))
@@ -125,17 +126,32 @@ def _chat_ids():
     return [c.strip() for c in (os.environ.get("TELEGRAM_CHAT_ID") or "").split(",") if c.strip()]
 
 
-def _post_to_all(method: str, payload: dict, timeout: int, primary_only: bool = False):
-    """Send `payload` to every recipient (or just the first — your own DM — when
-    primary_only, for operational pings a shared group shouldn't get). Returns the
+def _recipients(target: str) -> list:
+    """Pick chat ids by role. Telegram group/channel ids are negative, personal
+    DMs positive — so we route by sign, not position:
+      'group'   -> listings go to the shared group only
+      'primary' -> your own DM only (operational pings, the daily DM digest)
+      'all'     -> everyone
+    Each falls back to the full list if that role isn't configured, so a message
+    is never silently dropped."""
+    ids = _chat_ids()
+    if not ids:
+        return []
+    if target == "primary":
+        return [c for c in ids if not c.lstrip().startswith("-")] or ids
+    if target == "group":
+        return [c for c in ids if c.lstrip().startswith("-")] or ids
+    return ids
+
+
+def _post_to_all(method: str, payload: dict, timeout: int, target: str = "all"):
+    """Send `payload` to the chosen recipients (see _recipients). Returns the
     first successful response JSON (truthy) or None (falsy), so callers can both
     test success and read file_ids out of it."""
-    token, ids = _token(), _chat_ids()
+    token, ids = _token(), _recipients(target)
     if not token or not ids:
         print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
         return None
-    if primary_only:
-        ids = ids[:1]
     first_ok = None
     for cid in ids:
         try:
@@ -210,24 +226,24 @@ def _alert_keyboard(res):
     return {"inline_keyboard": rows} if rows else None
 
 
-def send(text: str, reply_markup=None, primary_only: bool = False) -> bool:
+def send(text: str, reply_markup=None, target: str = "all") -> bool:
     payload = {"text": text, "parse_mode": "MarkdownV2"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return _post_to_all("sendMessage", payload, 15, primary_only=primary_only)
+    return _post_to_all("sendMessage", payload, 15, target=target)
 
 
 def send_photo(photo_url: str, caption: str, reply_markup=None,
-               primary_only: bool = False) -> bool:
+               target: str = "all") -> bool:
     """Send the alert as a photo with the details as caption. Returns False if it
     reaches no one, so the caller can fall back to a text message."""
     payload = {"photo": photo_url, "caption": caption, "parse_mode": "MarkdownV2"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return _post_to_all("sendPhoto", payload, 20, primary_only=primary_only)
+    return _post_to_all("sendPhoto", payload, 20, target=target)
 
 
-def send_media_group(photo_urls: list, caption: str, primary_only: bool = False) -> bool:
+def send_media_group(photo_urls: list, caption: str, target: str = "all") -> bool:
     """Send 2–10 photos as an album, details as the first photo's caption."""
     media = []
     for i, url in enumerate(photo_urls[:10]):
@@ -236,31 +252,31 @@ def send_media_group(photo_urls: list, caption: str, primary_only: bool = False)
             item["caption"] = caption
             item["parse_mode"] = "MarkdownV2"
         media.append(item)
-    return _post_to_all("sendMediaGroup", {"media": media}, 30, primary_only=primary_only)
+    return _post_to_all("sendMediaGroup", {"media": media}, 30, target=target)
 
 
-def _send_alert(res: PipelineResult, primary_only: bool = False) -> None:
+def _send_alert(res: PipelineResult, target: str = "group") -> None:
     """Send one listing alert: an album if there are several photos, a single
     photo if there's one, else text — each falling back to the next if it fails,
-    so the alert always gets through. primary_only keeps it in your own DM (for
-    testing without spamming a shared group)."""
+    so the alert always gets through. Listings default to the GROUP; pass
+    target='primary' to preview in your own DM without touching the group."""
     text = format_alert(res)
     kb = _alert_keyboard(res)
     imgs = res.images or []
     if len(imgs) >= 2:
-        resp = send_media_group(imgs, text, primary_only=primary_only)
+        resp = send_media_group(imgs, text, target=target)
         if resp:
             _remember_file_ids(res, _file_ids_from_response(resp))
             # albums can't carry buttons — send them as a small follow-up message
             if kb:
-                send("👆 פעולות לדירה שלמעלה:", reply_markup=kb, primary_only=primary_only)
+                send("👆 פעולות לדירה שלמעלה:", reply_markup=kb, target=target)
             return
     if len(imgs) >= 1:
-        resp = send_photo(imgs[0], text, reply_markup=kb, primary_only=primary_only)
+        resp = send_photo(imgs[0], text, reply_markup=kb, target=target)
         if resp:
             _remember_file_ids(res, _file_ids_from_response(resp))
             return
-    send(text, reply_markup=kb, primary_only=primary_only)
+    send(text, reply_markup=kb, target=target)
 
 
 def notify(res: PipelineResult) -> None:

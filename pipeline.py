@@ -31,6 +31,16 @@ def _text_sig(text: str) -> str:
     return "text:" + hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
 
 
+_TOKEN_RE = re.compile(r"[א-ת]{3,}")
+
+
+def _tokens(text: str) -> set:
+    """Set of Hebrew word tokens (≥3 letters) — the fingerprint used for fuzzy
+    cross-post dedup (catches the same flat reposted with slightly different text
+    / phone shown in only one copy)."""
+    return set(_TOKEN_RE.findall(text or ""))
+
+
 def _blacklisted(location: Optional[str]) -> bool:
     if not location:
         return False
@@ -90,6 +100,17 @@ def process_post(raw_text: str,
         return PipelineResult(status=Status.DROP, reason="already seen (text)",
                               source_url=source_url, group=group, images=images)
 
+    # 0d) Fuzzy cross-post dedup BEFORE the LLM: a near-identical repost of a flat
+    #     we already stored (same text, but a different permalink and the phone
+    #     shown in only one copy -> different exact keys) is caught here by text
+    #     similarity, saving both the duplicate row and the LLM call.
+    toks = _tokens(raw_text)
+    if commit:
+        dup = storage.find_similar(toks)
+        if dup:
+            return PipelineResult(status=Status.DROP, reason=f"cross-post duplicate of {dup}",
+                                  source_url=source_url, group=group, images=images)
+
     e = llm.extract(raw_text, comments=comments)
     if commit:
         storage.mark_seen(sig)
@@ -136,6 +157,10 @@ def process_post(raw_text: str,
     # 5) locate it: geocode -> tier (GREEN/AMBER/RED/UNKNOWN). OSRM minutes are
     #    informational only now; your green zone + 500m buffer make the call.
     coords = geocode.geocode(e.street_address_or_neighborhood)
+    # A name we HAVE but couldn't map -> log it so the daily DM digest can suggest
+    # pinning it to the static table (this is exactly how "הבלוק" was missed).
+    if commit and coords is None and e.street_address_or_neighborhood:
+        storage.record_unknown_location(e.street_address_or_neighborhood)
     lat, lon = (coords if coords else (None, None))
     walk, walk_gate = osrm.walk_to_nearest(lat, lon)
     tier = zones.classify_location(lat, lon)
@@ -168,10 +193,11 @@ def process_post(raw_text: str,
 
     res.score = fit.score(e.price_per_room_ils, walk, tier,
                           e.available_rooms_count, e.total_roommates_in_apt,
-                          e.price_from_comment, age_hours)
+                          e.price_from_comment, age_hours, e.lease_start_date)
 
     if commit:
         storage.save_listing(res)
+        storage.record_fingerprint(res.dedup_key, toks)   # for fuzzy dedup of reposts
         sheets.save_listing(res)   # optional Google Sheets sink (no-op if unset)
         notifier.notify(res)
     return res

@@ -40,6 +40,11 @@ TARGET_PRICE_PER_ROOM_ILS = 1500   # your budget — used by the ⭐ fit score
 MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
 MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
 MAX_WALK_MINUTES = 25             # OSRM edge safety-net (see below)
+# Preferred move-in month (1–12). Listings entering around this month score a
+# little higher — but this is deliberately the SMALLEST factor in the fit score
+# (max +4), so it only breaks ties, never overrides price/location/rooms. Your
+# target is 01/10, i.e. October. Set None to ignore entry dates entirely.
+TARGET_MOVE_IN_MONTH = 10
 
 # In-range is decided PRIMARILY by your hand-drawn green zone (point-in-polygon,
 # see green_zone.json / zones.py). OSRM walk time is informational + a safety
@@ -178,8 +183,16 @@ SCRAPER_SCROLL_CAP = 12                  # hard cap when still chasing MIN posts
 SCRAPER_MIN_POSTS_PER_GROUP = 5          # keep scrolling until at least this many
 SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
 SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
-# groups per run: a RANDOM fraction of all groups, between these bounds (⅓–½)
+# groups per run: a RANDOM fraction of all groups, between these bounds (⅓–½).
+# Now used as the UPPER bound / jitter around the coverage guarantee below.
 SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
+# Coverage guarantee: every group is read at least SCRAPER_MIN_SCRAPES_PER_DAY
+# times a day. Each run picks the most-overdue groups (fewest reads in the last
+# 24h, oldest first) and scrapes enough of them that, across SCRAPER_RUNS_PER_DAY
+# runs, no group is left behind. Raising the minimum reads more per run (more FB
+# activity) — keep it modest.
+SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h
+SCRAPER_MIN_SCRAPES_PER_DAY = 3     # each group read at least this often per day
 
 # Each Telegram save/dismiss tap nudges a listing's score by this much, per user
 # (2 people saving in the group = +50), so the group's votes shape the ranking.

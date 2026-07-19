@@ -51,7 +51,7 @@ _MIN_POST_CHARS = 40                         # shorter than this = not a real po
 # several formats: /groups/<id>/posts/<id>/, /permalink/, ?story_fbid=, and the
 # newer /stories/<set>/<base64>/ form — cover them all. Tracking query junk
 # (?comment_id=, __cft__, __tn__) is stripped by _permalink via split("?").
-_PERMALINK_HINTS = ("/posts/", "/permalink/", "/stories/", "story_fbid")
+_PERMALINK_HINTS = ("/posts/", "/permalink/", "/stories/", "story_fbid", "/share/")
 
 # Post photos: the biggest <img> in the story is the apartment photo. Skip small
 # avatars/emoji and non-photo CDN assets. Min side keeps out avatars (~40px).

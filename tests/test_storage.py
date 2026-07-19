@@ -52,3 +52,26 @@ def test_save_listing_persists_score(temp_db):
     k = "phone:3"
     storage.save_listing(_res(k))
     assert storage.base_score(k) == 80
+
+
+def test_unknown_locations_counts(temp_db):
+    storage.record_unknown_location("הבלוק")
+    storage.record_unknown_location("הבלוק")
+    storage.record_unknown_location("הרובע")
+    storage.record_unknown_location("  ")          # blank ignored
+    rows = storage.unknown_locations(days=7)
+    assert rows[0][0] == "הבלוק" and rows[0][1] == 2   # most frequent first
+    assert ("הרובע", 1) == (rows[1][0], rows[1][1])
+
+
+def test_fuzzy_dedup_matches_near_identical(temp_db):
+    base = set("דירת שלושה שותפים בשכונה מתפנים שני חדרים ממוזגת מרוהטת כניסה מיידית להשכרה".split())
+    storage.record_fingerprint("phone:9", base)
+    # a repost with one word changed / added -> still a duplicate
+    repost = set(list(base) + ["טלפון", "לפרטים"])
+    assert storage.find_similar(repost) == "phone:9"
+    # a genuinely different flat shares only a few generic words -> not a dup
+    other = set("דירת חדר יחיד סטודיו במרכז העיר קרוב לתחנה זולה משופצת".split())
+    assert storage.find_similar(other) is None
+    # too-short text is never fuzzy-matched
+    assert storage.find_similar({"דירה", "להשכרה"}) is None

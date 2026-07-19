@@ -10,10 +10,13 @@ import hashlib
 import json
 import re
 import sqlite3
+from datetime import datetime, timedelta
 from typing import Optional
 
 import config
 from models import ListingExtract, PipelineResult
+
+_NOW = "%Y-%m-%d %H:%M:%S"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen (
@@ -46,6 +49,16 @@ CREATE TABLE IF NOT EXISTS marks (
     mark TEXT,
     ts TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (dedup_key, user_id)
+);
+CREATE TABLE IF NOT EXISTS unknown_locations (
+    location TEXT PRIMARY KEY,
+    count INTEGER DEFAULT 0,
+    last_seen TEXT
+);
+CREATE TABLE IF NOT EXISTS post_fingerprints (
+    dedup_key TEXT PRIMARY KEY,
+    tokens TEXT,
+    first_seen TEXT
 );
 """
 
@@ -180,6 +193,62 @@ def get_file_ids(dedup_key: str) -> list:
         return json.loads(row[0]) if row and row[0] else []
     except Exception:
         return []
+
+
+# --- unknown locations: names the LLM extracted but geocoding couldn't map, so
+# you can pin the common ones to the static table (see the daily DM digest). ----
+def record_unknown_location(name: Optional[str]) -> None:
+    if not name or not name.strip():
+        return
+    with _conn() as c:
+        c.execute("INSERT INTO unknown_locations(location, count, last_seen) VALUES (?,1,?) "
+                  "ON CONFLICT(location) DO UPDATE SET count=count+1, last_seen=excluded.last_seen",
+                  (name.strip(), datetime.now().strftime(_NOW)))
+
+
+def unknown_locations(days: int = 7) -> list:
+    """[(location, count, last_seen)] seen in the last `days`, most frequent first."""
+    since = (datetime.now() - timedelta(days=days)).strftime(_NOW)
+    with _conn() as c:
+        return c.execute("SELECT location, count, last_seen FROM unknown_locations "
+                         "WHERE last_seen >= ? ORDER BY count DESC, last_seen DESC",
+                         (since,)).fetchall()
+
+
+# --- fuzzy cross-post dedup: a fingerprint (set of Hebrew word tokens) of each
+# saved listing's text, so a near-identical repost (same flat, phone shown in one
+# copy only) is caught even when the exact text-signature and dedup_key differ. --
+def record_fingerprint(dedup_key: str, tokens) -> None:
+    with _conn() as c:
+        c.execute("INSERT OR REPLACE INTO post_fingerprints(dedup_key, tokens, first_seen) "
+                  "VALUES (?,?,?)",
+                  (dedup_key, json.dumps(sorted(set(tokens))), datetime.now().strftime(_NOW)))
+
+
+def find_similar(tokens, days: int = 4, threshold: float = 0.72,
+                 min_tokens: int = 8) -> Optional[str]:
+    """dedup_key of a recently-saved listing whose token set is ≥ threshold
+    Jaccard-similar to `tokens`, else None. Skips very short posts (unreliable)."""
+    ts = set(tokens)
+    if len(ts) < min_tokens:
+        return None
+    since = (datetime.now() - timedelta(days=days)).strftime(_NOW)
+    best, best_sim = None, 0.0
+    with _conn() as c:
+        rows = c.execute("SELECT dedup_key, tokens FROM post_fingerprints WHERE first_seen >= ?",
+                         (since,)).fetchall()
+    for key, tj in rows:
+        try:
+            other = set(json.loads(tj))
+        except Exception:
+            continue
+        if len(other) < min_tokens:
+            continue
+        union = len(ts | other)
+        sim = (len(ts & other) / union) if union else 0.0
+        if sim >= threshold and sim > best_sim:
+            best, best_sim = key, sim
+    return best
 
 
 def save_listing(res: PipelineResult) -> None:

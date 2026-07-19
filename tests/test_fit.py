@@ -51,3 +51,21 @@ def test_unknown_age_is_neutral():
     # a manual paste has no age and must not be punished for it
     assert fit.score(1400, 10, "GREEN", 2, 3, age_hours=None) == \
            fit.score(1400, 10, "GREEN", 2, 3, age_hours=20)  # 18–36h band = 0
+
+
+def test_lease_month_parsing():
+    assert fit._lease_month("1.10") == 10
+    assert fit._lease_month("01/10") == 10
+    assert fit._lease_month("כניסה 1.9") == 9
+    assert fit._lease_month("כניסה בספטמבר") == 9
+    assert fit._lease_month("מיידי") is None
+    assert fit._lease_month(None) is None
+
+
+def test_entry_date_is_smallest_factor():
+    # target month is October (config.TARGET_MOVE_IN_MONTH = 10)
+    on = fit.score(1400, 10, "GREEN", 2, 3, lease_start="1.10")
+    adj = fit.score(1400, 10, "GREEN", 2, 3, lease_start="1.9")   # September, adjacent
+    off = fit.score(1400, 10, "GREEN", 2, 3, lease_start="1.3")   # March, far
+    assert on > adj > off                     # closer to target scores higher
+    assert on - off <= 4                       # ...but by at most 4 points (tiny)
