@@ -236,12 +236,13 @@ in `scraper.py` need retuning — they're all in one clearly-marked block). Only
 switch to `--live` once you trust it. On a live run it sends one Telegram
 heartbeat when done, so **silence means something broke.**
 
-### Schedule it hourly 08:00–20:00 (Windows Task Scheduler)
+### Schedule it every 2 h, 08:00–20:00 (Windows Task Scheduler)
 
 **Already set up.** A scheduled task named **`BGU Housing Scraper`** runs the
-scraper **every hour from 08:00 to 20:00** daily (13 runs), each with **up to 25
-min of random delay** so the runs don't fire on the exact minute (clockwork
-timing is the main thing that looks automated to Facebook). Each run sweeps a
+scraper **every 2 hours from 08:00 to 20:00** daily (08/10/12/14/16/18/20, 7
+runs), each with **up to 25 min of random delay** so the runs don't fire on the
+exact minute (clockwork timing is the main thing that looks automated to
+Facebook). Each run sweeps a
 random **⅓–½ of the groups** (`SCRAPER_GROUPS_FRACTION`) and keeps scrolling a
 group until it has at least **5 posts** (`SCRAPER_MIN_POSTS_PER_GROUP`, hard cap
 `SCRAPER_SCROLL_CAP`). It calls `run_scraper.cmd`,
