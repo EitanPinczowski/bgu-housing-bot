@@ -113,13 +113,14 @@ GEMINI_MODEL = "gemini-flash-lite-latest"
 # of your boundary (coarse), not pinpoint accuracy — street-level Nominatim in
 # Be'er Sheva is good enough for that. Unknown locations still flag NEEDS_DATA.
 # ---------------------------------------------------------------------------
-# Google Maps geocoding (optional, most accurate). Uses your EXISTING Google
-# Cloud project: enable "Geocoding API" (and, for slang place names like הבלוק,
-# also "Places API"), then put the key in .env as GOOGLE_MAPS_API_KEY. The free
-# tier ($200/mo credit) covers personal use many times over. No-op until the key
-# is set. Order: static table (below) -> Google -> Nominatim. Every distinct
-# location is cached to data/geocode_cache.json, so it's only ever billed once.
-USE_GOOGLE_GEOCODE = True
+# Google Maps geocoding (optional, most accurate) — OFF by default. It needs a
+# billing account (a card on file) even to use the free $200/mo credit, so it's
+# opt-in only. To enable: set this True, enable "Geocoding API" (+ "Places API"
+# for slang names) in your Google Cloud project, and put the key in .env as
+# GOOGLE_MAPS_API_KEY. Order when on: static table -> Google -> Nominatim, with
+# results cached to data/geocode_cache.json. Left False, the bot uses the free
+# path only (static table + Nominatim) and never touches a paid API.
+USE_GOOGLE_GEOCODE = False
 
 USE_NOMINATIM_FALLBACK = True
 NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"
