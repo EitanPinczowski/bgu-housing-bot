@@ -174,8 +174,10 @@ def process_post(raw_text: str,
     walk, walk_gate = osrm.walk_to_nearest(lat, lon)
     tier = zones.classify_location(lat, lon)
     # No-amber neighborhoods (e.g. שכונה ד'): the buffer doesn't rescue them —
-    # outside the green polygon there = red.
-    no_amber = tier == "AMBER" and _no_amber_area(e.street_address_or_neighborhood)
+    # outside the green polygon there = red. Caught geographically (point inside
+    # the ד' polygon) OR by address text (the post says שכונה ד').
+    no_amber = tier == "AMBER" and (zones.in_no_amber_zone(lat, lon)
+                                    or _no_amber_area(e.street_address_or_neighborhood))
     if no_amber:
         tier = "RED"
     mark_seen(key)

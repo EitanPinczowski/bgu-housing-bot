@@ -52,6 +52,10 @@ TARGET_MOVE_IN_MONTH = 10
 # as a borderline NEEDS_DATA rather than dropped, so a good one near the line
 # isn't lost to hand-drawing imprecision.
 GREEN_ZONE_PATH = ROOT / "green_zone.json"
+# Neighborhood polygons where the 500m amber buffer does NOT apply — outside the
+# green zone there is red (e.g. שכונה ד'). Same format as green_zone.json but a
+# list under "zones". Missing file = no such areas (feature simply off).
+NO_AMBER_ZONES_PATH = ROOT / "no_amber_zones.json"
 
 # Outside the green zone but within this distance of it = "acceptable, not
 # preferred" (still a match, flagged amber). Beyond it = dropped.
