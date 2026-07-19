@@ -215,7 +215,11 @@ def run(dry_run: bool) -> None:
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
                 f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
                 target="primary")
-        # Keep the Google Sheet ordered best-first after this run's new rows.
+        # Reconcile the sheet with the DB (catches any rows a per-post append
+        # dropped to a rate-limit blip), then keep it ordered best-first.
+        added = sheets.sync_from_db()
+        if added:
+            print(f"[main] sheet sync: appended {added} missing rows")
         sheets.sort_by_score()
 
     end_tag = "BLOCKED" if blocked_reason else ("LIVE" if not dry_run else "DRY")

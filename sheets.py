@@ -128,6 +128,56 @@ def save_listing(res: PipelineResult) -> None:
         print(f"[sheets] append failed: {exc}")
 
 
+def _row_from_db(r) -> list:
+    """Map a DB listings row (see the SELECT in sync_from_db) to a full 17-column
+    sheet row in HEADERS order. gate isn't stored in the DB (blank); the caller
+    fills dedup_key. Length MUST equal len(HEADERS) or columns misalign."""
+    (first_seen, status, tier, price, avail, total, addr, walk, lease,
+     contact, summary, url, group, score) = r
+    return [first_seen, status, tier, price, avail, total, addr,
+            None if walk is None else round(walk), "",   # gate
+            lease, contact, summary, url, group, "", "", score]   # dedup_key, mark, score
+
+
+def sync_from_db() -> int:
+    """Reconcile the sheet with the local DB: append every stored listing whose
+    dedup_key isn't in the sheet yet, in ONE batch. Self-healing — recovers rows
+    that a per-post append dropped to a rate-limit/transient error, and avoids
+    the burst of per-row calls that caused those errors. Returns rows added."""
+    import sqlite3
+    ws = _worksheet()
+    if ws is None:
+        return 0
+    try:
+        have = set(k for k in _retry(lambda: ws.col_values(_DEDUP_COL))[1:] if k.strip())
+    except Exception as exc:
+        print(f"[sheets] sync: could not read existing keys: {exc}")
+        return 0
+    with sqlite3.connect(config.DB_PATH) as c:
+        rows = c.execute(
+            """SELECT first_seen, status, location_tier, price_per_room, available_rooms,
+                      total_roommates, address, walk_minutes, lease_start, contact,
+                      summary, source_url, "group", score, dedup_key
+               FROM listings ORDER BY first_seen""").fetchall()
+    batch = []
+    for r in rows:
+        key = r[-1]
+        if key and key not in have:
+            row = _row_from_db(r[:-1])
+            row[HEADERS.index("dedup_key")] = key
+            batch.append(row)
+            have.add(key)
+    if not batch:
+        return 0
+    try:
+        _retry(lambda: ws.append_rows(batch, value_input_option="USER_ENTERED"))
+        _seen().update(r[HEADERS.index("dedup_key")] for r in batch)
+        return len(batch)
+    except Exception as exc:
+        print(f"[sheets] sync append failed: {exc}")
+        return 0
+
+
 def set_mark(dedup_key: str, mark: str, score=None) -> None:
     """Record the group's net vote in the sheet's `mark` column, and (optionally)
     update the `score` column to the vote-adjusted effective score."""
