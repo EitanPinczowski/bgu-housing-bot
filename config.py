@@ -35,7 +35,8 @@ PREFILTER_KEYWORDS = [
 # ---------------------------------------------------------------------------
 # Hard filter thresholds (from the spec)
 # ---------------------------------------------------------------------------
-MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities
+MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities (hard drop above)
+TARGET_PRICE_PER_ROOM_ILS = 1500   # your budget — used by the ⭐ fit score
 MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
 MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
 MAX_WALK_MINUTES = 25             # OSRM edge safety-net (see below)

@@ -30,14 +30,19 @@ def _recent(days: int):
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute(
             """SELECT status, price_per_room, available_rooms, address, walk_minutes,
-                      summary, source_url, "group", location_tier
+                      summary, source_url, "group", location_tier, total_roommates,
+                      price_from_comment
                FROM listings
                WHERE first_seen >= ? AND status IN ('MATCH', 'NEEDS_DATA')""",
             (since,),
         ).fetchall()
     # best-first: MATCHes above near-misses, each sorted by fit score
-    return sorted(rows, key=lambda r: ((r[0] == "MATCH"), fit.score(r[1], r[4], r[8])),
-                  reverse=True)
+    return sorted(rows, key=lambda r: ((r[0] == "MATCH"), _row_score(r)), reverse=True)
+
+
+def _row_score(r) -> int:
+    # r = status,price,avail,addr,walk,summary,url,group,tier,total,price_from_comment
+    return fit.score(r[1], r[4], r[8], r[2], r[9], bool(r[10]))
 
 
 _MSG_LIMIT = 3800   # stay under Telegram's 4096-char message cap
@@ -50,9 +55,9 @@ def build(rows, days: int) -> list[str]:
         return [esc(f"📋 סיכום {days} ימים אחרונים: לא נמצאו דירות מתאימות.")]
 
     def block(r) -> str:
-        status, price, rooms, addr, walk, summary, url, group, tier = r
+        status, price, rooms, addr, walk, summary, url, group, tier = r[:9]
         icon = "✅" if status == "MATCH" else "⚠️"
-        stars = fit.stars(fit.score(price, walk, tier))
+        stars = fit.stars(_row_score(r))
         price_s = f'{price} ש"ח לחדר' if price else "מחיר לא צוין"
         ls = [f"{icon} {stars} {esc(summary or addr or '?')}",
               f"   💰 {esc(price_s)} · 🛏 {esc(rooms if rooms is not None else '?')}"
