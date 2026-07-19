@@ -6,6 +6,8 @@ Order matters (cheap/decisive checks first):
   is_apartment_ad -> blacklist -> dedup -> hard field gates -> geocode+route
 """
 from __future__ import annotations
+import hashlib
+import re
 from typing import Optional
 
 import config
@@ -17,6 +19,15 @@ import sheets
 import storage
 import zones
 from models import PipelineResult, Status
+
+
+def _text_sig(text: str) -> str:
+    """Stable signature of a post's text, for deduping the SAME post re-read on a
+    later run (comment-less posts have no permalink to dedup on). Uses the first
+    ~150 chars — enough to identify the post, before any See-more expansion adds
+    to the end, so it matches whether or not the post was expanded."""
+    norm = re.sub(r"\s+", " ", (text or "")).strip()[:150]
+    return "text:" + hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
 
 
 def _blacklisted(location: Optional[str]) -> bool:
@@ -68,9 +79,20 @@ def process_post(raw_text: str,
         return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
                               source_url=source_url, group=group, images=images)
 
+    # 0c) Text-signature dedup BEFORE the LLM. A comment-less post has no permalink
+    #     to dedup on, so it's re-read every run; without this, inconsistent
+    #     extraction (phone found one run, not the next) makes a second row with a
+    #     different dedup_key. Keying on the post text collapses those.
+    sig = _text_sig(raw_text)
+    if commit and storage.is_seen(sig):
+        return PipelineResult(status=Status.DROP, reason="already seen (text)",
+                              source_url=source_url, group=group, images=images)
+
     e = llm.extract(raw_text, comments=comments)
-    if commit and source_url:
-        storage.mark_url_seen(source_url)
+    if commit:
+        storage.mark_seen(sig)
+        if source_url:
+            storage.mark_url_seen(source_url)
 
     def result(status: Status, reason: str = "", walk=None, walk_gate=None,
                lat=None, lon=None, key=None, tier=None, preferred=None):
