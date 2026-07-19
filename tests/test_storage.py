@@ -54,6 +54,23 @@ def test_save_listing_persists_score(temp_db):
     assert storage.base_score(k) == 80
 
 
+def test_post_archive_and_stats(temp_db):
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                       street_address_or_neighborhood="רגר 1")
+    match = PipelineResult(status=Status.MATCH, location_tier="GREEN", score=80,
+                           reason="ok", extract=e)
+    storage.record_post("sig1", "raw text", "", ["u1"], "grp", "http://x", e, match)
+    posts = storage.all_posts()
+    assert len(posts) == 1
+    assert posts[0]["verdict"] == "MATCH" and posts[0]["raw_text"] == "raw text"
+    # re-recording the same sig updates in place (no duplicate row)
+    drop = PipelineResult(status=Status.DROP, reason="too far", extract=e)
+    storage.record_post("sig1", "raw text", "", [], "grp", "http://x", e, drop)
+    assert len(storage.all_posts()) == 1
+    assert storage.verdict_counts() == {"DROP": 1}
+    assert storage.drop_reason_counts()[0][0] == "too far"
+
+
 def test_unknown_locations_counts(temp_db):
     storage.record_unknown_location("הבלוק")
     storage.record_unknown_location("הבלוק")

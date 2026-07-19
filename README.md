@@ -341,6 +341,27 @@ hand to see logs: `python bot_listener.py`.
   (`SCRAPER_SKIP_RUN_PROBABILITY`) so the cadence isn't clockwork; the skip is
   logged as a `SKIP` line in `data/search_log.txt` and sends no Telegram.
 
+### Introspection: stats + replay (no browser)
+
+Every post that reaches the LLM is archived (raw text + parsed fields + verdict)
+in the `posts` table, so you can see what the filters do and re-test changes
+against your whole history without re-scraping Facebook.
+
+```powershell
+python stats.py       # funnel: how many posts became MATCH/NEEDS_DATA/DROP/NOT_AD,
+                      # why they were dropped, store totals, top unmapped locations
+
+python replay.py      # re-run classify+score over EVERY archived post with the
+                      # current code+config, and list what changed. Reuses the
+                      # stored LLM parse -> fast, no browser, no Gemini quota.
+python replay.py --llm       # also re-run the LLM (for prompt/llm.py edits)
+python replay.py --changed   # only the posts whose verdict/score flipped
+```
+
+`replay.py` is the tuning workflow: after editing the green zone, `MAX_WALK_MINUTES`,
+`fit.py`, a threshold, etc., run it to see exactly which past listings flip —
+read-only, it never writes or sends anything.
+
 ### Tests
 
 Fast, offline unit tests cover the deterministic, historically-buggy bits — the

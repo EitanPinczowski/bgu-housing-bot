@@ -126,6 +126,18 @@ def process_post(raw_text: str,
         if source_url:
             storage.mark_url_seen(source_url)
 
+    res = _classify(e, raw_text, source_url, group, images, age_hours, commit)
+    if commit:
+        storage.record_post(sig, raw_text, comments, images, group, source_url, e, res)
+    return res
+
+
+def _classify(e, raw_text: str, source_url, group, images: list,
+              age_hours, commit: bool) -> PipelineResult:
+    """Steps 1-6: grade an already-extracted listing into a PipelineResult,
+    and (when commit) persist + notify. Split out so replay.py can re-run it
+    on a STORED extract -- re-testing zone/threshold/scoring changes with no
+    browser and no LLM call. commit=False = pure, side-effect-free classify."""
     def result(status: Status, reason: str = "", walk=None, walk_gate=None,
                lat=None, lon=None, key=None, tier=None, preferred=None):
         return PipelineResult(status=status, reason=reason, walk_minutes=walk,
@@ -217,7 +229,7 @@ def process_post(raw_text: str,
 
     if commit:
         storage.save_listing(res)
-        storage.record_fingerprint(res.dedup_key, toks)   # for fuzzy dedup of reposts
+        storage.record_fingerprint(res.dedup_key, _tokens(raw_text))   # for fuzzy dedup of reposts
         sheets.save_listing(res)   # optional Google Sheets sink (no-op if unset)
         notifier.notify(res)
     return res

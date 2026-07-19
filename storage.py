@@ -60,6 +60,20 @@ CREATE TABLE IF NOT EXISTS post_fingerprints (
     tokens TEXT,
     first_seen TEXT
 );
+CREATE TABLE IF NOT EXISTS posts (
+    sig TEXT PRIMARY KEY,
+    raw_text TEXT,
+    comments TEXT,
+    images TEXT,
+    "group" TEXT,
+    source_url TEXT,
+    parsed_json TEXT,
+    verdict TEXT,
+    reason TEXT,
+    tier TEXT,
+    score INTEGER,
+    first_seen TEXT
+);
 """
 
 
@@ -249,6 +263,50 @@ def find_similar(tokens, days: int = 4, threshold: float = 0.72,
         if sim >= threshold and sim > best_sim:
             best, best_sim = key, sim
     return best
+
+
+# --- raw-post archive: every post that reached the LLM, with its parsed fields
+# and final verdict. Lets us re-run classification/scoring against history WITHOUT
+# re-scraping Facebook (replay.py), and powers the --stats funnel (stats.py). ---
+def record_post(sig: str, raw_text: str, comments, images, group, source_url,
+                extract, res: PipelineResult) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO posts
+               (sig, raw_text, comments, images, "group", source_url, parsed_json,
+                verdict, reason, tier, score, first_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(sig) DO UPDATE SET
+                 raw_text=excluded.raw_text, comments=excluded.comments, images=excluded.images,
+                 "group"=excluded."group", source_url=excluded.source_url,
+                 parsed_json=excluded.parsed_json, verdict=excluded.verdict,
+                 reason=excluded.reason, tier=excluded.tier, score=excluded.score""",
+            (sig, raw_text, comments or "", json.dumps(images or []), group, source_url,
+             extract.model_dump_json() if extract else None,
+             res.status.value, res.reason, res.location_tier, res.score))
+
+
+def all_posts() -> list:
+    """Every archived post as a dict, newest first — for replay.py."""
+    with _conn() as c:
+        cur = c.execute("""SELECT sig, raw_text, comments, images, "group", source_url,
+                                  parsed_json, verdict, reason, tier, score, first_seen
+                           FROM posts ORDER BY first_seen DESC""")
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def verdict_counts() -> dict:
+    """Counts of archived posts per verdict (status) — for stats.py."""
+    with _conn() as c:
+        return dict(c.execute("SELECT verdict, COUNT(*) FROM posts GROUP BY verdict").fetchall())
+
+
+def drop_reason_counts() -> list:
+    """(reason, count) for DROP verdicts, most common first — the funnel detail."""
+    with _conn() as c:
+        return c.execute("SELECT reason, COUNT(*) c FROM posts WHERE verdict='DROP' "
+                         "GROUP BY reason ORDER BY c DESC").fetchall()
 
 
 def save_listing(res: PipelineResult) -> None:
