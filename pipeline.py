@@ -52,6 +52,7 @@ def process_post(raw_text: str,
                  group: Optional[str] = None,
                  images: Optional[list] = None,
                  comments: Optional[str] = None,
+                 age_hours: Optional[float] = None,
                  commit: bool = True) -> PipelineResult:
     """Run one post through the funnel.
 
@@ -166,7 +167,8 @@ def process_post(raw_text: str,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
 
     res.score = fit.score(e.price_per_room_ils, walk, tier,
-                          e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment)
+                          e.available_rooms_count, e.total_roommates_in_apt,
+                          e.price_from_comment, age_hours)
 
     if commit:
         storage.save_listing(res)

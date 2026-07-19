@@ -183,6 +183,11 @@ MARK_SCORE_DELTA = 25
 # read (timestamp not rendered) are KEPT, not dropped, so a recent listing is
 # never lost to a missed timestamp. Set to None to disable the age filter.
 SCRAPER_MAX_POST_AGE_HOURS = 24
+# Occasionally skip a scheduled LIVE run entirely (~1 in 8), so the 7×/day
+# cadence isn't perfectly periodic — a real person doesn't check like clockwork.
+# The skip is logged (SKIP line in data/search_log.txt) and sends no Telegram, so
+# it just looks like a quiet slot. 0 disables. Only affects --live runs.
+SCRAPER_SKIP_RUN_PROBABILITY = 0.12
 # Click "See more" to expand truncated long posts before reading them, so buried
 # details (price, dates) aren't lost. This is the ONLY place the scraper clicks
 # anything — it's a harmless in-place expand, not a post/comment/like, but it is

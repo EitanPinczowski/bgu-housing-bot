@@ -53,10 +53,14 @@ def _to_result(r) -> PipelineResult:
         street_address_or_neighborhood=d["address"], lease_start_date=d["lease_start"],
         contact_phone_or_link=d["contact"], price_from_comment=bool(d["price_from_comment"]),
         summary_hebrew=d["summary"])
-    try:
-        imgs = json.loads(d["images"]) if d["images"] else []
-    except Exception:
-        imgs = []
+    # Prefer Telegram file_ids (permanent) over the Facebook URLs (which expire),
+    # so an older top listing still posts with its photo album.
+    imgs = storage.get_file_ids(d["dedup_key"])
+    if not imgs:
+        try:
+            imgs = json.loads(d["images"]) if d["images"] else []
+        except Exception:
+            imgs = []
     return PipelineResult(
         status=Status.MATCH, preferred=(d["location_tier"] == "GREEN"),
         location_tier=d["location_tier"], walk_minutes=d["walk_minutes"],

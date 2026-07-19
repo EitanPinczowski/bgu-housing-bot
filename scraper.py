@@ -106,6 +106,37 @@ _TS_ABS = re.compile(r"([a-z]{3,})\s+(\d{1,2})(?:,\s*(\d{4}))?[^\d]*?"
 _NUM_RE = re.compile(r"^\+?\d[\d,]*$")       # like counts, "+5", "1,234"
 _HEBREW_RE = re.compile(r"[֐-׿]")  # at least one Hebrew letter
 
+# --- Facebook block / checkpoint detection (part of the FRAGILE surface) ------
+# If FB decides the account looks automated it redirects to a checkpoint /
+# login / "confirm it's you" page instead of the feed. Hammering that page is
+# what escalates a soft warning into a hard block, so we detect it and ABORT the
+# whole run (main.py alerts you to re-login) rather than scrolling a dead page.
+_BLOCK_URL_MARKERS = ("/checkpoint", "login.php", "/login/", "login/?",
+                      "two_step_verification", "/confirmemail", "/recover",
+                      "account_disabled", "/help/contact")
+# A visible password field means we were bounced to the logged-out login screen.
+_BLOCK_DOM_SELECTOR = 'input[name="pass"], input[name="encpass"], input[type="password"]'
+
+
+class FacebookBlock(Exception):
+    """Raised when FB shows a checkpoint/login/verification wall instead of the
+    feed. main.py stops the run and warns you — do NOT retry into it."""
+
+
+def _blocked_reason(page) -> Optional[str]:
+    """A human-readable reason if the page is a checkpoint/login wall, else None."""
+    url = (page.url or "").lower()
+    for m in _BLOCK_URL_MARKERS:
+        if m in url:
+            return f"redirected to {m}"
+    try:
+        if page.query_selector(_BLOCK_DOM_SELECTOR):
+            return "login form present (session logged out)"
+    except Exception:
+        pass
+    return None
+# -----------------------------------------------------------------------------
+
 
 def open_browser():
     """Launch a non-headless persistent context from the saved login profile.
@@ -280,9 +311,17 @@ def scrape_group(page: Page, url: str) -> list[dict]:
         url = url + ("&" if "?" in url else "?") + _SORT_PARAM
 
     page.goto(url, wait_until="domcontentloaded")
+    # Bail immediately if FB bounced us to a checkpoint/login wall — never retry.
+    blocked = _blocked_reason(page)
+    if blocked:
+        raise FacebookBlock(blocked)
     try:
         page.wait_for_selector(_FEED_SELECTOR, timeout=15000)
     except PWTimeout:
+        # A wall can also appear as "no feed" — check once more before giving up.
+        blocked = _blocked_reason(page)
+        if blocked:
+            raise FacebookBlock(blocked)
         print(f"[scraper] no feed appeared for {url} "
               "(login expired? not a member? group layout changed?)")
         return []
@@ -305,22 +344,25 @@ def scrape_group(page: Page, url: str) -> list[dict]:
             # FB often renders a post's body before its timestamp/permalink
             # anchor. Backfill the permalink when a later pass exposes it.
             key = text[:80]
-            # age filter: skip posts we can READ as >= the cutoff. A post's
-            # timestamp may only render on a LATER pass, so also drop one we'd
-            # already added if a later read reveals it's old. Unknown age is
-            # kept, so a recent listing is never lost to a missed timestamp.
-            if config.SCRAPER_MAX_POST_AGE_HOURS is not None:
-                age = _post_age_hours(story)
-                if age is not None and age >= config.SCRAPER_MAX_POST_AGE_HOURS:
-                    collected.pop(key, None)
-                    continue  # "1d"+ => 24h or older => outside the last 24h
+            # Read the post's age once (also used by the score's freshness
+            # factor). A post's timestamp may only render on a LATER pass, so it
+            # can be None here and known later.
+            age = _post_age_hours(story)
+            # age filter: skip posts we can READ as >= the cutoff. Because the
+            # timestamp may render late, also drop one we'd already added if a
+            # later read reveals it's old. Unknown age is kept, so a recent
+            # listing is never lost to a missed timestamp.
+            if (config.SCRAPER_MAX_POST_AGE_HOURS is not None
+                    and age is not None and age >= config.SCRAPER_MAX_POST_AGE_HOURS):
+                collected.pop(key, None)
+                continue  # "1d"+ => 24h or older => outside the last 24h
             link = _permalink(story)
             imgs = _images(story)
             cmts = _comments(story)
             entry = collected.get(key)
             if entry is None:
                 collected[key] = {"text": text, "permalink": link,
-                                  "images": imgs, "comments": cmts}
+                                  "images": imgs, "comments": cmts, "age_hours": age}
             else:  # backfill fields that render / expand on a later pass
                 if entry["permalink"] is None and link:
                     entry["permalink"] = link
@@ -330,6 +372,8 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                     entry["comments"] = cmts
                 if len(text) > len(entry["text"]):   # See-more expanded it later
                     entry["text"] = text
+                if entry.get("age_hours") is None and age is not None:
+                    entry["age_hours"] = age         # backfill a late-rendered time
         passes += 1
         enough = len(collected) >= config.SCRAPER_MIN_POSTS_PER_GROUP
         if passes >= config.SCRAPER_SCROLL_CAP or (passes > config.SCRAPER_MAX_SCROLLS and enough):

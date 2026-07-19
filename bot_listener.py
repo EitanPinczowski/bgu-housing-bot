@@ -37,6 +37,33 @@ def _api(method: str, **params):
                          json=params, timeout=45)
 
 
+def _update_tally(cb: dict, key: str) -> None:
+    """Rewrite the vote buttons on THIS message to show live counts, e.g.
+    '⭐ מעניין (3)' / '🗑 הסר (1)'. Reuses the message's existing keyboard so the
+    map/WhatsApp/post URL buttons are preserved; only the two vote buttons change."""
+    msg = cb.get("message") or {}
+    kb = (msg.get("reply_markup") or {}).get("inline_keyboard")
+    if not kb or "message_id" not in msg:
+        return
+    counts = storage.mark_counts(key)
+    changed = False
+    for row in kb:
+        for btn in row:
+            data = btn.get("callback_data", "")
+            if data == f"save|{key}":
+                btn["text"] = f"⭐ מעניין ({counts['saved']})"
+                changed = True
+            elif data == f"dismiss|{key}":
+                btn["text"] = f"🗑 הסר ({counts['dismissed']})"
+                changed = True
+    if changed:
+        try:
+            _api("editMessageReplyMarkup", chat_id=msg["chat"]["id"],
+                 message_id=msg["message_id"], reply_markup={"inline_keyboard": kb})
+        except Exception as exc:
+            print("[listener] tally update failed:", exc)
+
+
 def _handle(cb: dict) -> None:
     action, _, key = (cb.get("data") or "").partition("|")
     mark = _MARK.get(action)
@@ -59,6 +86,7 @@ def _handle(cb: dict) -> None:
         sheets.set_mark(key, adj_s, storage.effective_score(key))
     except Exception as exc:
         print("[listener] sheet update failed:", exc)
+    _update_tally(cb, key)   # show the new counts on the buttons
     _api("answerCallbackQuery", callback_query_id=cb["id"], text=f"{_DONE[action]} · ניקוד {adj_s}")
 
 

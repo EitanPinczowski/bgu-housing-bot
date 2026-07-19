@@ -84,6 +84,11 @@ def _select_groups() -> list[str]:
 
 def run(dry_run: bool) -> None:
     mode = "DRY RUN" if dry_run else "LIVE"
+    # Occasionally skip a live run so the cadence isn't clockwork (see config).
+    if not dry_run and random.random() < config.SCRAPER_SKIP_RUN_PROBABILITY:
+        _log_search("SKIP", "random human-like skip")
+        print("skipping this run (random human-like skip)")
+        return
     started = time.monotonic()
     selected = _select_groups()
     _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
@@ -97,6 +102,7 @@ def run(dry_run: bool) -> None:
     counts: Counter[str] = Counter()
     total_posts = 0
     groups_with_posts = 0          # for failure detection (0 across all => trouble)
+    blocked_reason = None          # set if FB shows a checkpoint/login wall
 
     p, context = scraper.open_browser()
     try:
@@ -105,6 +111,11 @@ def run(dry_run: bool) -> None:
             print(f"--- group {i + 1}/{len(selected)}: {url}")
             try:
                 posts = scraper.scrape_group(page, url)
+            except scraper.FacebookBlock as exc:
+                # A checkpoint/login wall — stop the ENTIRE run, do not retry.
+                blocked_reason = str(exc)
+                print(f"[main] FACEBOOK BLOCK: {blocked_reason} — aborting run")
+                break
             except Exception as exc:
                 # one bad group must not kill the whole run
                 print(f"[main] group failed, skipping: {exc}")
@@ -121,6 +132,7 @@ def run(dry_run: bool) -> None:
                         group=url,
                         images=post.get("images") or [],
                         comments=post.get("comments") or "",
+                        age_hours=post.get("age_hours"),
                         commit=not dry_run,
                     )
                     counts[res.status.value] += 1
@@ -152,11 +164,20 @@ def run(dry_run: bool) -> None:
     if llm.fallback_used:
         print(f"  (served by local fallback: {llm.fallback_used} — Gemini quota was hit)")
 
+    if blocked_reason:
+        print(f"run ABORTED — Facebook block: {blocked_reason}")
     if not dry_run:
+        if blocked_reason:
+            # A checkpoint/login wall — the account needs a manual re-login. This
+            # is the one condition where you must act before the next run.
+            notifier.send(notifier._esc(
+                "⛔ פייסבוק חסמה את הסריקה (מסך אימות/התחברות). אל תריצו שוב — "
+                f"היכנסו ידנית והריצו login.py. סיבה: {blocked_reason}"),
+                primary_only=True)
         # Failure detection: zero posts across EVERY group almost always means
         # the session was logged out or FB changed its DOM — not a quiet day.
         # Send a distinct warning so silence stays trustworthy.
-        if groups_with_posts == 0:
+        elif groups_with_posts == 0:
             notifier.send(notifier._esc(
                 "⚠️ הסקרייפר לא קרא אף פוסט מאף קבוצה. ייתכן שפייסבוק ניתקה את "
                 "החיבור (הריצו שוב את login.py) או ששינתה מבנה. בדקו את הלוג."),
@@ -170,9 +191,12 @@ def run(dry_run: bool) -> None:
                 f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
                 primary_only=True)
 
-    _log_search("END", f"{'LIVE' if not dry_run else 'DRY'}  {time.monotonic() - started:.0f}s  "
+    end_tag = "BLOCKED" if blocked_reason else ("LIVE" if not dry_run else "DRY")
+
+    _log_search("END", f"{end_tag}  {time.monotonic() - started:.0f}s  "
                        f"posts={total_posts} match={matches} needs={needs} "
-                       f"groups_ok={groups_with_posts}/{len(selected)}")
+                       f"groups_ok={groups_with_posts}/{len(selected)}"
+                       + (f"  block={blocked_reason}" if blocked_reason else ""))
 
 
 def main() -> None:

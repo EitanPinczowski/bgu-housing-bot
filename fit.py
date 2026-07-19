@@ -8,6 +8,7 @@ Factors (higher = better):
   • price:         vs your budget (config.TARGET_PRICE_PER_ROOM_ILS)
   • available rooms: the whole apartment free is best (avail / total)
   • total roommates: 2 is best, then 3, then 4, then more
+  • freshness:      a just-posted listing beats a day-old repost
   • uncertainty:   unknown price, or a price taken from a comment, is penalized
 Star thresholds are deliberately strict so 5⭐ means genuinely excellent.
 """
@@ -19,7 +20,7 @@ import config
 
 def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
-          price_uncertain: bool = False) -> int:
+          price_uncertain: bool = False, age_hours: Optional[float] = None) -> int:
     s = 0
 
     # zone
@@ -56,6 +57,11 @@ def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
         s += 15 if total_mates <= 2 else 10 if total_mates == 3 else 5 if total_mates == 4 else 0
     else:
         s += 5
+
+    # freshness — centered so it rewards a brand-new post and penalizes a stale
+    # repost, without just inflating every score. Unknown age (manual paste) = 0.
+    if age_hours is not None:
+        s += 4 if age_hours < 6 else 2 if age_hours < 18 else 0 if age_hours < 36 else -4
 
     # penalize uncertainty
     if price is None:

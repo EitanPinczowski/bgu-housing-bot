@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS listings (
     price_from_comment INTEGER DEFAULT 0,
     score INTEGER,
     images TEXT,
+    file_ids TEXT,
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS marks (
@@ -60,6 +61,8 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE listings ADD COLUMN score INTEGER")
     if "images" not in cols:
         c.execute("ALTER TABLE listings ADD COLUMN images TEXT")
+    if "file_ids" not in cols:
+        c.execute("ALTER TABLE listings ADD COLUMN file_ids TEXT")
     # marks became per-user (dedup_key,user_id); recreate the old single-mark table
     mcols = {r[1] for r in c.execute("PRAGMA table_info(marks)").fetchall()}
     if "user_id" not in mcols:
@@ -122,13 +125,19 @@ def set_mark(dedup_key: str, user_id, mark: str) -> bool:
         return cur.rowcount > 0
 
 
-def mark_adjustment(dedup_key: str) -> int:
-    """Net score delta from the group's votes: +MARK_SCORE_DELTA per person who
-    saved, -MARK_SCORE_DELTA per person who dismissed."""
+def mark_counts(dedup_key: str) -> dict:
+    """How many people saved vs dismissed this apartment: {'saved': n, 'dismissed': m}."""
     with _conn() as c:
         d = dict(c.execute("SELECT mark, COUNT(*) FROM marks WHERE dedup_key=? GROUP BY mark",
                            (dedup_key,)).fetchall())
-    return config.MARK_SCORE_DELTA * (d.get("saved", 0) - d.get("dismissed", 0))
+    return {"saved": d.get("saved", 0), "dismissed": d.get("dismissed", 0)}
+
+
+def mark_adjustment(dedup_key: str) -> int:
+    """Net score delta from the group's votes: +MARK_SCORE_DELTA per person who
+    saved, -MARK_SCORE_DELTA per person who dismissed."""
+    d = mark_counts(dedup_key)
+    return config.MARK_SCORE_DELTA * (d["saved"] - d["dismissed"])
 
 
 def base_score(dedup_key: str) -> int:
@@ -147,6 +156,26 @@ def effective_score(dedup_key: str, base: Optional[int] = None) -> int:
 def get_images(dedup_key: str) -> list:
     with _conn() as c:
         row = c.execute("SELECT images FROM listings WHERE dedup_key=?", (dedup_key,)).fetchone()
+    try:
+        return json.loads(row[0]) if row and row[0] else []
+    except Exception:
+        return []
+
+
+# Telegram photo file_ids captured the FIRST time a listing was alerted. Unlike
+# Facebook CDN URLs (which expire), a file_id is reusable by the bot forever, so
+# re-posting a listing in the morning/evening top-N always keeps its album.
+def set_file_ids(dedup_key: str, file_ids: list) -> None:
+    if not dedup_key or not file_ids:
+        return
+    with _conn() as c:
+        c.execute("UPDATE listings SET file_ids=? WHERE dedup_key=?",
+                  (json.dumps(file_ids), dedup_key))
+
+
+def get_file_ids(dedup_key: str) -> list:
+    with _conn() as c:
+        row = c.execute("SELECT file_ids FROM listings WHERE dedup_key=?", (dedup_key,)).fetchone()
     try:
         return json.loads(row[0]) if row and row[0] else []
     except Exception:

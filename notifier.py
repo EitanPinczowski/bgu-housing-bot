@@ -125,25 +125,64 @@ def _chat_ids():
     return [c.strip() for c in (os.environ.get("TELEGRAM_CHAT_ID") or "").split(",") if c.strip()]
 
 
-def _post_to_all(method: str, payload: dict, timeout: int, primary_only: bool = False) -> bool:
+def _post_to_all(method: str, payload: dict, timeout: int, primary_only: bool = False):
     """Send `payload` to every recipient (or just the first — your own DM — when
-    primary_only, for operational pings a shared group shouldn't get). True if at
-    least one delivery succeeded."""
+    primary_only, for operational pings a shared group shouldn't get). Returns the
+    first successful response JSON (truthy) or None (falsy), so callers can both
+    test success and read file_ids out of it."""
     token, ids = _token(), _chat_ids()
     if not token or not ids:
         print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
-        return False
+        return None
     if primary_only:
         ids = ids[:1]
-    ok = False
+    first_ok = None
     for cid in ids:
         try:
-            requests.post(f"https://api.telegram.org/bot{token}/{method}",
-                          json={**payload, "chat_id": cid}, timeout=timeout).raise_for_status()
-            ok = True
+            r = requests.post(f"https://api.telegram.org/bot{token}/{method}",
+                              json={**payload, "chat_id": cid}, timeout=timeout)
+            r.raise_for_status()
+            if first_ok is None:
+                first_ok = r.json()
         except Exception as exc:
             print(f"[notifier] {method} to {cid} failed: {exc}")
-    return ok
+    return first_ok
+
+
+def _largest_photo_id(photo_sizes) -> str | None:
+    """The file_id of the largest rendition in a Telegram PhotoSize array."""
+    return photo_sizes[-1].get("file_id") if photo_sizes else None
+
+
+def _file_ids_from_response(resp) -> list:
+    """Reusable photo file_ids from a sendPhoto (one Message) or sendMediaGroup
+    (list of Messages) response. Empty list if none / on any shape surprise."""
+    if not resp or not resp.get("ok"):
+        return []
+    result = resp.get("result")
+    out = []
+    if isinstance(result, list):                       # sendMediaGroup
+        for msg in result:
+            fid = _largest_photo_id(msg.get("photo") or [])
+            if fid:
+                out.append(fid)
+    elif isinstance(result, dict):                     # sendPhoto
+        fid = _largest_photo_id(result.get("photo") or [])
+        if fid:
+            out.append(fid)
+    return out
+
+
+def _remember_file_ids(res, ids) -> None:
+    """Persist captured file_ids so later re-posts (morning/evening top-N) keep
+    their photos even after the Facebook image URLs expire. Best-effort."""
+    if not ids or not getattr(res, "dedup_key", None):
+        return
+    try:
+        import storage   # local import keeps notifier free of an import-time dep
+        storage.set_file_ids(res.dedup_key, ids)
+    except Exception as exc:
+        print(f"[notifier] could not cache file_ids: {exc}")
 
 
 def _alert_keyboard(res):
@@ -208,13 +247,19 @@ def _send_alert(res: PipelineResult, primary_only: bool = False) -> None:
     text = format_alert(res)
     kb = _alert_keyboard(res)
     imgs = res.images or []
-    if len(imgs) >= 2 and send_media_group(imgs, text, primary_only=primary_only):
-        # albums can't carry buttons — send them as a small follow-up message
-        if kb:
-            send("👆 פעולות לדירה שלמעלה:", reply_markup=kb, primary_only=primary_only)
-        return
-    if len(imgs) >= 1 and send_photo(imgs[0], text, reply_markup=kb, primary_only=primary_only):
-        return
+    if len(imgs) >= 2:
+        resp = send_media_group(imgs, text, primary_only=primary_only)
+        if resp:
+            _remember_file_ids(res, _file_ids_from_response(resp))
+            # albums can't carry buttons — send them as a small follow-up message
+            if kb:
+                send("👆 פעולות לדירה שלמעלה:", reply_markup=kb, primary_only=primary_only)
+            return
+    if len(imgs) >= 1:
+        resp = send_photo(imgs[0], text, reply_markup=kb, primary_only=primary_only)
+        if resp:
+            _remember_file_ids(res, _file_ids_from_response(resp))
+            return
     send(text, reply_markup=kb, primary_only=primary_only)
 
 

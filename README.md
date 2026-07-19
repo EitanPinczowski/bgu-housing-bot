@@ -294,8 +294,11 @@ Desktop is set to start on login if you want walk times on scheduled runs.
   still there as `python digest.py 3` (last 3 days) if you want a plain list.
 
 Ranking uses the fit score (`fit.py`) **plus the group's votes**: each ⭐ on a
-listing adds `MARK_SCORE_DELTA` (25) and each 🗑 subtracts it, per person. Older
-tops may fall back to text if Facebook's photo URLs have since expired.
+listing adds `MARK_SCORE_DELTA` (25) and each 🗑 subtracts it, per person. The
+score also has a small **freshness** factor — a just-posted listing outranks a
+day-old repost. Photos re-post reliably because the first alert caches Telegram
+**`file_id`s** (which never expire) in the DB; only listings never sent with a
+photo fall back to text.
 
 Alerts include the apartment **photos as an album** automatically when the post
 has several.
@@ -303,9 +306,32 @@ has several.
 ### Alert buttons + listener
 
 Each alert carries **⭐ מעניין / 🗑 הסר** buttons. Tapping one records your triage
-in the `marks` table (SQLite) and the sheet's `mark` column. This is handled by
-**`bot_listener.py`**, a small always-on process that long-polls Telegram for the
-taps — it autostarts at login via a **Startup shortcut** ("BGU Bot Listener",
-windowless `pythonw`). It's the only process that *reads* Telegram; everything
-else only sends. If it's not running, taps just queue and are processed next
-time it starts. Run it by hand to see logs: `python bot_listener.py`.
+in the `marks` table (SQLite) and the sheet's `mark` column, and the button
+updates to show the live tally, e.g. **⭐ מעניין (3)**. **Votes are final —
+one per person per apartment**: a repeat tap (or trying to switch) just shows
+"כבר הצבעת" and changes nothing. This is handled by **`bot_listener.py`**, a
+small always-on process that long-polls Telegram for the taps — it autostarts at
+login via a **Startup shortcut** ("BGU Bot Listener", windowless `pythonw`).
+It's the only process that *reads* Telegram; everything else only sends. If it's
+not running, taps just queue and are processed next time it starts. Run it by
+hand to see logs: `python bot_listener.py`.
+
+### Facebook safety extras
+
+- **Checkpoint abort.** If a run lands on a Facebook checkpoint / login /
+  "confirm it's you" wall, the scraper stops the whole run immediately (never
+  retries into it) and sends a distinct ⛔ Telegram alert telling you to re-login
+  via `login.py`. This is the one condition to act on before the next run.
+- **Occasional skipped run.** ~1 in 8 live runs is skipped on purpose
+  (`SCRAPER_SKIP_RUN_PROBABILITY`) so the cadence isn't clockwork; the skip is
+  logged as a `SKIP` line in `data/search_log.txt` and sends no Telegram.
+
+### Tests
+
+Fast, offline unit tests cover the deterministic, historically-buggy bits — the
+⭐ score thresholds, dedup keys, the green-zone classifier, and the vote ledger:
+
+```powershell
+python -m pip install pytest      # once
+python -m pytest tests\ -q
+```
