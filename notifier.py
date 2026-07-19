@@ -178,16 +178,17 @@ def send(text: str, reply_markup=None, primary_only: bool = False) -> bool:
     return _post_to_all("sendMessage", payload, 15, primary_only=primary_only)
 
 
-def send_photo(photo_url: str, caption: str, reply_markup=None) -> bool:
+def send_photo(photo_url: str, caption: str, reply_markup=None,
+               primary_only: bool = False) -> bool:
     """Send the alert as a photo with the details as caption. Returns False if it
     reaches no one, so the caller can fall back to a text message."""
     payload = {"photo": photo_url, "caption": caption, "parse_mode": "MarkdownV2"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return _post_to_all("sendPhoto", payload, 20)
+    return _post_to_all("sendPhoto", payload, 20, primary_only=primary_only)
 
 
-def send_media_group(photo_urls: list, caption: str) -> bool:
+def send_media_group(photo_urls: list, caption: str, primary_only: bool = False) -> bool:
     """Send 2–10 photos as an album, details as the first photo's caption."""
     media = []
     for i, url in enumerate(photo_urls[:10]):
@@ -196,24 +197,25 @@ def send_media_group(photo_urls: list, caption: str) -> bool:
             item["caption"] = caption
             item["parse_mode"] = "MarkdownV2"
         media.append(item)
-    return _post_to_all("sendMediaGroup", {"media": media}, 30)
+    return _post_to_all("sendMediaGroup", {"media": media}, 30, primary_only=primary_only)
 
 
-def _send_alert(res: PipelineResult) -> None:
+def _send_alert(res: PipelineResult, primary_only: bool = False) -> None:
     """Send one listing alert: an album if there are several photos, a single
     photo if there's one, else text — each falling back to the next if it fails,
-    so the alert always gets through."""
+    so the alert always gets through. primary_only keeps it in your own DM (for
+    testing without spamming a shared group)."""
     text = format_alert(res)
     kb = _alert_keyboard(res)
     imgs = res.images or []
-    if len(imgs) >= 2 and send_media_group(imgs, text):
+    if len(imgs) >= 2 and send_media_group(imgs, text, primary_only=primary_only):
         # albums can't carry buttons — send them as a small follow-up message
         if kb:
-            send("👆 פעולות לדירה שלמעלה:", reply_markup=kb)
+            send("👆 פעולות לדירה שלמעלה:", reply_markup=kb, primary_only=primary_only)
         return
-    if len(imgs) >= 1 and send_photo(imgs[0], text, reply_markup=kb):
+    if len(imgs) >= 1 and send_photo(imgs[0], text, reply_markup=kb, primary_only=primary_only):
         return
-    send(text, reply_markup=kb)
+    send(text, reply_markup=kb, primary_only=primary_only)
 
 
 def _promising_near_miss(res: PipelineResult) -> bool:

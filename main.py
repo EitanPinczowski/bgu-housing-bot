@@ -25,6 +25,7 @@ import random
 import sys
 import time
 from collections import Counter
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -37,6 +38,19 @@ import pipeline
 import scraper
 
 _ROTATION_PATH = config.DATA_DIR / "rotation.json"
+_SEARCH_LOG = config.DATA_DIR / "search_log.txt"
+
+
+def _log_search(event: str, detail: str = "") -> None:
+    """Append one line to data/search_log.txt — a clean, greppable record of when
+    every search STARTs and ENDs (separate from the verbose stdout run log)."""
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {event:<5}  {detail}".rstrip()
+    print(line)
+    try:
+        with open(_SEARCH_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as exc:
+        print(f"[main] could not write search log: {exc}")
 
 
 def _select_groups() -> list[str]:
@@ -70,11 +84,14 @@ def _select_groups() -> list[str]:
 
 def run(dry_run: bool) -> None:
     mode = "DRY RUN" if dry_run else "LIVE"
+    started = time.monotonic()
     selected = _select_groups()
+    _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
     print(f"=== BGU housing scraper — {mode} ===")
     print(f"groups this run ({len(selected)}/{len(config.FB_GROUPS)}): {selected}\n")
     if not selected:
         print("No groups configured in config.FB_GROUPS — nothing to do.")
+        _log_search("END", f"{'LIVE' if not dry_run else 'DRY'}  0s  no groups configured")
         return
 
     counts: Counter[str] = Counter()
@@ -152,6 +169,10 @@ def run(dry_run: bool) -> None:
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
                 f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
                 primary_only=True)
+
+    _log_search("END", f"{'LIVE' if not dry_run else 'DRY'}  {time.monotonic() - started:.0f}s  "
+                       f"posts={total_posts} match={matches} needs={needs} "
+                       f"groups_ok={groups_with_posts}/{len(selected)}")
 
 
 def main() -> None:

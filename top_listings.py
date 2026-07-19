@@ -3,7 +3,11 @@ Post the top-N recent MATCH listings as FULL alerts (photo album + details +
 ⭐/🗑 vote buttons), ranked by the vote-adjusted (effective) score. Used for the
 morning highlights (top 3) and the evening digest (top 5).
 
-    python top_listings.py <N> [hours]      # e.g.  3 24  /  5 13
+    python top_listings.py <N> [hours] [--test]
+
+    e.g.  top_listings.py 3 24            # morning: top 3 of last 24h, to everyone
+          top_listings.py 5 13            # evening: top 5 of the day
+          top_listings.py 5 24 --test     # dry-run to your OWN DM only (no group)
 
 Note: photo albums depend on Facebook image URLs, which expire after a while, so
 older tops may fall back to text (still with all the details + buttons).
@@ -62,17 +66,22 @@ def _to_result(r) -> PipelineResult:
 
 
 def main() -> None:
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-    hours = int(sys.argv[2]) if len(sys.argv) > 2 else 24
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    test = "--test" in sys.argv           # send to your own DM only, not the group
+    n = int(args[0]) if len(args) > 0 else 5
+    hours = int(args[1]) if len(args) > 1 else 24
     rows = _top(n, hours)
+    tag = " [בדיקה]" if test else ""
     if not rows:
-        notifier.send(notifier._esc(f"אין דירות מובילות ב-{hours} השעות האחרונות."))
+        notifier.send(notifier._esc(f"אין דירות מובילות ב-{hours} השעות האחרונות.{tag}"),
+                      primary_only=test)
         print("no top listings")
         return
-    notifier.send(notifier._esc(f"🏆 {len(rows)} הדירות המובילות ({hours} שעות אחרונות):"))
+    notifier.send(notifier._esc(f"🏆 {len(rows)} הדירות המובילות ({hours} שעות אחרונות):{tag}"),
+                  primary_only=test)
     for r in rows:
-        notifier._send_alert(_to_result(r))
-    print(f"posted top {len(rows)} over {hours}h")
+        notifier._send_alert(_to_result(r), primary_only=test)
+    print(f"posted top {len(rows)} over {hours}h{' (test/DM only)' if test else ''}")
 
 
 if __name__ == "__main__":
