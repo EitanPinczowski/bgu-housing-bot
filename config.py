@@ -156,6 +156,10 @@ NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
 # are still saved to SQLite — you just aren't pinged. Set False to ping on every
 # NEEDS_DATA regardless.
 NEEDS_DATA_ONLY_PROMISING = True
+# ...but ALWAYS alert a near-miss whose fit score reaches this, even if it isn't
+# "promising" by the rooms/zone heuristic above — a genuinely good-looking place
+# is worth surfacing even when it still needs more details. Set None to disable.
+NEEDS_DATA_MIN_SCORE = 60
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY

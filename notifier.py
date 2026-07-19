@@ -278,6 +278,12 @@ def notify(res: PipelineResult) -> None:
     if res.status == Status.MATCH and config.NOTIFY_ON_MATCH:
         _send_alert(res)
     elif res.status == Status.NEEDS_DATA and config.NOTIFY_ON_NEEDS_DATA:
-        if config.NEEDS_DATA_ONLY_PROMISING and not _promising_near_miss(res):
+        # A high enough fit score always pings, regardless of the "promising"
+        # heuristic — a good-looking place is worth surfacing even when it still
+        # needs details. Otherwise fall back to the rooms/zone promise check.
+        high_score = (config.NEEDS_DATA_MIN_SCORE is not None
+                      and res.score is not None
+                      and res.score >= config.NEEDS_DATA_MIN_SCORE)
+        if not high_score and config.NEEDS_DATA_ONLY_PROMISING and not _promising_near_miss(res):
             return  # saved to SQLite by the pipeline, just not pinged
         _send_alert(res)

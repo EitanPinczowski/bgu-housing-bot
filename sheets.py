@@ -17,10 +17,33 @@ the bot runs fine with or without it.
 """
 from __future__ import annotations
 import os
+import time
 from datetime import datetime
 
 import config
 from models import PipelineResult
+
+# HTTP statuses worth retrying — transient Google backend / rate-limit errors.
+# A blip here must NOT disable the sheet for the rest of the run (that bug lost
+# whole runs of listings): we retry with backoff instead.
+_RETRY_STATUS = {429, 500, 502, 503}
+
+
+def _is_transient(exc) -> bool:
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) in _RETRY_STATUS
+
+
+def _retry(fn, tries: int = 4, base: float = 1.5):
+    """Call fn(), retrying transient API errors with exponential backoff. Non-
+    transient errors (bad creds, not-shared, bad range) raise immediately."""
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as exc:
+            if not _is_transient(exc) or i == tries - 1:
+                raise
+            time.sleep(base * (2 ** i))
 
 HEADERS = ["first_seen", "status", "tier", "price_per_room", "rooms_free",
            "roommates", "address", "walk_min", "gate", "lease_start", "contact",
@@ -52,14 +75,20 @@ def _worksheet():
     try:
         import gspread
         gc = gspread.service_account(filename=cred)
-        ws = gc.open_by_key(sheet_id).sheet1
-        if ws.row_values(1) != HEADERS:      # (re)write header if missing/outdated
-            ws.update([HEADERS], "A1")
+        ws = _retry(lambda: gc.open_by_key(sheet_id).sheet1)
+        if _retry(lambda: ws.row_values(1)) != HEADERS:   # (re)write header if outdated
+            _retry(lambda: ws.update([HEADERS], "A1"))
         _ws = ws
         return ws
     except Exception as exc:
-        print(f"[sheets] disabled — could not open the sheet: {exc}")
-        _disabled = True
+        # Transient (503/429/network) -> DON'T latch; retry on the next call so a
+        # single blip doesn't lose a whole run. Permanent (bad creds / not shared)
+        # -> latch _disabled so we stop hammering a sheet we can never reach.
+        if _is_transient(exc):
+            print(f"[sheets] temporary open failure (will retry next call): {exc}")
+        else:
+            print(f"[sheets] disabled — could not open the sheet: {exc}")
+            _disabled = True
         return None
 
 
@@ -93,7 +122,7 @@ def save_listing(res: PipelineResult) -> None:
         e.summary_hebrew, res.source_url, res.group, key, "", res.score,   # "" = mark
     ]
     try:
-        ws.append_row(row, value_input_option="USER_ENTERED")
+        _retry(lambda: ws.append_row(row, value_input_option="USER_ENTERED"))
         _seen().add(key)
     except Exception as exc:
         print(f"[sheets] append failed: {exc}")
@@ -106,10 +135,10 @@ def set_mark(dedup_key: str, mark: str, score=None) -> None:
     if ws is None or not dedup_key:
         return
     try:
-        cell = ws.find(dedup_key)          # dedup_key is unique
+        cell = _retry(lambda: ws.find(dedup_key))    # dedup_key is unique
         if cell:
-            ws.update_cell(cell.row, _MARK_COL, mark)
+            _retry(lambda: ws.update_cell(cell.row, _MARK_COL, mark))
             if score is not None:
-                ws.update_cell(cell.row, HEADERS.index("score") + 1, score)
+                _retry(lambda: ws.update_cell(cell.row, HEADERS.index("score") + 1, score))
     except Exception as exc:
         print(f"[sheets] set_mark failed: {exc}")
