@@ -24,7 +24,9 @@ _MAX_ROWS = 25   # keep the message under Telegram's length limit
 
 
 def _recent(days: int):
-    since = (datetime.now() - timedelta(days=days)).isoformat()
+    # space separator (not isoformat's 'T') to match how SQLite stores first_seen
+    # — otherwise same-day rows sort wrong (' ' < 'T') and get excluded.
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute(
             """SELECT status, price_per_room, available_rooms, address, walk_minutes,
@@ -38,36 +40,49 @@ def _recent(days: int):
                   reverse=True)
 
 
-def build(rows, days: int) -> str:
+_MSG_LIMIT = 3800   # stay under Telegram's 4096-char message cap
+
+
+def build(rows, days: int) -> list[str]:
+    """One or more messages (chunked to stay under Telegram's size limit)."""
     esc = notifier._esc
     if not rows:
-        return esc(f"📋 סיכום {days} ימים אחרונים: לא נמצאו דירות מתאימות.")
-    header = f"📋 *סיכום {days} ימים — {len(rows)} דירות*"
-    lines = [header, ""]
-    for status, price, rooms, addr, walk, summary, url, group, tier in rows[:_MAX_ROWS]:
+        return [esc(f"📋 סיכום {days} ימים אחרונים: לא נמצאו דירות מתאימות.")]
+
+    def block(r) -> str:
+        status, price, rooms, addr, walk, summary, url, group, tier = r
         icon = "✅" if status == "MATCH" else "⚠️"
         stars = fit.stars(fit.score(price, walk, tier))
         price_s = f'{price} ש"ח לחדר' if price else "מחיר לא צוין"
-        lines.append(f"{icon} {stars} {esc(summary or addr or '?')}")
-        detail = f"   💰 {esc(price_s)} · 🛏 {esc(rooms if rooms is not None else '?')} · 📍 {esc(addr or '?')}"
-        if walk is not None:
-            detail += f" · 🚶 {esc(round(walk))} דק׳"
-        lines.append(detail)
+        ls = [f"{icon} {stars} {esc(summary or addr or '?')}",
+              f"   💰 {esc(price_s)} · 🛏 {esc(rooms if rooms is not None else '?')}"
+              f" · 📍 {esc(addr or '?')}"
+              + (f" · 🚶 {esc(round(walk))} דק׳" if walk is not None else "")]
         link = url or ((group + "?sorting_setting=CHRONOLOGICAL") if group else None)
         if link:
-            label = "צפייה בפוסט" if url else "פתיחת הקבוצה"
-            lines.append(f"   🔗 [{label}]({notifier._esc_url(link)})")
-        lines.append("")
+            ls.append(f"   🔗 [{'צפייה בפוסט' if url else 'פתיחת הקבוצה'}]({notifier._esc_url(link)})")
+        return "\n".join(ls)
+
+    messages, chunk = [], f"📋 *סיכום {days} ימים — {len(rows)} דירות*"
+    for r in rows[:_MAX_ROWS]:
+        b = block(r)
+        if len(chunk) + len(b) + 2 > _MSG_LIMIT:
+            messages.append(chunk)
+            chunk = ""
+        chunk += ("\n\n" if chunk else "") + b
+    if chunk.strip():
+        messages.append(chunk)
     if len(rows) > _MAX_ROWS:
-        lines.append(esc(f"…ועוד {len(rows) - _MAX_ROWS}. פתחו את הגיליון/DB לכל הרשימה."))
-    return "\n".join(lines)
+        messages.append(esc(f"…ועוד {len(rows) - _MAX_ROWS}. פתחו את הגיליון לכל הרשימה."))
+    return messages
 
 
 def main() -> None:
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 7
     rows = _recent(days)
-    ok = notifier.send(build(rows, days))
-    print(f"digest: {len(rows)} listings over {days} days — sent={ok}")
+    msgs = build(rows, days)
+    ok = all(notifier.send(m) for m in msgs)
+    print(f"digest: {len(rows)} listings over {days} days, {len(msgs)} message(s) — sent={ok}")
 
 
 if __name__ == "__main__":
