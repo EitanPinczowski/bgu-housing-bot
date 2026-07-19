@@ -263,27 +263,16 @@ def _send_alert(res: PipelineResult, primary_only: bool = False) -> None:
     send(text, reply_markup=kb, primary_only=primary_only)
 
 
-def _promising_near_miss(res: PipelineResult) -> bool:
-    """A NEEDS_DATA worth pinging: geocoded in/near the green zone AND with
-    enough rooms free — a good place that merely didn't state a price. Anything
-    ungeocodable (UNKNOWN) or short on rooms is stored but not pinged."""
-    e = res.extract
-    in_zone = res.location_tier in ("GREEN", "AMBER")
-    enough_rooms = (e is not None and e.available_rooms_count is not None
-                    and e.available_rooms_count >= config.MIN_AVAILABLE_ROOMS)
-    return in_zone and enough_rooms
-
-
 def notify(res: PipelineResult) -> None:
-    if res.status == Status.MATCH and config.NOTIFY_ON_MATCH:
-        _send_alert(res)
-    elif res.status == Status.NEEDS_DATA and config.NOTIFY_ON_NEEDS_DATA:
-        # A high enough fit score always pings, regardless of the "promising"
-        # heuristic — a good-looking place is worth surfacing even when it still
-        # needs details. Otherwise fall back to the rooms/zone promise check.
-        high_score = (config.NEEDS_DATA_MIN_SCORE is not None
-                      and res.score is not None
-                      and res.score >= config.NEEDS_DATA_MIN_SCORE)
-        if not high_score and config.NEEDS_DATA_ONLY_PROMISING and not _promising_near_miss(res):
-            return  # saved to SQLite by the pipeline, just not pinged
-        _send_alert(res)
+    """Ping only listings worth looking at: MATCH or NEEDS_DATA whose fit score
+    reaches config.MIN_ALERT_SCORE. Everything else is still saved by the
+    pipeline (SQLite/Sheets) — it just doesn't buzz your phone."""
+    if res.status == Status.MATCH and not config.NOTIFY_ON_MATCH:
+        return
+    if res.status == Status.NEEDS_DATA and not config.NOTIFY_ON_NEEDS_DATA:
+        return
+    if res.status not in (Status.MATCH, Status.NEEDS_DATA):
+        return
+    if res.score is None or res.score < config.MIN_ALERT_SCORE:
+        return  # below the quality gate — saved, but not pinged
+    _send_alert(res)

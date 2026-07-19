@@ -140,5 +140,32 @@ def set_mark(dedup_key: str, mark: str, score=None) -> None:
             _retry(lambda: ws.update_cell(cell.row, _MARK_COL, mark))
             if score is not None:
                 _retry(lambda: ws.update_cell(cell.row, HEADERS.index("score") + 1, score))
+                sort_by_score()   # a vote changed the rating — keep the sheet ordered
     except Exception as exc:
         print(f"[sheets] set_mark failed: {exc}")
+
+
+def _col_letter(n: int) -> str:
+    """1 -> A, 26 -> Z, 27 -> AA."""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def sort_by_score() -> None:
+    """Sort the sheet's data rows by the `score` (rating) column, highest first,
+    leaving the header row in place. Best-effort — logged and swallowed."""
+    ws = _worksheet()
+    if ws is None:
+        return
+    try:
+        n = len(_retry(lambda: ws.col_values(1)))      # rows incl. header
+        if n <= 2:
+            return                                     # nothing to sort
+        score_col = HEADERS.index("score") + 1
+        rng = f"A2:{_col_letter(len(HEADERS))}{n}"     # data rows only, all columns
+        _retry(lambda: ws.sort((score_col, "des"), range=rng))
+    except Exception as exc:
+        print(f"[sheets] sort failed: {exc}")

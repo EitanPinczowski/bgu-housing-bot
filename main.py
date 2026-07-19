@@ -36,6 +36,7 @@ import llm
 import notifier
 import pipeline
 import scraper
+import sheets
 
 _ROTATION_PATH = config.DATA_DIR / "rotation.json"
 _SEARCH_LOG = config.DATA_DIR / "search_log.txt"
@@ -190,6 +191,8 @@ def run(dry_run: bool) -> None:
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
                 f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
                 primary_only=True)
+        # Keep the Google Sheet ordered best-first after this run's new rows.
+        sheets.sort_by_score()
 
     end_tag = "BLOCKED" if blocked_reason else ("LIVE" if not dry_run else "DRY")
 

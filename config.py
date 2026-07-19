@@ -149,17 +149,11 @@ FB_GROUPS = [
 # ---------------------------------------------------------------------------
 NOTIFY_ON_MATCH = True
 NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
-# Most real posts omit the price (negotiated in DMs), so they land in
-# NEEDS_DATA. To keep those pings worth reading, only alert on a near-miss that
-# is actually promising: in/near the green zone AND with enough rooms free
-# (i.e. a good place that just didn't state a price). Non-promising near-misses
-# are still saved to SQLite — you just aren't pinged. Set False to ping on every
-# NEEDS_DATA regardless.
-NEEDS_DATA_ONLY_PROMISING = True
-# ...but ALWAYS alert a near-miss whose fit score reaches this, even if it isn't
-# "promising" by the rooms/zone heuristic above — a genuinely good-looking place
-# is worth surfacing even when it still needs more details. Set None to disable.
-NEEDS_DATA_MIN_SCORE = 60
+# Quality gate on ALERTS (not on storage): only ping a listing — whether MATCH
+# or NEEDS_DATA — whose fit score (fit.py, 0–100) is at least this. Everything is
+# still saved to SQLite/Sheets and shows up in the digest/top-N; low-scoring ones
+# just don't buzz your phone. Raise to be pickier, lower to see more.
+MIN_ALERT_SCORE = 70
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY

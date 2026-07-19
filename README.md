@@ -144,6 +144,9 @@ All thresholds live at the top of `config.py`
 Mirror every match / near-miss into a shared Google Sheet you can sort and
 filter by hand, with its own row-level dedup. SQLite stays the fast local cache;
 the Sheet is additive. Disabled until you set it up — the bot runs fine without.
+The sheet is kept **sorted by rating (score), best first** — re-sorted at the end
+of each run and after every vote. Transient Google API errors are retried with
+backoff, so a blip no longer drops a whole run's rows.
 
 1. In **Google Cloud Console**: create a project → enable the **Google Sheets
    API** → create a **service account** → add a **JSON key** and download it.
