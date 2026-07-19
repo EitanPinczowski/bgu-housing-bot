@@ -172,7 +172,9 @@ def process_post(raw_text: str,
         storage.record_unknown_location(e.street_address_or_neighborhood)
     lat, lon = (coords if coords else (None, None))
     walk, walk_gate = osrm.walk_to_nearest(lat, lon)
-    tier = zones.classify_location(lat, lon)
+    # AMBER = within MAX_WALK_MINUTES of a gate; pass the real OSRM walk time so
+    # the boundary is the actual walk, not a straight-line estimate.
+    tier = zones.classify_location(lat, lon, walk_min=walk)
     # No-amber neighborhoods (e.g. שכונה ד'): the buffer doesn't rescue them —
     # outside the green polygon there = red. Caught geographically (point inside
     # the ד' polygon) OR by address text (the post says שכונה ד').
@@ -184,7 +186,7 @@ def process_post(raw_text: str,
 
     if tier == "RED":
         reason = ("שכונה ד' מחוץ לפוליגון הירוק (ללא מרווח)" if no_amber
-                  else f"beyond {config.BUFFER_METERS:.0f}m of green zone")
+                  else f"more than {config.MAX_WALK_MINUTES} min walk from a gate")
         return result(Status.DROP, reason,
                       walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=False)
 
@@ -200,12 +202,12 @@ def process_post(raw_text: str,
         if tier == "UNKNOWN":
             reasons.append("location not geocoded")
         elif tier == "AMBER":
-            reasons.append("within 500m of green zone (acceptable, not preferred)")
+            reasons.append("within a 20-min walk of a gate (acceptable, not preferred)")
         res = result(Status.NEEDS_DATA, "; ".join(reasons),
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
     else:
         label = ("in green zone (preferred)" if tier == "GREEN"
-                 else "within 500m of green zone (acceptable, not preferred)")
+                 else "within a 20-min walk of a gate (acceptable, not preferred)")
         res = result(Status.MATCH, label,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
 

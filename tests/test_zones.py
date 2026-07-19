@@ -15,6 +15,21 @@ def test_far_away_point_is_red():
     assert zones.in_green_zone(32.0853, 34.7818) is False
 
 
+def test_amber_is_walk_time_to_a_gate():
+    import config
+    # a point outside the green polygon: AMBER iff within MAX_WALK_MINUTES of a
+    # gate. Force the tier with an explicit walk time to keep it deterministic.
+    far_pt = (32.0853, 34.7818)   # definitely outside the green polygon
+    assert zones.classify_location(*far_pt, walk_min=config.MAX_WALK_MINUTES - 1) == "AMBER"
+    assert zones.classify_location(*far_pt, walk_min=config.MAX_WALK_MINUTES + 1) == "RED"
+
+
+def test_walk_estimate_matches_osrm_ballpark():
+    # הבלוק is ~8 min from שער סורוקה by OSRM; the straight-line estimate should
+    # land in the same ballpark (calibration guard).
+    assert 5 <= zones.est_walk_to_gate_min(31.259386, 34.79613) <= 12
+
+
 def test_no_amber_zone_forces_red():
     # a point inside the שכונה ד' polygon but outside the green zone: classify
     # says AMBER, but the no-amber rule (classify_effective) makes it RED.

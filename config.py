@@ -39,7 +39,15 @@ MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities (hard dro
 TARGET_PRICE_PER_ROOM_ILS = 1500   # your budget — used by the ⭐ fit score
 MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
 MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
-MAX_WALK_MINUTES = 25             # OSRM edge safety-net (see below)
+MAX_WALK_MINUTES = 20             # AMBER = a walk of at most this many minutes to
+                                  # the nearest campus gate (GREEN still = inside
+                                  # the hand-drawn polygon). Beyond it = RED.
+# Real listings use the OSRM walk time (osrm.py) for this. When OSRM is down, and
+# for the whole-area map (can't route thousands of cells), we estimate walk time
+# from straight-line distance to the nearest gate: minutes ≈ metres * DETOUR /
+# SPEED. Calibrated so הבלוק (~520m straight to שער סורוקה) ≈ its ~8-min OSRM walk.
+WALK_SPEED_M_PER_MIN = 80          # ~4.8 km/h
+WALK_DETOUR_FACTOR = 1.25          # streets aren't straight lines
 # Preferred move-in month (1–12). Listings entering around this month score a
 # little higher — but this is deliberately the SMALLEST factor in the fit score
 # (max +4), so it only breaks ties, never overrides price/location/rooms. Your
@@ -57,8 +65,9 @@ GREEN_ZONE_PATH = ROOT / "green_zone.json"
 # list under "zones". Missing file = no such areas (feature simply off).
 NO_AMBER_ZONES_PATH = ROOT / "no_amber_zones.json"
 
-# Outside the green zone but within this distance of it = "acceptable, not
-# preferred" (still a match, flagged amber). Beyond it = dropped.
+# Deprecated: the amber boundary is now a 20-minute walk to a gate (see
+# MAX_WALK_MINUTES), not a fixed ring around the polygon. Kept only so old
+# references don't break; not used by the classifier anymore.
 BUFFER_METERS = 500
 
 # ---------------------------------------------------------------------------

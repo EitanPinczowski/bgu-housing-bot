@@ -107,20 +107,42 @@ def _dist_point_to_polygon_m(lat: float, lon: float) -> float:
     return best
 
 
-def classify_location(lat: Optional[float], lon: Optional[float]) -> str:
-    """Return 'GREEN' | 'AMBER' | 'RED' | 'UNKNOWN'."""
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * _R * math.asin(math.sqrt(a))
+
+
+def est_walk_to_gate_min(lat: float, lon: float) -> float:
+    """Estimated walk time (minutes) to the NEAREST campus gate, from straight-
+    line distance × detour ÷ speed. Used for the map and as the OSRM-down
+    fallback; real listings pass the actual OSRM walk time to classify_location."""
+    nearest = min(_haversine_m(lat, lon, g["lat"], g["lon"]) for g in config.GATES.values())
+    return nearest * config.WALK_DETOUR_FACTOR / config.WALK_SPEED_M_PER_MIN
+
+
+def classify_location(lat: Optional[float], lon: Optional[float],
+                      walk_min: Optional[float] = None) -> str:
+    """'GREEN' | 'AMBER' | 'RED' | 'UNKNOWN'. GREEN = inside the hand-drawn
+    polygon (preferred). Otherwise AMBER if the walk to the nearest gate is within
+    MAX_WALK_MINUTES, else RED. Pass the real OSRM walk_min when you have it; when
+    it's None (map cells, OSRM down) a straight-line estimate is used instead."""
     if lat is None or lon is None:
         return "UNKNOWN"
     if in_green_zone(lat, lon):
         return "GREEN"
-    return "AMBER" if _dist_point_to_polygon_m(lat, lon) <= config.BUFFER_METERS else "RED"
+    wmin = walk_min if walk_min is not None else est_walk_to_gate_min(lat, lon)
+    return "AMBER" if wmin <= config.MAX_WALK_MINUTES else "RED"
 
 
-def classify_effective(lat: Optional[float], lon: Optional[float]) -> str:
+def classify_effective(lat: Optional[float], lon: Optional[float],
+                       walk_min: Optional[float] = None) -> str:
     """classify_location, but with the no-amber rule applied: an AMBER point that
     falls inside a no-amber neighborhood (e.g. שכונה ד') becomes RED. This is the
     tier the pipeline and the map both use."""
-    t = classify_location(lat, lon)
+    t = classify_location(lat, lon, walk_min)
     if t == "AMBER" and in_no_amber_zone(lat, lon):
         return "RED"
     return t
