@@ -27,6 +27,8 @@ import storage
 
 _MARK = {"save": "saved", "dismiss": "dismissed"}
 _DONE = {"save": "⭐ נשמר", "dismiss": "🗑 הוסר"}
+# how to show a mark that's already on record, when telling a repeat voter "no"
+_DONE_BY_MARK = {"saved": "⭐ מעניין", "dismissed": "🗑 הוסר"}
 
 
 def _api(method: str, **params):
@@ -42,9 +44,15 @@ def _handle(cb: dict) -> None:
     if not (mark and key and user):
         _api("answerCallbackQuery", callback_query_id=cb["id"])   # clear the spinner
         return
-    # Record this person's vote (one per user), then reflect the group's net
-    # adjustment in the sheet's score. Buttons are left in place so others can vote.
-    storage.set_mark(key, user, mark)
+    # One vote per user per apartment — final. If they've already voted, tell
+    # them what they picked and change nothing (set_mark returns False, atomically).
+    if not storage.set_mark(key, user, mark):
+        prior = storage.get_user_mark(key, user)
+        _api("answerCallbackQuery", callback_query_id=cb["id"], show_alert=True,
+             text=f"כבר הצבעת על דירה זו · {_DONE_BY_MARK.get(prior, '')}")
+        return
+    # Reflect the group's net adjustment in the sheet's score. Buttons stay in
+    # place so OTHER people can still cast their one vote.
     adj = storage.mark_adjustment(key)
     adj_s = f"+{adj}" if adj >= 0 else str(adj)
     try:

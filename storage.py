@@ -102,11 +102,24 @@ def mark_url_seen(source_url: str) -> None:
 
 
 # Per-user triage from the alert buttons: 'saved' (interested) / 'dismissed'.
-def set_mark(dedup_key: str, user_id, mark: str) -> None:
+def get_user_mark(dedup_key: str, user_id) -> Optional[str]:
+    """This user's existing vote on this apartment, or None if they haven't voted."""
     with _conn() as c:
-        c.execute("INSERT INTO marks(dedup_key, user_id, mark, ts) VALUES (?,?,?,CURRENT_TIMESTAMP) "
-                  "ON CONFLICT(dedup_key, user_id) DO UPDATE SET mark=excluded.mark, ts=CURRENT_TIMESTAMP",
-                  (dedup_key, str(user_id), mark))
+        row = c.execute("SELECT mark FROM marks WHERE dedup_key=? AND user_id=?",
+                        (dedup_key, str(user_id))).fetchone()
+    return row[0] if row else None
+
+
+def set_mark(dedup_key: str, user_id, mark: str) -> bool:
+    """Record a vote ONCE per user per apartment. Returns True if it was newly
+    recorded, False if this user had already voted (their vote is left unchanged
+    — votes are final, no flipping or re-pressing). INSERT OR IGNORE against the
+    (dedup_key, user_id) primary key makes the check atomic."""
+    with _conn() as c:
+        cur = c.execute("INSERT OR IGNORE INTO marks(dedup_key, user_id, mark, ts) "
+                        "VALUES (?,?,?,CURRENT_TIMESTAMP)",
+                        (dedup_key, str(user_id), mark))
+        return cur.rowcount > 0
 
 
 def mark_adjustment(dedup_key: str) -> int:
