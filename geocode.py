@@ -31,6 +31,10 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
     "שכונה ב": (31.2585, 34.7950),
     "שכונה ו": (31.2625, 34.7990),
     "וינגייט": (31.2600, 34.8015),
+    # "הבלוק" — student-building cluster, GREEN zone, ~8 min to שער סורוקה.
+    # Both forms so it matches whether the model writes "הבלוק" or "בבלוק".
+    "הבלוק": (31.259386, 34.796130),
+    "בבלוק": (31.259386, 34.796130),
     # -------------------------------------------
 }
 
