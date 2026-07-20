@@ -195,6 +195,42 @@ def set_mark(dedup_key: str, mark: str, score=None) -> None:
         print(f"[sheets] set_mark failed: {exc}")
 
 
+def rebuild_from_db() -> int:
+    """Clear the sheet and rewrite EVERY listings row from the DB — for replay
+    --apply, where scores/tiers changed and some rows were dropped or added.
+    Preserves votes: `score` = vote-adjusted effective score, `mark` = net vote."""
+    import sqlite3
+    import storage
+    ws = _worksheet()
+    if ws is None:
+        return 0
+    with sqlite3.connect(config.DB_PATH) as c:
+        rows = c.execute(
+            """SELECT first_seen, status, location_tier, price_per_room, available_rooms,
+                      total_roommates, address, walk_minutes, lease_start, contact,
+                      summary, source_url, "group", score, dedup_key
+               FROM listings ORDER BY first_seen""").fetchall()
+    body = [list(HEADERS)]
+    for r in rows:
+        key = r[-1]
+        row = _row_from_db(r[:-1])
+        row[HEADERS.index("dedup_key")] = key
+        adj = storage.mark_adjustment(key)
+        row[HEADERS.index("mark")] = (f"+{adj}" if adj > 0 else str(adj)) if adj else ""
+        row[HEADERS.index("score")] = storage.effective_score(key, r[13] or 0)
+        body.append(row)
+    try:
+        ws.clear()
+        ws.resize(rows=max(300, len(body) + 50), cols=len(HEADERS))
+        _retry(lambda: ws.update(body, "A1", value_input_option="USER_ENTERED"))
+        global _seen_keys
+        _seen_keys = None
+        return len(body) - 1
+    except Exception as exc:
+        print(f"[sheets] rebuild failed: {exc}")
+        return 0
+
+
 def _col_letter(n: int) -> str:
     """1 -> A, 26 -> Z, 27 -> AA."""
     s = ""

@@ -71,6 +71,17 @@ def test_post_archive_and_stats(temp_db):
     assert storage.drop_reason_counts()[0][0] == "too far"
 
 
+def test_delete_listing(temp_db):
+    import sqlite3
+    import config as cfg
+    storage.save_listing(_res("phone:9"))
+    assert storage.base_score("phone:9") == 80
+    storage.delete_listing("phone:9")
+    n = sqlite3.connect(cfg.DB_PATH).execute(
+        "SELECT COUNT(*) FROM listings WHERE dedup_key='phone:9'").fetchone()[0]
+    assert n == 0
+
+
 def test_prune_old_posts(temp_db):
     import sqlite3
     import config as cfg

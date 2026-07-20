@@ -326,6 +326,12 @@ def drop_reason_counts() -> list:
                          "GROUP BY reason ORDER BY c DESC").fetchall()
 
 
+def delete_listing(dedup_key: str) -> None:
+    """Remove a listing (e.g. replay --apply found it now classifies RED/NOT_AD)."""
+    with _conn() as c:
+        c.execute("DELETE FROM listings WHERE dedup_key=?", (dedup_key,))
+
+
 def save_listing(res: PipelineResult) -> None:
     e = res.extract
     with _conn() as c:

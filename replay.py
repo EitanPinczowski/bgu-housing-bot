@@ -7,11 +7,14 @@ Replay the classifier over every archived post — re-test filter / zone / thres
     python replay.py --llm      # re-run the LLM extraction too — for prompt.py/llm.py edits
                                 #   (uses Gemini quota)
     python replay.py --changed  # only list posts whose verdict/score changed
+    python replay.py --apply    # WRITE the results: update DB scores/tiers, add
+                                #   newly-qualifying listings, drop now-RED ones,
+                                #   and rebuild the Sheet. No Telegram (bulk change).
 
-Read-only: never writes to the DB/Sheet and never sends Telegram. It reports what
-the CURRENT code + config would decide for each stored post, and what changed —
-so after editing the green zone, MAX_WALK_MINUTES, fit.py, etc. you can see
-exactly which past listings flip, with no browser and (by default) no LLM cost.
+Without --apply it's read-only: it reports what the CURRENT code+config would
+decide for each stored post, and what changed — so after editing the green zone,
+MAX_WALK_MINUTES, fit.py, etc. you can preview which past listings flip with no
+browser and (by default) no LLM cost. Then --apply commits that.
 """
 from __future__ import annotations
 import json
@@ -28,11 +31,13 @@ except Exception:
     pass
 
 import pipeline
+import sheets
 import storage
-from models import ListingExtract
+from models import ListingExtract, Status
 
 _USE_LLM = "--llm" in sys.argv
 _CHANGED_ONLY = "--changed" in sys.argv
+_APPLY = "--apply" in sys.argv
 
 
 def _reclassify(post):
@@ -55,7 +60,7 @@ def main() -> None:
     posts = storage.all_posts()
     now = Counter()
     changes = []
-    skipped = 0
+    skipped = rescued = demoted = 0
     for p in posts:
         res = _reclassify(p)
         if res is None:
@@ -65,6 +70,18 @@ def main() -> None:
         now[nv] += 1
         if nv != p["verdict"] or ns != p["score"]:
             changes.append((p, nv, ns, res))
+        if _APPLY and res.dedup_key:
+            if res.status in (Status.MATCH, Status.NEEDS_DATA):
+                storage.save_listing(res)              # upsert (update or add)
+            else:
+                storage.delete_listing(res.dedup_key)  # now RED/NOT_AD -> drop
+            storage.record_post(p["sig"], p["raw_text"] or "", p["comments"] or "",
+                                res.images or [], p["group"], p["source_url"],
+                                res.extract, res)       # refresh the archive verdict
+            if p["verdict"] != "MATCH" and nv == "MATCH":
+                rescued += 1
+            elif p["verdict"] in ("MATCH", "NEEDS_DATA") and nv in ("DROP", "NOT_AD"):
+                demoted += 1
 
     mode = "LLM re-parse" if _USE_LLM else "stored parse"
     print(f"replayed {len(posts) - skipped} posts ({mode}); skipped {skipped}")
@@ -74,7 +91,12 @@ def main() -> None:
         addr = ((res.extract.street_address_or_neighborhood or "") if res.extract else "")[:22]
         print(f"  {str(p['verdict']):10}/{str(p['score']):>4}  ->  {nv:10}/{str(ns):>4}   "
               f"{(res.location_tier or ''):6} {addr}")
-    if not _CHANGED_ONLY and not changes:
+    if _APPLY:
+        n = sheets.rebuild_from_db()
+        sheets.sort_by_score()
+        print(f"APPLIED → DB updated ({rescued} rescued to MATCH, {demoted} dropped); "
+              f"sheet rebuilt ({n} rows). Run top_listings.py to broadcast the new top.")
+    elif not changes:
         print("(nothing changed — current code agrees with the stored verdicts)")
 
 
