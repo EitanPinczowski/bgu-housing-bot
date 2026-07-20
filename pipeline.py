@@ -100,6 +100,19 @@ def _clean_address(s: Optional[str]) -> Optional[str]:
     return s.strip(" -,/'\"") or None
 
 
+def _postprocess_extract(e, raw_text, comments):
+    """Deterministic cleanups applied to every LLM extract — shared by process_post
+    and replay so both reflect the same rules. Idempotent."""
+    if e.price_per_room_ils is None:                     # recover a price the LLM missed
+        p = _price_second_chance((raw_text or "") + " " + (comments or ""))
+        if p is not None:
+            e.price_per_room_ils = p
+            e.price_from_comment = True                  # recovered -> treat as uncertain
+    e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
+    e.lease_start_date = _normalize_entry_date(e.lease_start_date)
+    return e
+
+
 def _blacklisted(location: Optional[str]) -> bool:
     if not location:
         return False
@@ -181,15 +194,7 @@ def process_post(raw_text: str,
             return PipelineResult(status=Status.DROP, reason=f"cross-post duplicate of {dup}",
                                   source_url=source_url, group=group, images=images)
 
-    e = llm.extract(raw_text, comments=comments)
-    # Deterministic cleanups on top of the LLM extract.
-    if e.price_per_room_ils is None:                     # recover a price the LLM missed
-        p = _price_second_chance((raw_text or "") + " " + (comments or ""))
-        if p is not None:
-            e.price_per_room_ils = p
-            e.price_from_comment = True                  # recovered -> treat as uncertain
-    e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
-    e.lease_start_date = _normalize_entry_date(e.lease_start_date)
+    e = _postprocess_extract(llm.extract(raw_text, comments=comments), raw_text, comments)
 
     if commit:
         storage.mark_seen(sig)

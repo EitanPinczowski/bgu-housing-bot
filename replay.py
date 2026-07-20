@@ -52,6 +52,7 @@ def _reclassify(post):
     if not post["parsed_json"]:
         return None
     e = ListingExtract.model_validate_json(post["parsed_json"])
+    e = pipeline._postprocess_extract(e, post["raw_text"] or "", post["comments"] or "")
     return pipeline._classify(e, post["raw_text"] or "", post["source_url"],
                               post["group"], imgs, None, commit=False)
 
