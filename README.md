@@ -245,20 +245,20 @@ in `scraper.py` need retuning — they're all in one clearly-marked block). Only
 switch to `--live` once you trust it. On a live run it sends one Telegram
 heartbeat when done, so **silence means something broke.**
 
-### Schedule it every 2 h, 08:00–20:00 (Windows Task Scheduler)
+### Schedule it 4×/day, 08:00–20:00 (Windows Task Scheduler)
 
 **Already set up.** A scheduled task named **`BGU Housing Scraper`** runs the
-scraper **every 2 hours from 08:00 to 20:00** daily (08/10/12/14/16/18/20, 7
-runs), each with **up to 25 min of random delay** so the runs don't fire on the
-exact minute (clockwork timing is the main thing that looks automated to
-Facebook). With `SCRAPER_SCAN_ALL_GROUPS=True` (current), each run reads **every
-group** in a random order, scrolling each until it has **`SCRAPER_MIN_POSTS_PER_GROUP`
-(20)** recent posts or hits the hard cap `SCRAPER_SCROLL_CAP` (whichever first —
-so a quiet group stops early). ⚠️ All-groups × 20-posts × 7 runs/day is a heavy
-scrape for one personal account; **consider dropping to ~3 runs/day** (fewer
-triggers on this task) to offset it — each run already covers everything. (Set
-`SCRAPER_SCAN_ALL_GROUPS=False` to fall back to the most-overdue ⅓–½ subset with
-the `SCRAPER_MIN_SCRAPES_PER_DAY` coverage guarantee.) It calls `run_scraper.cmd`,
+scraper **4 times a day at 08:00 / 12:00 / 16:00 / 20:00** (every 4 h), each with
+**up to 25 min of random delay** so the runs don't fire on the exact minute
+(clockwork timing is the main thing that looks automated to Facebook). With
+`SCRAPER_SCAN_ALL_GROUPS=True` (current), each run reads **every group** in a
+random order, scrolling each until it has **`SCRAPER_MIN_POSTS_PER_GROUP` (20)**
+recent posts or hits the hard cap `SCRAPER_SCROLL_CAP` (whichever first — so a
+quiet group stops early). ⚠️ All-groups × 20-posts is a heavy per-run scrape for
+one personal account — 4×/day was chosen to keep the daily volume in check; going
+higher raises Facebook-detection risk. (Set `SCRAPER_SCAN_ALL_GROUPS=False` to
+fall back to the most-overdue ⅓–½ subset with the `SCRAPER_MIN_SCRAPES_PER_DAY`
+coverage guarantee.) It calls `run_scraper.cmd`,
 which pins the correct Python, sets UTF-8, and runs `python main.py --live`,
 appending all output to `data\scraper_runs.log`. The task is configured to *run
 only when you're logged on* (the browser is non-headless by design), to *start
@@ -294,7 +294,7 @@ Desktop is set to start on login if you want walk times on scheduled runs.
 
 ### Helper tasks (also scheduled)
 
-- **`BGU Watchdog`** (`watchdog.py`) — runs 08:30/11:30/14:30/17:30, 30 min before
+- **`BGU Watchdog`** (`watchdog.py`) — runs 07:30/11:30/15:30/19:30, 30 min before
   each scrape. Checks OSRM + Ollama and pings Telegram if a dependency is down,
   so you can fix it before a run degrades. (Facebook-login loss is caught by the
   scraper's own "0 posts" alert.)

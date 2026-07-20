@@ -222,7 +222,7 @@ SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
 SCRAPER_SCAN_ALL_GROUPS = True
 # groups per run when NOT scanning all: a RANDOM fraction of all groups (⅓–½).
 SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
-SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h (see note above — consider lowering)
+SCRAPER_RUNS_PER_DAY = 4            # 08:00 / 12:00 / 16:00 / 20:00 (every 4h)
 SCRAPER_MIN_SCRAPES_PER_DAY = 3     # each group read at least this often per day
 
 # Each Telegram save/dismiss tap nudges a listing's score by this much, per user
