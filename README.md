@@ -14,10 +14,12 @@ in-range check against your hand-drawn green zone → OSRM walk time → SQLite 
 Telegram alert`.
 
 **In-range is decided by the green zone you drew** (`green_zone.json`), in three
-tiers: **inside → preferred** (✅ MATCH), **within 500m of it → acceptable, not
-preferred** (🟡 MATCH nearby), **beyond 500m → dropped**. OSRM reports the actual
-walk time for context. The named blacklist (Ramot, Neve Zeev, …) is a separate
-instant-drop applied before any of this.
+tiers: **inside → preferred** (✅ MATCH); **outside but within a 20-minute walk of
+a campus gate → acceptable, not preferred** (🟡 MATCH nearby); **farther than that
+→ dropped**. Real listings use the OSRM walk time for that boundary (a calibrated
+straight-line estimate when OSRM is down). `no_amber_zones.json` areas (e.g.
+שכונה ד') get no walk-grace — outside the green polygon there is red. The named
+blacklist (Ramot, Neve Zeev, …) is a separate instant-drop applied before any of this.
 
 Your four Facebook groups are already registered in `config.py` (`FB_GROUPS`)
 for the scraper increment.
@@ -116,10 +118,11 @@ store, and alert. Try a couple of real posts to sanity-check the extraction.
 
 ## Your data
 
-- **Green zone — done.** Loaded from your `Untitled_layer.kmz` into
-  `green_zone.json` (31-point polygon covering the student neighborhoods west of
-  campus). To change it later: redraw the shape in My Maps, export a new KMZ, and
-  run `python load_zone_from_kmz.py path\to\NewLayer.kmz`.
+- **Green zone — done.** A hand-drawn polygon in `green_zone.json` (originally
+  from a My Maps KMZ; since expanded east toward the campus except the Soroka
+  side — `green_zone.backup.json` keeps the original). To redraw it: export a new
+  KMZ from My Maps and run `python load_zone_from_kmz.py path\to\NewLayer.kmz`.
+  `no_amber_zones.json` holds the שכונה ד' polygon (no walk-grace there).
 - **Red areas → still needed.** Add every avoid-neighborhood (and common
   misspellings) to `BLACKLIST_NEIGHBORHOODS` in `config.py`. These are dropped
   before geocoding. Currently: Ramot, Neve Zeev, Nahal Ashan, Pelach 7.
@@ -211,9 +214,12 @@ anything. Read [CLAUDE.md](CLAUDE.md) → *SAFETY CONSTRAINTS* before touching t
 pacing knobs; the account is your only Facebook account.
 
 **How it stays safe (all in `config.py`):** a real, non-headless browser you log
-into once; long randomized delays between scrolls and groups; only a rotating
-subset of groups per run (`SCRAPER_GROUPS_PER_RUN`); and **dry-run by default —
-it writes nothing and sends no alerts unless you pass `--live`.**
+into once; long randomized delays between scrolls and groups; checkpoint-abort on
+a login/verification wall; and **dry-run by default — it writes nothing and sends
+no alerts unless you pass `--live`.** Coverage is set by `SCRAPER_SCAN_ALL_GROUPS`
+(currently every group each run) and `SCRAPER_MIN_POSTS_PER_GROUP`. ⚠️ These drive
+how much you scrape; higher = more Facebook-detection risk on your only account —
+the cheapest offset is fewer runs/day (see scheduling below).
 
 ### One-time login
 
@@ -245,13 +251,14 @@ heartbeat when done, so **silence means something broke.**
 scraper **every 2 hours from 08:00 to 20:00** daily (08/10/12/14/16/18/20, 7
 runs), each with **up to 25 min of random delay** so the runs don't fire on the
 exact minute (clockwork timing is the main thing that looks automated to
-Facebook). Each run picks the **most-overdue groups** (fewest reads in the last
-24 h, oldest first), sized so every group is read at least
-`SCRAPER_MIN_SCRAPES_PER_DAY` (3) times a day — no group is left unseen until its
-posts age out. Each run sweeps a
-random **⅓–½ of the groups** (`SCRAPER_GROUPS_FRACTION`) and keeps scrolling a
-group until it has at least **5 posts** (`SCRAPER_MIN_POSTS_PER_GROUP`, hard cap
-`SCRAPER_SCROLL_CAP`). It calls `run_scraper.cmd`,
+Facebook). With `SCRAPER_SCAN_ALL_GROUPS=True` (current), each run reads **every
+group** in a random order, scrolling each until it has **`SCRAPER_MIN_POSTS_PER_GROUP`
+(20)** recent posts or hits the hard cap `SCRAPER_SCROLL_CAP` (whichever first —
+so a quiet group stops early). ⚠️ All-groups × 20-posts × 7 runs/day is a heavy
+scrape for one personal account; **consider dropping to ~3 runs/day** (fewer
+triggers on this task) to offset it — each run already covers everything. (Set
+`SCRAPER_SCAN_ALL_GROUPS=False` to fall back to the most-overdue ⅓–½ subset with
+the `SCRAPER_MIN_SCRAPES_PER_DAY` coverage guarantee.) It calls `run_scraper.cmd`,
 which pins the correct Python, sets UTF-8, and runs `python main.py --live`,
 appending all output to `data\scraper_runs.log`. The task is configured to *run
 only when you're logged on* (the browser is non-headless by design), to *start

@@ -4,39 +4,50 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## Current status
+## Current status — BUILT, TESTED, and running
 
-**Increment 1 (the whole non-Facebook pipeline) is BUILT and TESTED.** You can
-paste a post into `manual.py` and it parses → filters → geocodes → grades
-location → stores → alerts, with zero Facebook risk.
-
-**Increment 2 (the Facebook auto-scraper) is BUILT** (`login.py`, `scraper.py`,
-`main.py`; `pipeline.process_post` gained a `commit` flag for dry runs).
-Dry-run by default; `--live` to commit + notify. Still needs real-world tuning
-of the FB selectors in `scraper.py` and validating in dry-run against live
-groups before trusting `--live`. See "Next task" for the original spec.
+The full pipeline (parse → deterministic cleanups → hard filters → geocode →
+green/walk-time zone tier → fit score → SQLite + optional Google Sheets +
+Telegram) and the Facebook auto-scraper are built, covered by an offline pytest
+suite, and scheduled via Windows Task Scheduler. `manual.py` is the risk-free
+paste-a-post entry point; `python main.py --live` runs the scraper (dry-run
+without `--live`). Alerts route to a shared Telegram group with ⭐/🗑 vote buttons
+(`bot_listener.py`) that feed the ranking; morning/evening top-N and a DM digest
+are scheduled. Introspection with no browser: `stats.py` (funnel) and
+`replay.py [--apply]` (re-test config/zone/score changes against the archived
+post history, and optionally write the results back). The repo is on GitHub at
+`github.com/EitanPinczowski/bgu-housing-bot`. See `README.md` for full setup,
+scheduling, and every tunable.
 
 ## Pipeline
 
-`post text → Gemini (Hebrew NLP) → hard filters → geocode → green-zone tier
-(+500m buffer) → OSRM walk time (informational) → SQLite + Telegram alert`
+`post text → Gemini (Hebrew NLP) → deterministic cleanups → hard filters →
+geocode → zone tier (green polygon / 20-min walk to a gate) → fit score →
+SQLite + optional Google Sheets + Telegram alert`
 
 ## Key decisions (do not silently reverse these)
 
-- **LLM = Google Gemini free tier** (`gemini-2.5-flash`), behind a small
-  interface in `llm.py` so it can swap to an OpenAI-compatible endpoint
-  (Ollama/Groq). It uses guaranteed structured output and a Hebrew prompt whose
-  core rule is *return null, never guess* (prevents hallucinated prices).
-- **Output = local SQLite + Telegram.** No Google Cloud / Sheets (user had
-  nothing set up; GCP setup was not worth the burden).
+- **LLM = Google Gemini free tier** (`gemini-flash-lite-latest`, chosen for the
+  largest free daily quota on this key), behind a small interface in `llm.py` so
+  it can swap to an OpenAI-compatible endpoint (Ollama/Groq). Guaranteed
+  structured output + a Hebrew prompt whose core rule is *return null, never
+  guess*. On quota (429) or repeated errors it falls back to a local Ollama model
+  for the rest of the run; a client-side min-interval paces Gemini under the RPM cap.
+- **Output = local SQLite + Telegram, plus an OPTIONAL Google Sheets sink**
+  (`sheets.py`, service account; silent no-op until `GOOGLE_SHEET_ID` + creds
+  exist). The sheet is a browsable/sortable mirror; SQLite stays the fast local
+  dedup/cache and source of truth.
 - **In-range = the user's hand-drawn green zone** (`green_zone.json`, from a
-  Google My Maps KMZ), graded in three tiers by `zones.classify_location`:
+  Google My Maps KMZ), graded by `zones.classify_location` / `classify_effective`:
   - `GREEN` inside the polygon → preferred match (✅)
-  - `AMBER` within `BUFFER_METERS` (500m) of it → acceptable, not preferred (🟡)
-  - `RED` beyond the buffer → dropped
+  - `AMBER` = outside the polygon but within **`MAX_WALK_MINUTES` (20) walk of a
+    campus gate** → acceptable, not preferred (🟡)
+  - `RED` beyond that (or inside a `no_amber_zones.json` area like שכונה ד' but
+    outside green) → dropped
   - `UNKNOWN` couldn't geocode → NEEDS_DATA
-- **OSRM is informational only** now (reports walk minutes); the zone makes the
-  in/out decision. The bot works even if OSRM isn't running.
+- **OSRM gives the amber walk time** for real listings (min over gates); when it's
+  down, and for the whole-area map, a calibrated straight-line estimate is used —
+  so the bot still classifies without OSRM running. (`BUFFER_METERS` is deprecated.)
 - **Blacklist** (`config.BLACKLIST_NEIGHBORHOODS`: Ramot, Neve Zeev, Nahal
   Ashan, Pelach 7) is a separate hard instant-drop applied before geocoding.
 - **Dedup** prefers the contact phone (survives reposts/cross-posting), else a
@@ -46,18 +57,24 @@ groups before trusting `--live`. See "Next task" for the original spec.
 
 ## Files
 
-- `config.py` — all thresholds, gates, blacklist, `FB_GROUPS`, provider settings.
-- `models.py` — `ListingExtract` (LLM schema) and `PipelineResult` (+`location_tier`, `preferred`).
-- `llm.py` — Gemini extraction (provider-abstracted).
-- `geocode.py` — static name table (primary) + Nominatim street fallback.
-- `osrm.py` — local foot routing; min over gates; informational.
-- `zones.py` — green polygon load, point-in-polygon, 500m tier classification.
-- `storage.py` — SQLite dedup + listings.
-- `notifier.py` — Telegram MarkdownV2 alerts (✅ preferred / 🟡 nearby / ⚠️ needs data).
-- `pipeline.py` — `process_post(raw_text, source_url, group, ...)`: the funnel.
+- `config.py` — all thresholds, gates, blacklist, `FB_GROUPS`, provider + scraper settings.
+- `models.py` — `ListingExtract` (LLM schema, incl. `floor`) and `PipelineResult`.
+- `llm.py` — Gemini extraction + Ollama fallback (provider-abstracted); rate-limit.
+- `geocode.py` — static name table (primary) → cache → optional Google → Nominatim.
+- `osrm.py` — local foot routing; min over gates (drives the 20-min amber boundary).
+- `zones.py` — green polygon + no-amber (ד') polygons; walk-time tier classification.
+- `fit.py` — 0–100 fit score → ⭐1–5 (zone, walk, price, rooms, freshness, entry date).
+- `storage.py` — SQLite: dedup, listings, votes/marks, unknown-locations, fingerprints, post archive.
+- `sheets.py` — optional Google Sheets sink (append, batch reconcile, sort, rebuild).
+- `notifier.py` — Telegram MarkdownV2 alerts; group-vs-DM routing; albums; vote buttons.
+- `pipeline.py` — `process_post(...)` funnel; `_classify(...)` reused by replay.
+- `scraper.py` / `login.py` / `main.py` — Playwright reader, one-time login, orchestrator.
 - `manual.py` — paste-a-post CLI (risk-free entry point).
+- `top_listings.py` / `digest.py` / `dm_digest.py` — morning/evening top-N, recaps, DM digest.
+- `bot_listener.py` / `watchdog.py` — vote-button listener; dependency health check.
+- `replay.py` / `stats.py` — offline re-classify (+`--apply`) and funnel stats.
 - `load_zone_from_kmz.py` — regenerate `green_zone.json` from a new My Maps export.
-- `green_zone.json` — the 31-point walkable polygon.
+- `green_zone.json` / `no_amber_zones.json` — the walkable polygon + no-amber (ד') areas.
 - `README.md` — full Windows setup (Python, Docker OSRM Israel extract, Telegram bot, .env).
 
 ## Environment
@@ -95,49 +112,18 @@ the scraper MUST be conservative and the user must stay in control:
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.
 - Do not add CAPTCHA-solving or detection-evasion beyond human-like pacing.
 
-## Next task — build the scraper (increment 2)
+## Working notes
 
-Add three files + one small refactor:
-
-1. **`pipeline.py` refactor:** add a `commit: bool = True` param to
-   `process_post`. When `commit=False`: skip the `is_seen` early-return, and
-   skip `mark_seen` / `save_listing` / `notify` — pure classify-and-return, for
-   dry runs. (Currently there's a `notify` flag; fold it into `commit`.)
-
-2. **`login.py`:** launch a Playwright **persistent context**
-   (`chromium.launch_persistent_context(config.SCRAPER_PROFILE_DIR,
-   headless=False, locale="he-IL", timezone_id="Asia/Jerusalem")`), open
-   `https://www.facebook.com`, print "log in, then press Enter here", wait for
-   input, close. Session persists in the profile dir for the scraper to reuse.
-
-3. **`scraper.py`:** `open_browser()` (persistent context, non-headless) and
-   `scrape_group(page, url) -> list[dict]`. For each group: `page.goto(url)`,
-   scroll `SCRAPER_MAX_SCROLLS` times sleeping `random.uniform(*SCRAPER_SCROLL_DELAY)`
-   between, then collect `[role="article"]` elements → `inner_text()` cleaned +
-   a permalink (first `a[href]` containing `/posts/`, `/permalink/`, or
-   `story_fbid`). Dedup by text within the group. Wrap each group in try/except
-   so one failure doesn't kill the run. **FB's DOM is unstable — expect these
-   selectors to need periodic tuning; keep them isolated and easy to edit.**
-
-4. **`main.py`:** orchestrator. Dry-run unless `--live`. Select a rotating
-   subset of `config.FB_GROUPS` (size `SCRAPER_GROUPS_PER_RUN`, persist the
-   offset in `data/rotation.json`). For each selected group → `scrape_group` →
-   for each post → `pipeline.process_post(text, source_url=permalink,
-   group=url, commit=not dry_run)`. Sleep `random.uniform(*SCRAPER_GROUP_DELAY)`
-   between groups. Print a per-run summary (counts by status). If `--live`, send
-   one heartbeat Telegram ("run done: N posts, M matches") so silence signals a
-   break. Intended to be scheduled ~2×/day via Windows Task Scheduler (use "run
-   task as soon as possible after a missed start" since the PC may be asleep).
-
-5. **`config.py` additions** (conservative defaults):
-   ```python
-   SCRAPER_PROFILE_DIR = AUTH_DIR / "chrome_profile"
-   SCRAPER_HEADLESS = False
-   SCRAPER_MAX_SCROLLS = 4
-   SCRAPER_SCROLL_DELAY = (4.0, 9.0)     # seconds between scrolls
-   SCRAPER_GROUP_DELAY = (20.0, 45.0)    # seconds between groups
-   SCRAPER_GROUPS_PER_RUN = 6            # rotating subset per run
-   ```
-
-After the scraper works in dry-run against a couple of groups, wire up the Task
-Scheduler entry and document it in the README.
+- **Tuning workflow:** after changing the green zone, `MAX_WALK_MINUTES`, `fit.py`,
+  or a threshold, run `python replay.py` to preview which stored listings flip,
+  then `python replay.py --apply` to write it (updates the DB + rebuilds the
+  Sheet, no Telegram). `stats.py` shows the funnel.
+- **Geocoding gaps:** listings whose location the LLM extracted but geocoding
+  couldn't map are logged (`unknown_locations`) and surfaced by the daily DM
+  digest — pin the frequent ones into `geocode.STATIC_TABLE`. The zone can be
+  regenerated from a My Maps KMZ via `load_zone_from_kmz.py`.
+- **FB DOM is unstable:** all selectors live in the FRAGILE block of `scraper.py`
+  with a multi-selector fallback chain; expect periodic tuning. `FacebookBlock`
+  detection aborts a run on a checkpoint/login wall (never retries).
+- **Docs drift:** the code is the source of truth for thresholds — keep this file
+  and `README.md` in sync when key decisions change.
