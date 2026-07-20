@@ -26,7 +26,8 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
     # "רינגלבלום 5" or "גר ברינגלבלום" still matches. Coordinates are a point
     # INSIDE that area — replace/extend with your own.
     "רינגלבלום": (31.2668, 34.7987),   # OSM: the actual Ringelblum street (was ~700m off)
-    "שכונה ג": (31.2522, 34.8078),      # OSM suburb node (SE) — verify against a pin
+    "שכונה ג": (31.25507, 34.80471),    # whole-neighborhood centroid (spans the zone
+                                        # boundary; centroid is GREEN, ~14 min walk)
     "שכונה ד": (31.2635, 34.7975),
     "שכונה ב": (31.2585, 34.7950),
     "שכונה ו": (31.2625, 34.7990),
