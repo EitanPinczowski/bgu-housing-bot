@@ -145,6 +145,11 @@ def run(dry_run: bool) -> None:
                 return True
             return storage.is_seen(pipeline._text_sig(pipeline._strip_bidi(text)))
 
+    # Batch mode: don't ping per-post; collect the run's matches and send one ranked,
+    # capped batch to the group at the end (see notifier.send_batch).
+    batch = (not dry_run) and getattr(config, "SCRAPER_BATCH_ALERTS", False)
+    alertable: list = []
+
     p, context = scraper.open_browser()
     try:
         page = context.pages[0] if context.pages else context.new_page()
@@ -178,9 +183,12 @@ def run(dry_run: bool) -> None:
                         comments=post.get("comments") or "",
                         age_hours=post.get("age_hours"),
                         commit=not dry_run,
+                        alert=not batch,        # batch: defer the ping to run's end
                     )
                     counts[res.status.value] += 1
                     if res.status.value in ("MATCH", "NEEDS_DATA"):
+                        if batch:
+                            alertable.append(res)
                         icon = "✅" if res.preferred else "🟡" if res.status.value == "MATCH" else "⚠️"
                         print(f"    {icon} {res.status.value} — {res.reason}"
                               f"{' — ' + post['permalink'] if post.get('permalink') else ''}")
@@ -229,14 +237,21 @@ def run(dry_run: bool) -> None:
                 "החיבור (הריצו שוב את login.py) או ששינתה מבנה. בדקו את הלוג."),
                 target="primary")
         else:
+            # Send the run's matches as ONE ranked, capped batch to the group (see
+            # notifier.send_batch) instead of one ping per post.
+            if batch and alertable:
+                sent = notifier.send_batch(alertable, target="group",
+                                           top_k=getattr(config, "SCRAPER_ALERT_TOP_K", 5))
+                print(f"[main] batched alerts: sent {sent} of {len(alertable)} to the group")
             # Heartbeat digest — so silence means something broke, and you get a
             # one-line pulse of each run.
             fb = f" · {llm.fallback_used} במודל מקומי" if llm.fallback_used else ""
+            quota = "\n⚠️ מכסת Gemini אזלה — עברנו למודל מקומי איטי" if llm._primary_exhausted else ""
             funnel = (f"\n🔎 נסרקו {scan['read']} · דילוג ישן {scan['age_skipped']} · "
                       f"דילוג נראו {scan['seen_skipped']} · לעיבוד {total_posts}")
             notifier.send(notifier._esc(
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
-                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb + funnel),
+                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb + quota + funnel),
                 target="primary")
         # Reconcile the sheet with the DB (catches any rows a per-post append
         # dropped to a rate-limit blip), then keep it ordered best-first.

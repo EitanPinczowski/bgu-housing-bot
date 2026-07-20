@@ -88,6 +88,15 @@ def format_alert(res: PipelineResult) -> str:
         lines.append(f"📞 {_esc(e.contact_phone_or_link)}")
     # Map / WhatsApp / post links are rendered as BUTTONS (see _alert_keyboard).
 
+    # "why this score" — the top few positive factors, from the same breakdown the
+    # score is summed from (so the line can't drift from the number).
+    factors = fit.top_factors(fit.breakdown(
+        e.price_per_room_ils, res.walk_minutes, res.location_tier,
+        e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment,
+        furnished=getattr(e, "furnished", None), lease_start=e.lease_start_date))
+    if factors:
+        lines.append("📊 " + _esc(" · ".join(f"{lbl} +{d}" for lbl, d in factors)))
+
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")
         lines.append("_" + _esc(res.reason) + "_")
@@ -281,6 +290,37 @@ def _send_alert(res: PipelineResult, target: str = "group") -> None:
             _remember_file_ids(res, _file_ids_from_response(resp))
             return
     send(text, reply_markup=kb, target=target)
+
+
+def is_alertworthy(res: PipelineResult) -> bool:
+    """Is this listing worth pinging: MATCH or NEEDS_DATA whose fit score reaches
+    config.MIN_ALERT_SCORE. The single gate shared by notify() and send_batch()."""
+    if res.status == Status.MATCH and not config.NOTIFY_ON_MATCH:
+        return False
+    if res.status == Status.NEEDS_DATA and not config.NOTIFY_ON_NEEDS_DATA:
+        return False
+    if res.status not in (Status.MATCH, Status.NEEDS_DATA):
+        return False
+    return res.score is not None and res.score >= config.MIN_ALERT_SCORE
+
+
+def send_batch(results, target: str = "group", top_k=None) -> int:
+    """End-of-run batch: send the alert-worthy results best-first, capped at top_k,
+    behind one header — so a run pings once (+ up to K rich alerts) instead of once
+    per match. The uncapped remainder stays saved and shows in the top-N digest.
+    Returns how many alerts were sent."""
+    worthy = sorted((r for r in results if is_alertworthy(r)),
+                    key=lambda r: r.score or 0, reverse=True)
+    if not worthy:
+        return 0
+    k = len(worthy) if top_k is None else max(1, min(top_k, len(worthy)))
+    head = f"🏠 {len(worthy)} דירות חדשות בסריקה — הטובות ראשונות"
+    if len(worthy) > k:
+        head += f" (מוצגות {k})"
+    send(_esc(head), target=target)
+    for r in worthy[:k]:
+        _send_alert(r, target=target)
+    return k
 
 
 def notify(res: PipelineResult) -> None:

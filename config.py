@@ -246,6 +246,13 @@ MARK_SCORE_DELTA = 25
 # read (timestamp not rendered) are KEPT, not dropped, so a recent listing is
 # never lost to a missed timestamp. Set to None to disable the age filter.
 SCRAPER_MAX_POST_AGE_HOURS = 24
+# Batch alerts: instead of pinging the group per matching post mid-run, collect a
+# run's matches and send ONE header + the top-K ranked alerts at the end (photos +
+# vote buttons intact). Cuts noise now that we scan 7×/day; the rest stay saved
+# (DB/Sheet) and still surface in the morning/evening top-N digest. False = the old
+# per-post behaviour. Only affects --live runs.
+SCRAPER_BATCH_ALERTS = True
+SCRAPER_ALERT_TOP_K = 5
 # Occasionally skip a scheduled LIVE run entirely (~1 in 8), so the 7×/day
 # cadence isn't perfectly periodic — a real person doesn't check like clockwork.
 # The skip is logged (SKIP line in data/search_log.txt) and sends no Telegram, so

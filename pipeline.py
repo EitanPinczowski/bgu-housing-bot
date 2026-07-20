@@ -144,7 +144,8 @@ def process_post(raw_text: str,
                  images: Optional[list] = None,
                  comments: Optional[str] = None,
                  age_hours: Optional[float] = None,
-                 commit: bool = True) -> PipelineResult:
+                 commit: bool = True,
+                 alert: bool = True) -> PipelineResult:
     """Run one post through the funnel.
 
     commit=True  (default, manual mode / --live scraper): persist state —
@@ -152,6 +153,9 @@ def process_post(raw_text: str,
     commit=False (dry-run scraper): pure classify-and-return. No dedup skip,
         no DB writes, no Telegram — so a dry run never mutates anything and a
         post you've already stored is still shown, not silently swallowed.
+    alert=False (batch mode): save/persist as usual but DON'T send the per-post
+        Telegram alert — the caller (main.py) collects results and sends one
+        ranked, capped batch at the end of the run instead.
     """
     images = images or []
     raw_text = _strip_bidi(raw_text)      # kill FB's invisible RTL control chars
@@ -201,14 +205,14 @@ def process_post(raw_text: str,
         if source_url:
             storage.mark_url_seen(source_url)
 
-    res = _classify(e, raw_text, source_url, group, images, age_hours, commit)
+    res = _classify(e, raw_text, source_url, group, images, age_hours, commit, alert)
     if commit:
         storage.record_post(sig, raw_text, comments, images, group, source_url, e, res)
     return res
 
 
 def _classify(e, raw_text: str, source_url, group, images: list,
-              age_hours, commit: bool) -> PipelineResult:
+              age_hours, commit: bool, alert: bool = True) -> PipelineResult:
     """Steps 1-6: grade an already-extracted listing into a PipelineResult,
     and (when commit) persist + notify. Split out so replay.py can re-run it
     on a STORED extract -- re-testing zone/threshold/scoring changes with no
@@ -319,5 +323,6 @@ def _classify(e, raw_text: str, source_url, group, images: list,
         storage.save_listing(res)
         storage.record_fingerprint(res.dedup_key, _tokens(raw_text))   # for fuzzy dedup of reposts
         sheets.save_listing(res)   # optional Google Sheets sink (no-op if unset)
-        notifier.notify(res)
+        if alert:
+            notifier.notify(res)   # batch mode (alert=False) defers this to main.py
     return res

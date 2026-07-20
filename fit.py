@@ -42,51 +42,62 @@ def _lease_month(lease_start: Optional[str]) -> Optional[int]:
     return None
 
 
-def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
-          avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
-          price_uncertain: bool = False, age_hours: Optional[float] = None,
-          lease_start: Optional[str] = None, furnished: Optional[bool] = None) -> int:
-    s = 0
+def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
+              avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
+              price_uncertain: bool = False, age_hours: Optional[float] = None,
+              lease_start: Optional[str] = None,
+              furnished: Optional[bool] = None) -> list:
+    """The score's per-factor contributions as [(hebrew_label, delta), …], in the
+    order they're applied. `score()` is just the clamped sum of the deltas — this is
+    the single source of truth, so the alert's "why this score" line can never drift
+    from the number."""
+    parts: list = []
 
     # zone
-    s += 25 if tier == "GREEN" else 10 if tier == "AMBER" else 0
+    parts.append(("אזור ירוק" if tier == "GREEN" else "אזור צהוב" if tier == "AMBER"
+                  else "מחוץ לאזור", 25 if tier == "GREEN" else 10 if tier == "AMBER" else 0))
 
     # walk time
     if walk_min is not None:
-        s += (25 if walk_min < 8 else 18 if walk_min < 12
-              else 10 if walk_min < 16 else 4 if walk_min < 20 else 0)
+        parts.append((f"הליכה {walk_min:.0f} דק׳",
+                      25 if walk_min < 8 else 18 if walk_min < 12
+                      else 10 if walk_min < 16 else 4 if walk_min < 20 else 0))
     else:
-        s += 8
+        parts.append(("הליכה לא ידועה", 8))
 
     # price vs your budget
     t = config.TARGET_PRICE_PER_ROOM_ILS
     if price is None:
-        s += 6
+        parts.append(("מחיר לא צוין", 6))
     elif price <= t * 0.8:
-        s += 25
+        parts.append(("מחיר מצוין", 25))
     elif price <= t:
-        s += 18
+        parts.append(("מחיר בתקציב", 18))
     elif price <= t * 1.2:
-        s += 8
+        parts.append(("מחיר מעל התקציב", 8))
     else:
-        s += 2
+        parts.append(("מחיר גבוה", 2))
 
     # available rooms — the whole apartment free is best
     if avail_rooms and total_mates:
-        s += round(15 * min(1.0, avail_rooms / total_mates))
+        parts.append(("חדרים פנויים", round(15 * min(1.0, avail_rooms / total_mates))))
     elif avail_rooms:
-        s += 10 if avail_rooms >= 3 else 6
+        parts.append(("חדרים פנויים", 10 if avail_rooms >= 3 else 6))
 
     # total roommates — 2 best, then 3, then 4
     if total_mates is not None:
-        s += 15 if total_mates <= 2 else 10 if total_mates == 3 else 5 if total_mates == 4 else 0
+        parts.append((f"{total_mates} שותפים",
+                      15 if total_mates <= 2 else 10 if total_mates == 3
+                      else 5 if total_mates == 4 else 0))
     else:
-        s += 5
+        parts.append(("שותפים לא ידוע", 5))
 
     # freshness — centered so it rewards a brand-new post and penalizes a stale
     # repost, without just inflating every score. Unknown age (manual paste) = 0.
     if age_hours is not None:
-        s += 4 if age_hours < 6 else 2 if age_hours < 18 else 0 if age_hours < 36 else -4
+        parts.append(("טריות",
+                      4 if age_hours < 6 else 2 if age_hours < 18
+                      else 0 if age_hours < 36 else -4))
 
     # entry date vs your target move-in month — the SMALLEST factor by design, so
     # it only nudges ties. Same month +4, an adjacent month +2, else 0.
@@ -95,19 +106,34 @@ def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
         if m is not None:
             diff = min((m - config.TARGET_MOVE_IN_MONTH) % 12,
                        (config.TARGET_MOVE_IN_MONTH - m) % 12)
-            s += 4 if diff == 0 else 2 if diff == 1 else 0
+            parts.append(("תאריך כניסה", 4 if diff == 0 else 2 if diff == 1 else 0))
 
     # furnished — a small bonus, never a penalty (unfurnished flats are fine too)
     if furnished:
-        s += config.FURNISHED_BONUS
+        parts.append(("מרוהט", config.FURNISHED_BONUS))
 
     # penalize uncertainty
     if price is None:
-        s -= 6
+        parts.append(("אי-ודאות מחיר", -6))
     if price_uncertain:
-        s -= 8
+        parts.append(("מחיר מהתגובות", -8))
 
+    return parts
+
+
+def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
+          avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
+          price_uncertain: bool = False, age_hours: Optional[float] = None,
+          lease_start: Optional[str] = None, furnished: Optional[bool] = None) -> int:
+    s = sum(delta for _, delta in breakdown(
+        price, walk_min, tier, avail_rooms, total_mates, price_uncertain,
+        age_hours, lease_start, furnished))
     return max(0, min(100, s))
+
+
+def top_factors(parts: list, n: int = 3) -> list:
+    """The n most POSITIVE contributions (for a compact 'why this score' line)."""
+    return sorted((p for p in parts if p[1] > 0), key=lambda p: p[1], reverse=True)[:n]
 
 
 def stars(points: int) -> str:

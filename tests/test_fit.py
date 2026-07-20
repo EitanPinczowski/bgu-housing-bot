@@ -60,6 +60,23 @@ def test_unknown_age_is_neutral():
            fit.score(1400, 10, "GREEN", 2, 3, age_hours=20)  # 18–36h band = 0
 
 
+def test_breakdown_sums_to_score():
+    args = (1400, 7.0, "GREEN", 2, 3, False, 3.0, "1.10", True)
+    parts = fit.breakdown(*args)
+    raw = sum(d for _, d in parts)
+    assert fit.score(*args) == max(0, min(100, raw))       # score is the clamped sum
+    # top_factors returns the biggest positives, descending
+    top = fit.top_factors(parts, n=3)
+    assert len(top) == 3 and all(d > 0 for _, d in top)
+    assert [d for _, d in top] == sorted((d for _, d in top), reverse=True)
+
+
+def test_breakdown_penalties_are_negative():
+    parts = dict(fit.breakdown(None, 25.0, None, price_uncertain=True))  # worst-ish
+    assert parts["אי-ודאות מחיר"] == -6
+    assert parts["מחיר מהתגובות"] == -8
+
+
 def test_lease_month_parsing():
     assert fit._lease_month("1.10") == 10
     assert fit._lease_month("01/10") == 10
