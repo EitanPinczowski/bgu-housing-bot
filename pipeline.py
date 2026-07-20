@@ -269,6 +269,11 @@ def _classify(e, raw_text: str, source_url, group, images: list,
                                     or _no_amber_area(e.street_address_or_neighborhood))
     if no_amber:
         tier = "RED"
+    # A bare neighborhood ("שכונה ג") is a whole area we can't pin — cap it at
+    # AMBER (shown as a near-miss, not preferred). An accurate street address keeps
+    # its real tier and can still be GREEN.
+    elif tier == "GREEN" and geocode.is_bare_neighborhood(e.street_address_or_neighborhood):
+        tier = "AMBER"
     mark_seen(key)
 
     if tier == "RED":

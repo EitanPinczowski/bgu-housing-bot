@@ -55,6 +55,19 @@ def test_google_result_outside_box_is_rejected(monkeypatch, tmp_path):
     assert geocode.geocode("רחוב שלא קיים כאן") is None
 
 
+def test_bare_neighborhood_detection():
+    # bare neighborhood -> capped to amber; an accurate street address is not
+    assert geocode.is_bare_neighborhood("שכונה ג")
+    assert geocode.is_bare_neighborhood("שכונה ג'")
+    assert geocode.is_bare_neighborhood("הנדיב, שכונה ג")        # no רחוב / number
+    assert not geocode.is_bare_neighborhood('רחוב הכ"ג 5, שכונה ג')  # house number
+    assert not geocode.is_bare_neighborhood("רחוב הנדיב, שכונה ג")   # street word
+    assert not geocode.is_bare_neighborhood("הבלוק")             # not a שכונה
+    assert not geocode.is_bare_neighborhood(None)
+    assert geocode.is_precise_address("רחוב הנדיב") and geocode.is_precise_address("הנדיב 5")
+    assert not geocode.is_precise_address("שכונה ג")
+
+
 def test_disabled_without_key(monkeypatch, tmp_path):
     _fresh(monkeypatch, tmp_path)
     monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)

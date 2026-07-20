@@ -12,10 +12,32 @@ a wrong walk time (and a false match or a wrong drop).
 from __future__ import annotations
 import json
 import os
+import re
 import time
 from typing import Optional, Tuple
 
 import config
+
+# An address is "precise" if it names a specific street or house number — as
+# opposed to a bare neighborhood ("שכונה ג"), which covers a whole area and so
+# can't be trusted as GREEN (see the amber cap in pipeline).
+_STREET_WORDS = ("רחוב", "רח'", "רח׳", "שדרות", "שד'", "שד׳", "דרך", "סמטת",
+                 "סמטה", "שביל")
+
+
+def is_precise_address(s: Optional[str]) -> bool:
+    if not s:
+        return False
+    if any(ch.isdigit() for ch in s):        # a house number
+        return True
+    return any(w in s for w in _STREET_WORDS)
+
+
+def is_bare_neighborhood(s: Optional[str]) -> bool:
+    """A whole-neighborhood location with no specific street ("שכונה ג")."""
+    if not s or ("שכונה" not in s and "שכונת" not in s):
+        return False
+    return not is_precise_address(s)
 
 # name (as it tends to appear in posts) -> (lat, lon)
 # Seed values below are ILLUSTRATIVE placeholders near BGU — replace/extend
