@@ -22,6 +22,16 @@ import zones
 from models import PipelineResult, Status
 
 
+# Invisible bidirectional-control characters Facebook injects into RTL (Hebrew)
+# text. They make the SAME post hash to a different _text_sig / fuzzy fingerprint
+# and can split numbers, so we strip them before anything else touches the text.
+_BIDI_RE = re.compile("[‎‏‪-‮⁦-⁩؜]")
+
+
+def _strip_bidi(text):
+    return _BIDI_RE.sub("", text) if text else text
+
+
 def _text_sig(text: str) -> str:
     """Stable signature of a post's text, for deduping the SAME post re-read on a
     later run (comment-less posts have no permalink to dedup on). Uses the first
@@ -82,6 +92,8 @@ def process_post(raw_text: str,
         post you've already stored is still shown, not silently swallowed.
     """
     images = images or []
+    raw_text = _strip_bidi(raw_text)      # kill FB's invisible RTL control chars
+    comments = _strip_bidi(comments)
 
     # 0) URL-level dedup BEFORE the LLM. A 2×/day scraper re-sees the same posts
     #    near the top of a group; skipping them here saves an API call each,

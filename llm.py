@@ -9,9 +9,12 @@ by changing LLM_PROVIDER in config.py — pipeline code never changes.
 from __future__ import annotations
 import json
 import os
+import time
 
 import config
 from models import ListingExtract
+
+_last_gemini_call = 0.0   # monotonic time of the last Gemini call (rate limiting)
 
 # Hebrew instruction prompt. The null-not-guess rule is the single most
 # important line here: a hallucinated "1800" would sail through the price gate.
@@ -44,6 +47,12 @@ _SYSTEM_HE = """אתה מנתח מודעות שכירות של דירות שות
 def _extract_gemini(post_text: str) -> ListingExtract:
     from google import genai
     from google.genai import types
+
+    global _last_gemini_call
+    gap = config.GEMINI_MIN_INTERVAL_SEC - (time.monotonic() - _last_gemini_call)
+    if gap > 0:                      # stay under the free-tier requests-per-minute
+        time.sleep(gap)
+    _last_gemini_call = time.monotonic()
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     resp = client.models.generate_content(
@@ -129,10 +138,13 @@ _primary_exhausted = False
 # How many extractions this run were served by the fallback — so the run summary
 # can tell you whether (and how hard) you're leaning on the local model.
 fallback_used = 0
+# Consecutive non-quota primary errors; after LLM_MAX_CONSECUTIVE_ERRORS we give
+# up on the primary for the rest of the run (like quota). Reset on any success.
+_consecutive_errors = 0
 
 
 def extract(post_text: str, comments: str | None = None) -> ListingExtract:
-    global _primary_exhausted, fallback_used
+    global _primary_exhausted, fallback_used, _consecutive_errors
     if comments:
         post_text = post_text + "\n\n[תגובות למודעה]:\n" + comments
     primary = config.LLM_PROVIDER
@@ -142,12 +154,25 @@ def extract(post_text: str, comments: str | None = None) -> ListingExtract:
         fallback_used += 1
         return _run(fallback, post_text)
     try:
-        return _run(primary, post_text)
+        result = _run(primary, post_text)
+        _consecutive_errors = 0
+        return result
     except Exception as exc:
-        if fallback and fallback != primary and _is_quota_error(exc):
+        if not (fallback and fallback != primary):
+            raise                               # nothing to fall back to
+        fallback_used += 1
+        if _is_quota_error(exc):
             _primary_exhausted = True
-            fallback_used += 1
             print(f"[llm] {primary} quota reached — using {fallback} "
                   "for the rest of this run.")
-            return _run(fallback, post_text)
-        raise
+        else:
+            # Transient error: serve THIS post from the fallback so it isn't lost,
+            # and only abandon the primary after enough consecutive failures.
+            _consecutive_errors += 1
+            if _consecutive_errors >= config.LLM_MAX_CONSECUTIVE_ERRORS:
+                _primary_exhausted = True
+                print(f"[llm] {primary} failed {_consecutive_errors}x — using "
+                      f"{fallback} for the rest of this run.")
+            else:
+                print(f"[llm] {primary} error, using {fallback} for this post: {exc}")
+        return _run(fallback, post_text)

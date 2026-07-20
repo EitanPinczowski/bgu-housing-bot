@@ -132,6 +132,13 @@ LLM_FALLBACK_PROVIDER = "openai_compatible"   # local Ollama (see LLM_* in .env)
 # free RPD at https://ai.google.dev/gemini-api/docs/rate-limits before changing.
 GEMINI_MODEL = "gemini-flash-lite-latest"
 # For "openai_compatible" (Ollama / Groq): set base_url + model in llm.py/.env
+# Client-side pacing so we don't trip the free-tier RPM limit (which would 429 us
+# onto the slow local fallback). Minimum seconds between Gemini calls.
+GEMINI_MIN_INTERVAL_SEC = 4.0
+# Beyond quota (429), also switch to the local fallback after this many CONSECUTIVE
+# non-quota Gemini errors (transient 500s/timeouts) — so a Gemini hiccup doesn't
+# fail post after post. Each failing post still gets served by the fallback.
+LLM_MAX_CONSECUTIVE_ERRORS = 3
 
 # ---------------------------------------------------------------------------
 # Geocoding. Static name table is primary (see geocode.py) for slang/
