@@ -1,5 +1,6 @@
 """pipeline helpers — the שכונה ד' no-amber rule and the text fingerprint."""
 import pipeline
+from models import ListingExtract
 
 
 def test_price_second_chance():
@@ -29,6 +30,38 @@ def test_strip_bidi_stabilizes_signature():
     assert pipeline._strip_bidi(dirty) == clean
     assert pipeline._text_sig(pipeline._strip_bidi(dirty)) == pipeline._text_sig(clean)
     assert pipeline._strip_bidi(None) is None
+
+
+def test_process_post_dedups_phone_flip(temp_db, monkeypatch):
+    """The live bug: the SAME numbered flat re-read with the phone extracted on only
+    one read (and a different price) must be DROPped as already-seen on the second
+    pass, not re-alerted. Text differs between reads so the text-signature dedup
+    doesn't fire — this isolates the new numbered-address key."""
+    calls = {"n": 0}
+
+    def fake_extract(text, comments=None):
+        calls["n"] += 1
+        first = calls["n"] == 1
+        return ListingExtract(is_apartment_ad=True,
+                              street_address_or_neighborhood="רינגלבלום 1",
+                              price_per_room_ils=1500 if first else 1400,
+                              available_rooms_count=2, total_roommates_in_apt=3,
+                              contact_phone_or_link="050-1234567" if first else None)
+
+    monkeypatch.setattr(pipeline.llm, "extract", fake_extract)
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda a: (31.25, 34.80))
+    monkeypatch.setattr(pipeline.geocode, "is_bare_neighborhood", lambda a: False)
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (5.0, "gate1"))
+    monkeypatch.setattr(pipeline.zones, "classify_location", lambda lat, lon, walk_min=None: "GREEN")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.notifier, "notify", lambda res: None)
+    monkeypatch.setattr(pipeline.sheets, "save_listing", lambda res: None)
+
+    text = "דירה להשכרה רינגלבלום 1 שני חדרים פנויים"
+    r1 = pipeline.process_post(text, commit=True)
+    r2 = pipeline.process_post(text + " עודכן", commit=True)   # different text sig
+    assert r1.status.value == "MATCH"
+    assert r2.status.value == "DROP" and "already seen" in r2.reason
 
 
 def test_no_amber_area_matches_dalet_only():

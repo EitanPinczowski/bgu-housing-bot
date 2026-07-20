@@ -99,13 +99,59 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+def _content_hash_key(e: ListingExtract) -> str:
+    """Fallback key from the listing's content — address + price + rooms + mates."""
+    basis = f"{e.street_address_or_neighborhood}|{e.price_per_room_ils}|{e.available_rooms_count}|{e.total_roommates_in_apt}"
+    return "hash:" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+
+
+# geresh / gershayim / straight+curly quotes — stripped so "רד״ק"/"רד'ק" normalize
+_ADDR_STRIP = str.maketrans("", "", "״׳'`\"‘’“”")
+
+
+def _norm_addr(address: Optional[str]) -> Optional[str]:
+    """Normalized form of a NUMBERED street address (one that carries a house
+    number), or None. Collapsing whitespace and dropping quote marks makes the same
+    flat's address stable across reads. Bare streets/neighborhoods (no house number,
+    e.g. 'רחוב קדש', 'שכונה ב') return None on purpose — different flats share those,
+    so they must NOT collapse together."""
+    if not address or not any(ch.isdigit() for ch in address):
+        return None
+    norm = re.sub(r"\s+", " ", address.translate(_ADDR_STRIP)).strip().lower()
+    return norm or None
+
+
+def _addr_key(e: ListingExtract) -> Optional[str]:
+    norm = _norm_addr(e.street_address_or_neighborhood)
+    return "addr:" + norm if norm else None
+
+
 def make_dedup_key(e: ListingExtract) -> str:
+    """The single primary key written to the listings row: the phone when present
+    (survives cross-posting), else the content hash."""
     if e.contact_phone_or_link:
         digits = re.sub(r"\D", "", e.contact_phone_or_link)
         if len(digits) >= 7:
             return "phone:" + digits[-9:]
-    basis = f"{e.street_address_or_neighborhood}|{e.price_per_room_ils}|{e.available_rooms_count}|{e.total_roommates_in_apt}"
-    return "hash:" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+    return _content_hash_key(e)
+
+
+def dedup_keys(e: ListingExtract) -> list:
+    """The stable keys a listing should be marked/checked 'seen' under, so the same
+    flat collapses across reads even when the LLM extracted the phone (or the price)
+    on only one read. De-duplicated, order-stable:
+      - the primary key (phone else content-hash), and
+      - the numbered-address key (the רינגלבלום 1 / רגר 164 case — same numbered
+        flat under a phone key on one read and a content hash on another).
+    Deliberately NOT the content-hash on its own: with a null/bare address it
+    collides across genuinely different flats that share a price+rooms, which would
+    drop a real second listing. The content hash is only trusted when it IS the
+    primary key (i.e. there's no phone), where make_dedup_key already returns it."""
+    keys = [make_dedup_key(e)]
+    ak = _addr_key(e)
+    if ak and ak not in keys:
+        keys.append(ak)
+    return keys
 
 
 def is_seen(dedup_key: str) -> bool:
@@ -113,9 +159,28 @@ def is_seen(dedup_key: str) -> bool:
         return c.execute("SELECT 1 FROM seen WHERE dedup_key=?", (dedup_key,)).fetchone() is not None
 
 
+def is_seen_any(keys) -> bool:
+    """True if ANY of these keys is already seen — the multi-key dedup check."""
+    keys = [k for k in keys if k]
+    if not keys:
+        return False
+    with _conn() as c:
+        q = "SELECT 1 FROM seen WHERE dedup_key IN (%s) LIMIT 1" % ",".join("?" * len(keys))
+        return c.execute(q, keys).fetchone() is not None
+
+
 def mark_seen(dedup_key: str) -> None:
     with _conn() as c:
         c.execute("INSERT OR IGNORE INTO seen(dedup_key) VALUES (?)", (dedup_key,))
+
+
+def mark_seen_all(keys) -> None:
+    """Mark every one of these keys seen (idempotent) — pair with is_seen_any."""
+    keys = [(k,) for k in keys if k]
+    if not keys:
+        return
+    with _conn() as c:
+        c.executemany("INSERT OR IGNORE INTO seen(dedup_key) VALUES (?)", keys)
 
 
 # URL-level dedup, checked BEFORE the LLM runs so a post we already processed in
@@ -343,6 +408,53 @@ def delete_listing(dedup_key: str) -> None:
     """Remove a listing (e.g. replay --apply found it now classifies RED/NOT_AD)."""
     with _conn() as c:
         c.execute("DELETE FROM listings WHERE dedup_key=?", (dedup_key,))
+
+
+def _group_key(dedup_key, address) -> str:
+    """The identity a listings ROW is grouped under for de-duplication: its NUMBERED
+    address (collapses a phone/hash/field flip of the same flat), else the row's own
+    dedup_key so it groups only with itself. Deliberately NOT a content hash: a
+    null/bare address + shared price+rooms collides across genuinely different flats
+    (different phones), which must never merge."""
+    norm = _norm_addr(address)
+    return "addr:" + norm if norm else str(dedup_key)
+
+
+def merge_duplicate_listings() -> int:
+    """One-time cleanup: the SAME numbered flat stored under several keys (phone vs
+    hash vs a field-flip) — e.g. רינגלבלום 1 as two hashes, רגר 164 as phone+hash.
+    Group the listings rows by numbered address, keep the RICHEST row in each group
+    (most non-null core fields; tie -> the phone-keyed row, then higher score),
+    migrate that group's votes to the kept key, and delete the rest. Returns rows
+    removed. Bare/null-address rows never merge (grouped by their own key)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT dedup_key, address, price_per_room, available_rooms, "
+            "total_roommates, contact, score FROM listings").fetchall()
+        groups: dict = {}
+        for r in rows:
+            groups.setdefault(_group_key(r[0], r[1]), []).append(r)
+
+        def richness(r):
+            core = (r[2], r[3], r[4], r[5])            # price, avail, mates, contact
+            return (sum(x is not None for x in core),
+                    r[0].startswith("phone:"), r[6] or 0)
+
+        removed = 0
+        for grp in groups.values():
+            if len(grp) < 2:
+                continue
+            keep = max(grp, key=richness)[0]
+            for r in grp:
+                dead = r[0]
+                if dead == keep:
+                    continue
+                c.execute("UPDATE OR IGNORE marks SET dedup_key=? WHERE dedup_key=?", (keep, dead))
+                c.execute("DELETE FROM marks WHERE dedup_key=?", (dead,))
+                c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (dead,))
+                c.execute("DELETE FROM listings WHERE dedup_key=?", (dead,))
+                removed += 1
+        return removed
 
 
 def save_listing(res: PipelineResult) -> None:

@@ -76,6 +76,11 @@ def _worksheet():
         import gspread
         gc = gspread.service_account(filename=cred)
         ws = _retry(lambda: gc.open_by_key(sheet_id).sheet1)
+        # Pin the grid to exactly our column count. A wider grid (a stray far cell
+        # once pushed this sheet to 609 columns) makes gspread's auto-append place
+        # rows in the wrong place; shrinking it here means that can never persist.
+        if ws.col_count != len(HEADERS):
+            _retry(lambda: ws.resize(cols=len(HEADERS)))
         if _retry(lambda: ws.row_values(1)) != HEADERS:   # (re)write header if outdated
             _retry(lambda: ws.update([HEADERS], "A1"))
         _ws = ws
@@ -103,6 +108,24 @@ def _seen() -> set:
     return _seen_keys
 
 
+def _next_row(ws) -> int:
+    """1-based row just past the last non-empty dedup_key cell — the authoritative
+    data extent. Using the dedup_key column (which every real row fills) instead of
+    gspread's auto table-range detection means a stray far cell can't misplace a
+    write, so no blank gaps form."""
+    return len(_retry(lambda: ws.col_values(_DEDUP_COL))) + 1
+
+
+def _write_rows(ws, rows: list) -> None:
+    """Write rows at an explicitly computed next-row, never via append_row."""
+    if not rows:
+        return
+    start = _next_row(ws)
+    end = start + len(rows) - 1
+    rng = f"A{start}:{_col_letter(len(HEADERS))}{end}"
+    _retry(lambda: ws.update(rows, rng, value_input_option="USER_ENTERED"))
+
+
 def save_listing(res: PipelineResult) -> None:
     """Append one listing as a row, unless its dedup_key is already in the sheet.
     Best-effort: any failure is logged and swallowed so it never breaks a run."""
@@ -122,7 +145,7 @@ def save_listing(res: PipelineResult) -> None:
         e.summary_hebrew, res.source_url, res.group, key, "", res.score,   # "" = mark
     ]
     try:
-        _retry(lambda: ws.append_row(row, value_input_option="USER_ENTERED"))
+        _write_rows(ws, [row])
         _seen().add(key)
     except Exception as exc:
         print(f"[sheets] append failed: {exc}")
@@ -148,11 +171,22 @@ def sync_from_db() -> int:
     ws = _worksheet()
     if ws is None:
         return 0
+    # Self-heal: if the grid has drifted — wrong header, or blank rows interspersed
+    # among the data (data rows outnumber non-empty dedup_key cells) — a plain append
+    # would land in the wrong place. Rebuild the whole sheet from the DB instead.
     try:
-        have = set(k for k in _retry(lambda: ws.col_values(_DEDUP_COL))[1:] if k.strip())
+        vals = _retry(lambda: ws.get_all_values())
     except Exception as exc:
-        print(f"[sheets] sync: could not read existing keys: {exc}")
+        print(f"[sheets] sync: could not read sheet: {exc}")
         return 0
+    col = _DEDUP_COL - 1
+    header = vals[0] if vals else []
+    have = set(r[col] for r in vals[1:] if len(r) > col and r[col].strip())
+    if header != HEADERS or (len(vals) - 1) > len(have):
+        n = rebuild_from_db()
+        sort_by_score()
+        print(f"[sheets] sync: grid had drifted — rebuilt {n} rows")
+        return n
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute(
             """SELECT first_seen, status, location_tier, price_per_room, available_rooms,
@@ -170,7 +204,7 @@ def sync_from_db() -> int:
     if not batch:
         return 0
     try:
-        _retry(lambda: ws.append_rows(batch, value_input_option="USER_ENTERED"))
+        _write_rows(ws, batch)
         _seen().update(r[HEADERS.index("dedup_key")] for r in batch)
         return len(batch)
     except Exception as exc:

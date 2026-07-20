@@ -125,6 +125,54 @@ def test_unknown_locations_counts(temp_db):
     assert ("הרובע", 1) == (rows[1][0], rows[1][1])
 
 
+def _extract(addr, price=None, avail=None, total=None, contact=None):
+    return ListingExtract(is_apartment_ad=True, street_address_or_neighborhood=addr,
+                          price_per_room_ils=price, available_rooms_count=avail,
+                          total_roommates_in_apt=total, contact_phone_or_link=contact)
+
+
+def test_addr_key_only_for_numbered_address():
+    assert storage._addr_key(_extract("רינגלבלום 1")) == "addr:רינגלבלום 1"
+    assert storage._addr_key(_extract("שכונה ב")) is None          # bare neighborhood
+    assert storage._addr_key(_extract("רחוב קדש")) is None         # street, no number
+    assert any(k.startswith("addr:") for k in storage.dedup_keys(_extract("רינגלבלום 1")))
+    assert not any(k.startswith("addr:") for k in storage.dedup_keys(_extract("שכונה ב")))
+
+
+def test_multikey_collapses_phone_and_field_flip(temp_db):
+    # the רינגלבלום 1 case: same numbered flat, read A has the phone + one price,
+    # read B has neither the phone nor the same price -> primary keys differ, but the
+    # numbered-address key ties them so read B is recognised as already seen.
+    a = _extract("רינגלבלום 1", price=2000, contact="050-1234567")
+    b = _extract("רינגלבלום 1", price=1800)
+    assert storage.make_dedup_key(a) != storage.make_dedup_key(b)
+    assert not storage.is_seen_any(storage.dedup_keys(b))
+    storage.mark_seen_all(storage.dedup_keys(a))
+    assert storage.is_seen_any(storage.dedup_keys(b))
+
+
+def test_bare_neighborhood_flats_stay_separate(temp_db):
+    # two genuinely different flats in שכונה ב (no house number) must NOT collapse
+    storage.mark_seen_all(storage.dedup_keys(_extract("שכונה ב", price=2000)))
+    assert not storage.is_seen_any(storage.dedup_keys(_extract("שכונה ב", price=1500)))
+
+
+def test_merge_duplicate_listings(temp_db):
+    def save(key, price, avail, total, contact, score):
+        e = _extract("רגר 164", price, avail, total, contact)
+        storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key=key,
+                             location_tier="GREEN", score=score, extract=e))
+    save("phone:1234567", 1100, 2, 3, "050-1234567", 82)   # richer row
+    save("hash:deadbeef00000000", None, 2, None, None, 75)  # sparse duplicate
+    storage.set_mark("hash:deadbeef00000000", "u1", "saved")   # a vote on the doomed row
+    assert storage.merge_duplicate_listings() == 1
+    import sqlite3
+    keys = [r[0] for r in sqlite3.connect(temp_db).execute(
+        "SELECT dedup_key FROM listings WHERE address='רגר 164'").fetchall()]
+    assert keys == ["phone:1234567"]                       # kept the richer row
+    assert storage.get_user_mark("phone:1234567", "u1") == "saved"   # vote migrated
+
+
 def test_fuzzy_dedup_matches_near_identical(temp_db):
     base = set("דירת שלושה שותפים בשכונה מתפנים שני חדרים ממוזגת מרוהטת כניסה מיידית להשכרה".split())
     storage.record_fingerprint("phone:9", base)

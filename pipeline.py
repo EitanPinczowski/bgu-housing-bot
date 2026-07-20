@@ -229,10 +229,13 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     if _blacklisted(e.street_address_or_neighborhood):
         return result(Status.DROP, f"blacklisted area: {e.street_address_or_neighborhood}")
 
-    # 3) dedup (prefer phone; survives cross-posting). Skipped on a dry run so
-    #    already-stored posts still surface instead of short-circuiting to DROP.
+    # 3) dedup. Check ALL of the listing's stable keys (phone, content-hash, and —
+    #    for a numbered address — the address key), so the SAME flat is caught even
+    #    when the LLM extracted the phone (or the price) on only one read. This is
+    #    what stops רינגלבלום 1 / רגר 164 being alerted twice. Skipped on a dry run
+    #    so already-stored posts still surface instead of short-circuiting to DROP.
     key = storage.make_dedup_key(e)
-    if commit and storage.is_seen(key):
+    if commit and storage.is_seen_any(storage.dedup_keys(e)):
         return result(Status.DROP, "already seen", key=key)
 
     def mark_seen(k: str) -> None:
@@ -309,6 +312,10 @@ def _classify(e, raw_text: str, source_url, group, images: list,
                           e.furnished)
 
     if commit:
+        # Mark this flat seen under ALL its stable keys (phone/content-hash/address)
+        # so a later re-read whose phone or price the LLM extracts differently is
+        # recognised as a duplicate and never re-alerted.
+        storage.mark_seen_all(storage.dedup_keys(e))
         storage.save_listing(res)
         storage.record_fingerprint(res.dedup_key, _tokens(raw_text))   # for fuzzy dedup of reposts
         sheets.save_listing(res)   # optional Google Sheets sink (no-op if unset)
