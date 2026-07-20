@@ -201,26 +201,8 @@ def _age_from_aria(aria: str) -> Optional[float]:
 
 
 def _post_age_hours(story) -> Optional[float]:
-    """Approximate post age in hours, read from its timestamp link. None if it
-    can't be determined (timestamp not rendered) — caller keeps the post then.
-    Prefers the relative text ("13h"); falls back to the aria-label date."""
-    try:
-        for a in story.query_selector_all("a[href]"):
-            t = (a.inner_text() or "").strip()
-            if t and len(t) <= 25:        # timestamps are short ("13h", "July 5")
-                if (m := _TS_REL.match(t)):
-                    return int(m.group(1)) * _TS_UNIT_HOURS[m.group(2).lower()]
-                if _TS_NOW.match(t):
-                    return 0.0
-                if _TS_DATE.search(t):
-                    return 1e9            # a bare date => older than any cutoff
-            aria = a.get_attribute("aria-label") or ""
-            if aria:
-                if (h := _age_from_aria(aria)) is not None:
-                    return h
-    except Exception:
-        pass
-    return None
+    """Post age in hours from its timestamp link — see _permalink_and_age."""
+    return _permalink_and_age(story)[1]
 
 
 def _images(story, limit: int = 6) -> list[str]:
@@ -287,19 +269,65 @@ def _expand_see_more(page) -> None:
                 pass
 
 
+def _clean_href(href: str) -> str:
+    """Absolute URL with tracking/query stripped (drops __cft__/__tn__/comment_id/set)."""
+    if href.startswith("/"):
+        href = "https://www.facebook.com" + href
+    return href.split("?")[0]
+
+
 def _permalink(story) -> Optional[str]:
-    """First anchor in the story that looks like a post permalink, cleaned of
-    query junk. None if not found (post still usable — permalink is a bonus)."""
+    """First anchor that looks like a post permalink (not a comment link), cleaned.
+    The fallback used by _permalink_and_age; None if none found (permalink is a bonus)."""
     try:
         for a in story.query_selector_all("a[href]"):
             href = a.get_attribute("href") or ""
-            if any(hint in href for hint in _PERMALINK_HINTS):
-                if href.startswith("/"):
-                    href = "https://www.facebook.com" + href
-                return href.split("?")[0]
+            if "comment_id" not in href and any(hint in href for hint in _PERMALINK_HINTS):
+                return _clean_href(href)
     except Exception:
         pass
     return None
+
+
+def _permalink_and_age(story):
+    """(permalink, age_hours) read from the post's TIMESTAMP anchor — the "13h"/date
+    link, which IS the canonical permalink and renders on ~every post (comment-less
+    ones too, which the old first-hint scan usually missed). Falls back to the first
+    permalink-hint anchor for the link, and None for either when not present."""
+    link_ts = link_any = None
+    age = None
+    try:
+        anchors = (story.query_selector_all('a[role="link"]')
+                   or story.query_selector_all("a[href]"))
+        for a in anchors:
+            href = a.get_attribute("href") or ""
+            is_ts = False
+            t = (a.inner_text() or "").strip()
+            if t and len(t) <= 25:              # timestamps are short ("13h", "July 5")
+                if (m := _TS_REL.match(t)):
+                    age = int(m.group(1)) * _TS_UNIT_HOURS[m.group(2).lower()]
+                    is_ts = True
+                elif _TS_NOW.match(t):
+                    age = 0.0
+                    is_ts = True
+                elif _TS_DATE.search(t):
+                    age = 1e9                    # a bare date => older than any cutoff
+                    is_ts = True
+            if not is_ts:
+                aria = a.get_attribute("aria-label") or ""
+                if aria and (h := _age_from_aria(aria)) is not None:
+                    age = h
+                    is_ts = True
+            hint = "comment_id" not in href and any(x in href for x in _PERMALINK_HINTS)
+            if is_ts and link_ts is None and hint:
+                link_ts = _clean_href(href)      # the timestamp link IS the permalink
+            if link_any is None and hint:
+                link_any = _clean_href(href)
+            if link_ts is not None and age is not None:
+                break
+    except Exception:
+        pass
+    return (link_ts or link_any), age
 
 
 def _stories(page):
@@ -373,10 +401,10 @@ def scrape_group(page: Page, url: str) -> list[dict]:
             # FB often renders a post's body before its timestamp/permalink
             # anchor. Backfill the permalink when a later pass exposes it.
             key = text[:80]
-            # Read the post's age once (also used by the score's freshness
-            # factor). A post's timestamp may only render on a LATER pass, so it
-            # can be None here and known later.
-            age = _post_age_hours(story)
+            # Read the permalink AND age from the post's timestamp anchor in one
+            # pass — that link IS the canonical permalink. Either can be None on an
+            # early pass and get backfilled on a later one.
+            link, age = _permalink_and_age(story)
             # age filter: skip posts we can READ as >= the cutoff. Because the
             # timestamp may render late, also drop one we'd already added if a
             # later read reveals it's old. Unknown age is kept, so a recent
@@ -385,7 +413,6 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                     and age is not None and age >= config.SCRAPER_MAX_POST_AGE_HOURS):
                 collected.pop(key, None)
                 continue  # "1d"+ => 24h or older => outside the last 24h
-            link = _permalink(story)
             imgs = _images(story)
             cmts = _comments(story)
             entry = collected.get(key)
