@@ -342,6 +342,17 @@ It's the only process that *reads* Telegram; everything else only sends. If it's
 not running, taps just queue and are processed next time it starts. Run it by
 hand to see logs: `python bot_listener.py`.
 
+It also answers two **DM-only** text commands (ignored in the group, and only from
+your own DM):
+
+- **`/search <query>`** — filtered search over your stored listings, ranked by the
+  vote-adjusted score. Mix filters freely, Hebrew or English:
+  `/search 2 חדרים עד 1500 ירוק אוקטובר` or `/search green 4 stars רגר`. Supports
+  rooms, `עד <price>`/`under <price>`, `ירוק`/`green` & `צהוב`/`amber`, a move-in
+  month, `X כוכבים`/`X stars` or `ניקוד <n>`, and free-text street. (See `query.py`.)
+- **`/status`** — last-24h run funnel (from `search_log.txt`), DB totals, and a live
+  OSRM health check, replied to your DM on demand.
+
 ### Facebook safety extras
 
 - **Checkpoint abort.** If a run lands on a Facebook checkpoint / login /
