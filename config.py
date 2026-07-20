@@ -207,20 +207,22 @@ MIN_ALERT_SCORE = 70
 # ---------------------------------------------------------------------------
 SCRAPER_PROFILE_DIR = AUTH_DIR / "chrome_profile"  # persistent login session
 SCRAPER_HEADLESS = False                # never headless — see CLAUDE.md
-SCRAPER_MAX_SCROLLS = 6                  # normal scroll depth per group
-SCRAPER_SCROLL_CAP = 12                  # hard cap when still chasing MIN posts
-SCRAPER_MIN_POSTS_PER_GROUP = 5          # keep scrolling until at least this many
+SCRAPER_MAX_SCROLLS = 15                 # normal scroll depth per group
+SCRAPER_SCROLL_CAP = 25                  # hard cap when still chasing MIN posts
+SCRAPER_MIN_POSTS_PER_GROUP = 20         # keep scrolling until at least this many
 SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
 SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
-# groups per run: a RANDOM fraction of all groups, between these bounds (⅓–½).
-# Now used as the UPPER bound / jitter around the coverage guarantee below.
+# Scan EVERY group each run (user request), reading up to SCRAPER_MIN_POSTS_PER_GROUP
+# recent posts each — the scroll cap stops early when a group has no more new posts.
+# NOTE: this is a large step up in per-run activity (all groups, ~20 posts, deep
+# scrolling); with the current run frequency it's ~6x the old scraping volume on a
+# single personal account. Strongly consider LOWERING SCRAPER_RUNS_PER_DAY (and the
+# BGU Housing Scraper task's triggers) to ~3 to offset it — each run already covers
+# everything. When SCAN_ALL is True the coverage-rotation knobs below are unused.
+SCRAPER_SCAN_ALL_GROUPS = True
+# groups per run when NOT scanning all: a RANDOM fraction of all groups (⅓–½).
 SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
-# Coverage guarantee: every group is read at least SCRAPER_MIN_SCRAPES_PER_DAY
-# times a day. Each run picks the most-overdue groups (fewest reads in the last
-# 24h, oldest first) and scrapes enough of them that, across SCRAPER_RUNS_PER_DAY
-# runs, no group is left behind. Raising the minimum reads more per run (more FB
-# activity) — keep it modest.
-SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h
+SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h (see note above — consider lowering)
 SCRAPER_MIN_SCRAPES_PER_DAY = 3     # each group read at least this often per day
 
 # Each Telegram save/dismiss tap nudges a listing's score by this much, per user

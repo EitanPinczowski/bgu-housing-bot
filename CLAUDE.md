@@ -80,12 +80,16 @@ the scraper MUST be conservative and the user must stay in control:
 
 - Non-headless, **persistent real browser profile** (log in once manually), NOT
   headless cookie injection.
-- Long randomized delays; a **rotating subset** of groups per run. Runs **6×/day
-  daytime** (09/11/13/15/17/19, each +up to 25 min jitter so it isn't clockwork;
-  no night runs). GROUPS_PER_RUN=8, MAX_SCROLLS=6. Raised over time at the user's
-  request (2→4→6×/day) for more coverage — they accept the added risk. The real
-  protections (real logged-in profile, home IP, read-only, human-like pacing)
-  are unchanged. This is roughly the ceiling; don't push higher without a reason.
+- Long randomized delays, +up to 25 min jitter per scheduled run so it isn't
+  clockwork; daytime only, no night runs. Volume has been raised repeatedly at the
+  user's request — currently **`SCRAPER_SCAN_ALL_GROUPS=True` (all 17 groups every
+  run), `MIN_POSTS_PER_GROUP=20`, `MAX_SCROLLS=15`/`SCROLL_CAP=25`, 7×/day** (08–20
+  every 2h). This is ~6× the earlier "rotating ⅓–½ subset, 5 posts" volume and is
+  **past the old ceiling** — the user was given a clear high-risk assessment and
+  chose it, on their only FB account. The real protections (real logged-in profile,
+  home IP, read-only, human-like pacing, checkpoint-abort) are unchanged, but they
+  don't offset raw volume. The recommended offset is fewer runs/day (e.g. 3); do
+  not raise volume further without an explicit, informed request.
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.

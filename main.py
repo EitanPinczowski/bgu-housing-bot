@@ -91,6 +91,11 @@ def _select_groups() -> list[str]:
     groups = config.FB_GROUPS
     if not groups:
         return []
+    # Scan-all mode: every group each run, in a random order (no clockwork pattern).
+    if getattr(config, "SCRAPER_SCAN_ALL_GROUPS", False):
+        shuffled = list(groups)
+        random.shuffle(shuffled)
+        return shuffled
     total = len(groups)
     hist = _load_scrapes()
     cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
