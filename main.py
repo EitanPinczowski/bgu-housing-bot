@@ -130,9 +130,20 @@ def run(dry_run: bool) -> None:
         return
 
     counts: Counter[str] = Counter()
+    scan: Counter[str] = Counter()  # read / age_skipped / seen_skipped across groups
     total_posts = 0
     groups_with_posts = 0          # for failure detection (0 across all => trouble)
     blocked_reason = None          # set if FB shows a checkpoint/login wall
+
+    # On a LIVE run, let the scraper skip posts already processed in an earlier run
+    # (so an all-seen group stops scrolling fast). Uses the exact keys the pipeline's
+    # pre-LLM dedup uses. None on a dry run, so a preview still surfaces everything.
+    seen_pred = None
+    if not dry_run:
+        def seen_pred(text, url):
+            if url and storage.is_url_seen(url):
+                return True
+            return storage.is_seen(pipeline._text_sig(pipeline._strip_bidi(text)))
 
     p, context = scraper.open_browser()
     try:
@@ -140,7 +151,7 @@ def run(dry_run: bool) -> None:
         for i, url in enumerate(selected):
             print(f"--- group {i + 1}/{len(selected)}: {url}")
             try:
-                posts = scraper.scrape_group(page, url)
+                posts, gstats = scraper.scrape_group(page, url, already_seen=seen_pred)
             except scraper.FacebookBlock as exc:
                 # A checkpoint/login wall — stop the ENTIRE run, do not retry.
                 blocked_reason = str(exc)
@@ -150,7 +161,9 @@ def run(dry_run: bool) -> None:
                 # one bad group must not kill the whole run
                 print(f"[main] group failed, skipping: {exc}")
                 continue
-            print(f"    {len(posts)} posts read")
+            scan.update(gstats)
+            print(f"    {len(posts)} fresh posts (read {gstats['read']}, "
+                  f"age-skip {gstats['age_skipped']}, seen-skip {gstats['seen_skipped']})")
             _record_scrape(url)          # count this read toward the daily coverage
             if posts:
                 groups_with_posts += 1
@@ -189,6 +202,8 @@ def run(dry_run: bool) -> None:
     print("\n=== summary ===")
     print(f"mode: {mode}")
     print(f"posts processed: {total_posts} (groups with posts: {groups_with_posts}/{len(selected)})")
+    print(f"funnel: read {scan['read']} · age-skip {scan['age_skipped']} · "
+          f"seen-skip {scan['seen_skipped']} · processed {total_posts}")
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")
@@ -217,9 +232,11 @@ def run(dry_run: bool) -> None:
             # Heartbeat digest — so silence means something broke, and you get a
             # one-line pulse of each run.
             fb = f" · {llm.fallback_used} במודל מקומי" if llm.fallback_used else ""
+            funnel = (f"\n🔎 נסרקו {scan['read']} · דילוג ישן {scan['age_skipped']} · "
+                      f"דילוג נראו {scan['seen_skipped']} · לעיבוד {total_posts}")
             notifier.send(notifier._esc(
                 f"🏠 סריקה הושלמה: {total_posts} פוסטים · {matches} התאמות · "
-                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb),
+                f"{needs} חוסר-מידע · {groups_with_posts}/{len(selected)} קבוצות" + fb + funnel),
                 target="primary")
         # Reconcile the sheet with the DB (catches any rows a per-post append
         # dropped to a rate-limit blip), then keep it ordered best-first.
@@ -235,6 +252,7 @@ def run(dry_run: bool) -> None:
 
     _log_search("END", f"{end_tag}  {time.monotonic() - started:.0f}s  "
                        f"posts={total_posts} match={matches} needs={needs} "
+                       f"read={scan['read']} age_skip={scan['age_skipped']} seen_skip={scan['seen_skipped']} "
                        f"groups_ok={groups_with_posts}/{len(selected)}"
                        + (f"  block={blocked_reason}" if blocked_reason else ""))
 

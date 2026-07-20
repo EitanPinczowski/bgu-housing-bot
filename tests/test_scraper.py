@@ -53,3 +53,60 @@ def test_comment_anchor_is_not_taken_as_permalink():
 def test_post_age_hours_delegates():
     ts = _Anchor(href="/groups/1/posts/2/", text="3d")
     assert scraper._post_age_hours(_Story([ts])) == 72.0   # 3 * 24
+
+
+# --- scrape_group early-stop (no browser): a static feed that stops turning up new
+# fresh posts must break well before SCROLL_CAP, and skip already-seen posts. ----
+class _FakePage:
+    def __init__(self):
+        self.url = "https://www.facebook.com/groups/1"
+        self.mouse = self
+
+    def goto(self, *a, **k): pass
+    def wait_for_selector(self, *a, **k): pass
+    def wheel(self, *a, **k): pass
+
+
+class _FakeStory:
+    def __init__(self, text): self._t = text
+    def inner_text(self): return self._t
+
+
+def _stub_scraper(monkeypatch, stories):
+    """Patch out the browser/DOM helpers; return a pass-counter dict."""
+    passes = {"n": 0}
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(scraper, "_blocked_reason", lambda page: None)
+    monkeypatch.setattr(scraper, "_clean_story", lambda raw: raw)
+    monkeypatch.setattr(scraper, "_images", lambda s, **k: [])
+    monkeypatch.setattr(scraper, "_comments", lambda s: "")
+    monkeypatch.setattr(scraper, "_permalink_and_age", lambda s: (None, 2.0))  # fresh
+    monkeypatch.setattr(scraper, "_expand_see_more", lambda page: None)
+
+    def fake_stories(page):
+        passes["n"] += 1
+        return stories
+    monkeypatch.setattr(scraper, "_stories", fake_stories)
+    return passes
+
+
+_POSTS = [_FakeStory(f"דירה להשכרה שלושה שותפים חדר פנוי מיידי בשכונה ג מספר {i}")
+          for i in range(3)]
+
+
+def test_scrape_group_early_stops_on_stale(monkeypatch):
+    passes = _stub_scraper(monkeypatch, _POSTS)
+    posts, stats = scraper.scrape_group(_FakePage(), "https://www.facebook.com/groups/1")
+    assert len(posts) == 3 and stats["read"] == 3
+    # 2 warm-up passes + 2 stale passes ≈ 3 passes, far below SCROLL_CAP (25)
+    assert passes["n"] <= 4
+
+
+def test_scrape_group_skips_already_seen(monkeypatch):
+    _stub_scraper(monkeypatch, _POSTS)
+    seen = lambda text, url: text.endswith("מספר 1")     # one of the three is old news
+    posts, stats = scraper.scrape_group(_FakePage(), "https://www.facebook.com/groups/1",
+                                        already_seen=seen)
+    assert stats["seen_skipped"] == 1
+    assert len(posts) == 2
+    assert all("מספר 1" not in p["text"] for p in posts)

@@ -181,13 +181,14 @@ FB_GROUPS = [
     "https://www.facebook.com/groups/2302505389980235",
     "https://www.facebook.com/groups/1637994659811132",
     "https://www.facebook.com/groups/170744879507",
-    "https://www.facebook.com/groups/708432163853635",
     "https://www.facebook.com/groups/167457006612972",
     "https://www.facebook.com/groups/279135451973",
-    "https://www.facebook.com/groups/989159401625656",
     "https://www.facebook.com/groups/501446271648548",
     "https://www.facebook.com/groups/712487315492862",
-    "https://www.facebook.com/groups/2835281153355520",
+    # dropped — 0 matches ever as of 2026-07-20 (group_yield); re-add if desired:
+    # "https://www.facebook.com/groups/708432163853635",
+    # "https://www.facebook.com/groups/989159401625656",
+    # "https://www.facebook.com/groups/2835281153355520",
 ]
 
 # ---------------------------------------------------------------------------
@@ -213,19 +214,27 @@ SCRAPER_HEADLESS = False                # never headless — see CLAUDE.md
 SCRAPER_MAX_SCROLLS = 15                 # normal scroll depth per group
 SCRAPER_SCROLL_CAP = 25                  # hard cap when still chasing MIN posts
 SCRAPER_MIN_POSTS_PER_GROUP = 20         # keep scrolling until at least this many
+# Early-stop: the feed is newest-first, so once scrolling stops turning up NEW fresh
+# (recent, not-already-seen) posts, everything below is old/seen — quit the group
+# instead of grinding to SCROLL_CAP. Break when a pass adds no new fresh post for
+# STOP_AFTER_STALE_PASSES passes in a row (after MIN_SCROLLS_BEFORE_STOP passes, so
+# the feed has hydrated). This is the main runtime win on quiet groups.
+SCRAPER_STOP_AFTER_STALE_PASSES = 2
+SCRAPER_MIN_SCROLLS_BEFORE_STOP = 2
 SCRAPER_SCROLL_DELAY = (4.0, 9.0)        # seconds between scrolls (randomized)
 SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
 # Scan EVERY group each run (user request), reading up to SCRAPER_MIN_POSTS_PER_GROUP
 # recent posts each — the scroll cap stops early when a group has no more new posts.
-# NOTE: this is a large step up in per-run activity (all groups, ~20 posts, deep
-# scrolling); with the current run frequency it's ~6x the old scraping volume on a
-# single personal account. Strongly consider LOWERING SCRAPER_RUNS_PER_DAY (and the
-# BGU Housing Scraper task's triggers) to ~3 to offset it — each run already covers
-# everything. When SCAN_ALL is True the coverage-rotation knobs below are unused.
+# NOTE: scans ALL groups each run. The age + already-seen early-stops (above /
+# scraper.py) keep each run SHALLOW — a run soon after another finds mostly seen
+# posts and bails per group after a few passes — which is what makes the 7×/day
+# cadence's total work comparable to the old 4×/day deep scans. Still a single
+# personal account: raise the cadence only on an explicit, informed request (this
+# 7×/day was one). When SCAN_ALL is True the coverage-rotation knobs below are unused.
 SCRAPER_SCAN_ALL_GROUPS = True
 # groups per run when NOT scanning all: a RANDOM fraction of all groups (⅓–½).
 SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
-SCRAPER_RUNS_PER_DAY = 4            # 08:00 / 12:00 / 16:00 / 20:00 (every 4h)
+SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h (early-stops keep each run light)
 SCRAPER_MIN_SCRAPES_PER_DAY = 3     # each group read at least this often per day
 
 # Each Telegram save/dismiss tap nudges a listing's score by this much, per user

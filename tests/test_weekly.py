@@ -21,6 +21,20 @@ def test_summarize_counts_and_dangling():
     assert s["blocked"] == 1
     assert (s["posts"], s["matches"], s["needs"]) == (100, 3, 9)
     assert s["dangling"] == 1
+    # funnel fields absent on these older lines -> stay 0
+    assert (s["read"], s["age_skip"], s["seen_skip"]) == (0, 0, 0)
+
+
+def test_summarize_parses_funnel_fields():
+    now = datetime(2026, 7, 20, 18, 0, 0)
+    lines = [
+        "2026-07-20 08:00:00  START  LIVE  groups=14/14",
+        "2026-07-20 08:12:00  END    LIVE  700s  posts=40 match=2 needs=6 "
+        "read=180 age_skip=90 seen_skip=50 groups_ok=14/14",
+    ]
+    s = w._summarize(lines, now, days=7)
+    assert (s["read"], s["age_skip"], s["seen_skip"]) == (180, 90, 50)
+    assert (s["posts"], s["matches"], s["needs"]) == (40, 2, 6)
 
 
 def test_in_progress_run_is_not_flagged():

@@ -99,14 +99,18 @@ the scraper MUST be conservative and the user must stay in control:
   headless cookie injection.
 - Long randomized delays, +up to 25 min jitter per scheduled run so it isn't
   clockwork; daytime only, no night runs. Volume has been raised repeatedly at the
-  user's request — currently **`SCRAPER_SCAN_ALL_GROUPS=True` (all 17 groups every
-  run), `MIN_POSTS_PER_GROUP=20`, `MAX_SCROLLS=15`/`SCROLL_CAP=25`, 7×/day** (08–20
-  every 2h). This is ~6× the earlier "rotating ⅓–½ subset, 5 posts" volume and is
-  **past the old ceiling** — the user was given a clear high-risk assessment and
-  chose it, on their only FB account. The real protections (real logged-in profile,
-  home IP, read-only, human-like pacing, checkpoint-abort) are unchanged, but they
-  don't offset raw volume. The recommended offset is fewer runs/day (e.g. 3); do
-  not raise volume further without an explicit, informed request.
+  user's request — currently **`SCRAPER_SCAN_ALL_GROUPS=True` (all 14 groups every
+  run, after 3 zero-match groups were pruned), `MIN_POSTS_PER_GROUP=20`,
+  `MAX_SCROLLS=15`/`SCROLL_CAP=25`, 7×/day** (08–20 every 2h). This is a high volume
+  on the user's only FB account, chosen after a clear high-risk assessment. What
+  keeps each run's footprint down is the **early-stop**: the feed is newest-first, so
+  a group stops scrolling once it turns up no more *fresh* posts — where "fresh" means
+  within `SCRAPER_MAX_POST_AGE_HOURS` (24h) AND not already processed in an earlier
+  run (a live run passes `already_seen` into `scrape_group`). So the 2nd–7th runs of a
+  day are shallow (mostly seen posts → bail per group), which is what makes 7×/day
+  comparable in total work to the old 4×/day deep scans. The real protections (real
+  logged-in profile, home IP, read-only, human-like pacing, checkpoint-abort) are
+  unchanged. Do not raise volume/cadence further without an explicit, informed request.
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.

@@ -217,9 +217,11 @@ pacing knobs; the account is your only Facebook account.
 into once; long randomized delays between scrolls and groups; checkpoint-abort on
 a login/verification wall; and **dry-run by default — it writes nothing and sends
 no alerts unless you pass `--live`.** Coverage is set by `SCRAPER_SCAN_ALL_GROUPS`
-(currently every group each run) and `SCRAPER_MIN_POSTS_PER_GROUP`. ⚠️ These drive
-how much you scrape; higher = more Facebook-detection risk on your only account —
-the cheapest offset is fewer runs/day (see scheduling below).
+(currently every group each run) and `SCRAPER_MIN_POSTS_PER_GROUP`. Each group
+**early-stops** once it turns up no more *fresh* posts — fresh = within
+`SCRAPER_MAX_POST_AGE_HOURS` (24h) **and** not already processed in an earlier run —
+so later runs in a day are shallow (mostly already-seen). ⚠️ Coverage still drives
+how much you scrape; higher = more Facebook-detection risk on your only account.
 
 ### One-time login
 
@@ -245,18 +247,20 @@ in `scraper.py` need retuning — they're all in one clearly-marked block). Only
 switch to `--live` once you trust it. On a live run it sends one Telegram
 heartbeat when done, so **silence means something broke.**
 
-### Schedule it 4×/day, 08:00–20:00 (Windows Task Scheduler)
+### Schedule it 7×/day, 08:00–20:00 (Windows Task Scheduler)
 
 **Already set up.** A scheduled task named **`BGU Housing Scraper`** runs the
-scraper **4 times a day at 08:00 / 12:00 / 16:00 / 20:00** (every 4 h), each with
-**up to 25 min of random delay** so the runs don't fire on the exact minute
-(clockwork timing is the main thing that looks automated to Facebook). With
-`SCRAPER_SCAN_ALL_GROUPS=True` (current), each run reads **every group** in a
-random order, scrolling each until it has **`SCRAPER_MIN_POSTS_PER_GROUP` (20)**
-recent posts or hits the hard cap `SCRAPER_SCROLL_CAP` (whichever first — so a
-quiet group stops early). ⚠️ All-groups × 20-posts is a heavy per-run scrape for
-one personal account — 4×/day was chosen to keep the daily volume in check; going
-higher raises Facebook-detection risk. (Set `SCRAPER_SCAN_ALL_GROUPS=False` to
+scraper **7 times a day at 08:00 / 10:00 / 12:00 / 14:00 / 16:00 / 18:00 / 20:00**
+(every 2 h), each with **up to 25 min of random delay** so the runs don't fire on
+the exact minute (clockwork timing is the main thing that looks automated to
+Facebook). With `SCRAPER_SCAN_ALL_GROUPS=True` (current), each run reads **every
+group** in a random order, scrolling each until it has
+**`SCRAPER_MIN_POSTS_PER_GROUP` (20)** fresh posts, hits the hard cap
+`SCRAPER_SCROLL_CAP`, or **early-stops** because the group turned up no more fresh
+(recent + not-already-seen) posts. That early-stop is what keeps 7×/day affordable:
+later runs mostly re-see posts and bail per group after a few passes. ⚠️ Still a
+heavy per-run scrape for one personal account — raise the cadence only on an
+explicit, informed decision. (Set `SCRAPER_SCAN_ALL_GROUPS=False` to
 fall back to the most-overdue ⅓–½ subset with the `SCRAPER_MIN_SCRAPES_PER_DAY`
 coverage guarantee.) It calls `run_scraper.cmd`,
 which pins the correct Python, sets UTF-8, and runs `python main.py --live`,

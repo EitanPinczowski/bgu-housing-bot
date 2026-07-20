@@ -6,7 +6,7 @@ password, never injects cookies. It only scrolls and reads: it does NOT post,
 comment, message, react, or click anything interactive.
 
   open_browser()          -> (playwright, context) using the persistent profile
-  scrape_group(page, url) -> list of {"text", "permalink"} dicts for one group
+  scrape_group(page, url, already_seen=None) -> (list of post dicts, stats) for one group
 
 Pacing is deliberately slow and randomized (see config.SCRAPER_*). Do not speed
 this up — the account is the user's only Facebook account (CLAUDE.md → SAFETY
@@ -354,12 +354,19 @@ def _debug_shot(page, url: str, tag: str) -> None:
         pass
 
 
-def scrape_group(page: Page, url: str) -> list[dict]:
-    """Open one group and return its visible posts, newest-first.
+def scrape_group(page: Page, url: str, already_seen=None):
+    """Open one group and return (posts, stats) — its FRESH visible posts, newest-first.
 
-    Each item: {"text": <cleaned post body>, "permalink": <url or None>}.
-    Deduplicated by permalink (falling back to text) WITHIN this group. Reads
-    incrementally across scrolls because FB virtualizes the feed.
+    Each post: {"text", "permalink", "images", "comments", "age_hours"}. Deduplicated
+    by text (falling back to permalink) WITHIN this group. Reads incrementally across
+    scrolls because FB virtualizes the feed.
+
+    `already_seen(text, url) -> bool` (passed on a live run): a post already processed
+    in an earlier run is skipped here, so a group whose recent posts are all-seen bails
+    fast. None (dry run) surfaces everything.
+
+    `stats` = {"read", "age_skipped", "seen_skipped"} — distinct posts parsed, dropped
+    as >24h old, and dropped as already-seen — for the per-run funnel.
     """
     if _SORT_CHRONOLOGICAL and "sorting_setting" not in url:
         url = url + ("&" if "?" in url else "?") + _SORT_PARAM
@@ -385,9 +392,15 @@ def scrape_group(page: Page, url: str) -> list[dict]:
     time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))  # let the feed hydrate
 
     collected: dict[str, dict] = {}
-    # read, then scroll. Do at least MAX_SCROLLS passes, and keep going (up to the
-    # hard cap) until we've gathered MIN_POSTS_PER_GROUP.
+    read_keys: set = set()            # every distinct post parsed (for the funnel)
+    age_skipped: set = set()          # dropped as >= the age cutoff
+    seen_skipped: set = set()         # dropped as already processed in an earlier run
+    # read, then scroll. Do at least MAX_SCROLLS passes, keep going (up to the hard
+    # cap) until MIN_POSTS_PER_GROUP — but stop EARLY once scrolling stops turning up
+    # new fresh posts (the feed is newest-first, so below that is all old/seen).
     passes = 0
+    stale = 0                         # consecutive passes that added no new fresh post
+    prev_fresh = 0
     while True:
         for story in _stories(page):
             try:
@@ -401,6 +414,7 @@ def scrape_group(page: Page, url: str) -> list[dict]:
             # FB often renders a post's body before its timestamp/permalink
             # anchor. Backfill the permalink when a later pass exposes it.
             key = text[:80]
+            read_keys.add(key)
             # Read the permalink AND age from the post's timestamp anchor in one
             # pass — that link IS the canonical permalink. Either can be None on an
             # early pass and get backfilled on a later one.
@@ -412,7 +426,19 @@ def scrape_group(page: Page, url: str) -> list[dict]:
             if (config.SCRAPER_MAX_POST_AGE_HOURS is not None
                     and age is not None and age >= config.SCRAPER_MAX_POST_AGE_HOURS):
                 collected.pop(key, None)
+                age_skipped.add(key)
+                seen_skipped.discard(key)
                 continue  # "1d"+ => 24h or older => outside the last 24h
+            # already processed in an earlier run (live only): it would just be
+            # re-dropped by the pipeline's dedup — skip it, and don't let it count
+            # toward "fresh" growth, so an all-seen group stops scrolling fast.
+            if already_seen is not None and already_seen(text, link):
+                collected.pop(key, None)
+                seen_skipped.add(key)
+                age_skipped.discard(key)
+                continue
+            age_skipped.discard(key)          # it's fresh after all (late-render)
+            seen_skipped.discard(key)
             imgs = _images(story)
             cmts = _comments(story)
             entry = collected.get(key)
@@ -431,8 +457,17 @@ def scrape_group(page: Page, url: str) -> list[dict]:
                 if entry.get("age_hours") is None and age is not None:
                     entry["age_hours"] = age         # backfill a late-rendered time
         passes += 1
-        enough = len(collected) >= config.SCRAPER_MIN_POSTS_PER_GROUP
-        if passes >= config.SCRAPER_SCROLL_CAP or (passes > config.SCRAPER_MAX_SCROLLS and enough):
+        fresh = len(collected)
+        if fresh > prev_fresh:                 # this pass turned up new fresh posts
+            stale, prev_fresh = 0, fresh
+        else:
+            stale += 1
+        enough = fresh >= config.SCRAPER_MIN_POSTS_PER_GROUP
+        stalled = (passes >= config.SCRAPER_MIN_SCROLLS_BEFORE_STOP
+                   and stale >= config.SCRAPER_STOP_AFTER_STALE_PASSES)
+        if (passes >= config.SCRAPER_SCROLL_CAP
+                or (passes > config.SCRAPER_MAX_SCROLLS and enough)
+                or stalled):
             break
         # Expand truncated posts AFTER reading, so the permalink/image are read
         # from the stable DOM first (clicking disrupts it) and the fuller text is
@@ -442,6 +477,8 @@ def scrape_group(page: Page, url: str) -> list[dict]:
         page.mouse.wheel(0, _SCROLL_PX)
         time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))
 
-    if not collected:                 # feed loaded but nothing parsed — likely a
+    if not read_keys:                 # feed loaded but NOTHING parsed — likely a
         _debug_shot(page, url, "debug")   # selector break; screenshot to diagnose
-    return list(collected.values())
+    stats = {"read": len(read_keys), "age_skipped": len(age_skipped),
+             "seen_skipped": len(seen_skipped)}
+    return list(collected.values()), stats
