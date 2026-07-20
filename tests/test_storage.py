@@ -71,6 +71,24 @@ def test_post_archive_and_stats(temp_db):
     assert storage.drop_reason_counts()[0][0] == "too far"
 
 
+def test_prune_old_posts(temp_db):
+    import sqlite3
+    import config as cfg
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=1500)
+    res = PipelineResult(status=Status.MATCH, score=80, extract=e)
+    storage.record_post("old", "raw old", "", [], "g", "u", e, res)
+    con = sqlite3.connect(cfg.DB_PATH)
+    con.execute("UPDATE posts SET first_seen='2020-01-01 00:00:00' WHERE sig='old'")
+    con.commit()
+    con.close()
+    storage.record_post("new", "raw new", "", [], "g", "u", e, res)
+    assert storage.prune_old_posts(90) == 1
+    rows = {p["sig"]: p for p in storage.all_posts()}
+    assert rows["old"]["raw_text"] == "" and rows["old"]["verdict"] == "MATCH"  # kept, lightened
+    assert rows["new"]["raw_text"] == "raw new"                                 # fresh intact
+    assert len(rows) == 2                                                        # both survive
+
+
 def test_unknown_locations_counts(temp_db):
     storage.record_unknown_location("הבלוק")
     storage.record_unknown_location("הבלוק")

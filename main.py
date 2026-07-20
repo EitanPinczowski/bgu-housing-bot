@@ -37,6 +37,7 @@ import notifier
 import pipeline
 import scraper
 import sheets
+import storage
 
 _SCRAPES_PATH = config.DATA_DIR / "group_scrapes.json"   # {url: [iso_ts, ...]}
 _SEARCH_LOG = config.DATA_DIR / "search_log.txt"
@@ -221,6 +222,9 @@ def run(dry_run: bool) -> None:
         if added:
             print(f"[main] sheet sync: appended {added} missing rows")
         sheets.sort_by_score()
+        pruned = storage.prune_old_posts(config.POST_ARCHIVE_RETENTION_DAYS)
+        if pruned:
+            print(f"[main] archive prune: lightened {pruned} old posts")
 
     end_tag = "BLOCKED" if blocked_reason else ("LIVE" if not dry_run else "DRY")
 

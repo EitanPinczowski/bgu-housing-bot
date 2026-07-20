@@ -35,6 +35,7 @@ _SYSTEM_HE = """אתה מנתח מודעות שכירות של דירות שות
   null. החזר null רק אם אין במודעה שום אזכור של רחוב/שכונה/אזור.
 - missing_critical_data = true אם חסר מספר חדרים או רחוב/שכונה. מחיר חסר אינו קריטי
   (הרבה מודעות לא כותבות מחיר — זה בסדר, אל תסמן חוסר בגללו).
+- floor = הקומה כפי שכתובה במודעה ("קרקע"/"3"/"3 מתוך 5"). אם לא מצוין — null.
 - summary_hebrew = משפט תקציר אחד.
 - is_apartment_ad = true רק אם הפוסט *מציע* דירה/חדר/מקום בדירה קיימת להשכרה (כולל חיפוש
   שותף/ה לדירה קיימת שמושכרת). אחרת false. במפורש החזר false עבור:
@@ -77,6 +78,7 @@ _SCHEMA_HINT = (
     '{"is_apartment_ad": true/false, "price_per_room_ils": מספר או null, '
     '"available_rooms_count": מספר או null, "total_roommates_in_apt": מספר או null, '
     '"street_address_or_neighborhood": מחרוזת או null, "lease_start_date": מחרוזת או null, '
+    '"floor": מחרוזת או null, '
     '"contact_phone_or_link": מחרוזת או null, "missing_critical_data": true/false, '
     '"price_from_comment": true/false, "summary_hebrew": מחרוזת או null}'
 )

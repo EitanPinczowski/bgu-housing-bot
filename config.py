@@ -242,3 +242,12 @@ SCRAPER_SKIP_RUN_PROBABILITY = 0.12
 # anything — it's a harmless in-place expand, not a post/comment/like, but it is
 # still an interaction, so it's toggleable. Set False for strictly scroll-only.
 SCRAPER_EXPAND_SEE_MORE = True
+# Save a screenshot to data/ when a group reads 0 posts (debug_<id>.png) or hits a
+# checkpoint (checkpoint_<id>.png) — to tell a selector break apart from a real
+# block. Off by default; images can accumulate.
+SCRAPER_DEBUG_SCREENSHOTS = False
+
+# Retention: after this many days, an archived post's raw_text/parsed_json is
+# nulled (its dedup key + verdict are kept forever, so it's never rescanned), to
+# bound DB growth. Replay stays useful within this window. Pruned at end of run.
+POST_ARCHIVE_RETENTION_DAYS = 90

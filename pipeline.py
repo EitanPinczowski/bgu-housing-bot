@@ -51,6 +51,55 @@ def _tokens(text: str) -> set:
     return set(_TOKEN_RE.findall(text or ""))
 
 
+_IMMEDIATE_RE = re.compile(r"מייד|מיד\b|עכשיו|היום|כניסה מיידית")
+
+
+def _normalize_entry_date(s: Optional[str]) -> Optional[str]:
+    """Canonicalize 'available now' phrasings to 'מיידי'; leave dates as written."""
+    if not s:
+        return s
+    if _IMMEDIATE_RE.search(s):
+        return "מיידי"
+    return s.strip() or None
+
+
+_PRICE_MARKERS = ("₪", 'ש"ח', "ש״ח", "שח", 'שכ"ד', "שכ״ד", "שכד", "לחודש", "מחיר")
+_PRICE_NUM_RE = re.compile(r"\b\d{3,4}\b")   # standalone 3–4 digits, not part of a phone
+
+
+def _price_second_chance(text: Optional[str]) -> Optional[int]:
+    """When the LLM returned no price, recover a per-room-plausible price (500–3000)
+    sitting within ~20 chars of a price marker. Conservative range so it never
+    grabs a phone number or a whole-apartment total."""
+    if not text:
+        return None
+    t = re.sub(r"(\d)[.,](\d{3})", r"\1\2", text)   # join thousands separators
+    for marker in _PRICE_MARKERS:
+        i = t.find(marker)
+        while i != -1:
+            window = t[max(0, i - 20): i + len(marker) + 20]
+            for num in _PRICE_NUM_RE.findall(window):
+                v = int(num)
+                if 500 <= v <= 3000:
+                    return v
+            i = t.find(marker, i + 1)
+    return None
+
+
+def _clean_address(s: Optional[str]) -> Optional[str]:
+    """Trim junk and drop Latin transliteration noise — but keep a real address:
+    only strips Latin when there's no house number (numbered addresses are real),
+    and only if Hebrew survives (an all-Latin address is left for Nominatim)."""
+    if not s:
+        return s
+    s = re.sub(r"\s{2,}", " ", s.replace("__", " ")).strip()
+    if not re.search(r"\d", s):
+        stripped = re.sub(r"\s{2,}", " ", re.sub(r"[A-Za-z]+", "", s)).strip(" -,/'\"")
+        if re.search(r"[א-ת]", stripped):
+            return stripped
+    return s.strip(" -,/'\"") or None
+
+
 def _blacklisted(location: Optional[str]) -> bool:
     if not location:
         return False
@@ -133,6 +182,15 @@ def process_post(raw_text: str,
                                   source_url=source_url, group=group, images=images)
 
     e = llm.extract(raw_text, comments=comments)
+    # Deterministic cleanups on top of the LLM extract.
+    if e.price_per_room_ils is None:                     # recover a price the LLM missed
+        p = _price_second_chance((raw_text or "") + " " + (comments or ""))
+        if p is not None:
+            e.price_per_room_ils = p
+            e.price_from_comment = True                  # recovered -> treat as uncertain
+    e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
+    e.lease_start_date = _normalize_entry_date(e.lease_start_date)
+
     if commit:
         storage.mark_seen(sig)
         if source_url:

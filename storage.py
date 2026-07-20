@@ -296,6 +296,23 @@ def all_posts() -> list:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def prune_old_posts(max_age_days: int) -> int:
+    """Retention: null raw_text/parsed_json for archived posts older than
+    max_age_days, KEEPING sig+verdict (so dedup and stats survive and a pruned
+    post is never rescanned). VACUUMs only when rows changed. Returns rows pruned."""
+    cutoff = (datetime.now() - timedelta(days=max_age_days)).strftime(_NOW)
+    with _conn() as c:
+        n = c.execute("UPDATE posts SET raw_text='', parsed_json=NULL "
+                      "WHERE first_seen < ? AND (raw_text != '' OR parsed_json IS NOT NULL)",
+                      (cutoff,)).rowcount
+    if n:
+        v = sqlite3.connect(config.DB_PATH)
+        v.isolation_level = None            # VACUUM can't run inside a transaction
+        v.execute("VACUUM")
+        v.close()
+    return n
+
+
 def verdict_counts() -> dict:
     """Counts of archived posts per verdict (status) — for stats.py."""
     with _conn() as c:

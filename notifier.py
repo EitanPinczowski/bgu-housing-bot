@@ -78,6 +78,8 @@ def format_alert(res: PipelineResult) -> str:
         gate = f" מ{res.walk_gate}" if res.walk_gate else ""
         lines.append(f"🚶 {_esc(f'{res.walk_minutes:.0f} דק׳ הליכה' + gate)}")
 
+    if getattr(e, "floor", None):
+        lines.append(f"🏢 קומה {_esc(e.floor)}")
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:

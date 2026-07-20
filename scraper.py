@@ -43,7 +43,9 @@ import config
 # Edit HERE when Facebook changes its DOM / UI strings.
 
 _FEED_SELECTOR = '[role="feed"]'
-_STORY_SELECTOR = '[role="feed"] > div'      # each direct child = one post story
+# Each direct feed child is one post story. FB churns class names, so try a few
+# post-container selectors in order and use the first that yields elements.
+_STORY_SELECTORS = ('[role="feed"] > div', '[role="article"]', 'div[aria-posinset]')
 _SCROLL_PX = 1100                            # small steps so posts render before we read
 _MIN_POST_CHARS = 40                         # shorter than this = not a real post
 
@@ -300,6 +302,30 @@ def _permalink(story) -> Optional[str]:
     return None
 
 
+def _stories(page):
+    """Post-story elements from the first selector that returns any (DOM churn)."""
+    for sel in _STORY_SELECTORS:
+        try:
+            els = page.query_selector_all(sel)
+        except Exception:
+            continue
+        if els:
+            return els
+    return []
+
+
+def _debug_shot(page, url: str, tag: str) -> None:
+    """Save a screenshot to diagnose selector breakage vs a real block. Off unless
+    config.SCRAPER_DEBUG_SCREENSHOTS."""
+    if not getattr(config, "SCRAPER_DEBUG_SCREENSHOTS", False):
+        return
+    gid = url.rstrip("/").split("/")[-1].split("?")[0]
+    try:
+        page.screenshot(path=str(config.DATA_DIR / f"{tag}_{gid}.png"))
+    except Exception:
+        pass
+
+
 def scrape_group(page: Page, url: str) -> list[dict]:
     """Open one group and return its visible posts, newest-first.
 
@@ -314,6 +340,7 @@ def scrape_group(page: Page, url: str) -> list[dict]:
     # Bail immediately if FB bounced us to a checkpoint/login wall — never retry.
     blocked = _blocked_reason(page)
     if blocked:
+        _debug_shot(page, url, "checkpoint")
         raise FacebookBlock(blocked)
     try:
         page.wait_for_selector(_FEED_SELECTOR, timeout=15000)
@@ -321,9 +348,11 @@ def scrape_group(page: Page, url: str) -> list[dict]:
         # A wall can also appear as "no feed" — check once more before giving up.
         blocked = _blocked_reason(page)
         if blocked:
+            _debug_shot(page, url, "checkpoint")
             raise FacebookBlock(blocked)
         print(f"[scraper] no feed appeared for {url} "
               "(login expired? not a member? group layout changed?)")
+        _debug_shot(page, url, "debug")
         return []
     time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))  # let the feed hydrate
 
@@ -332,7 +361,7 @@ def scrape_group(page: Page, url: str) -> list[dict]:
     # hard cap) until we've gathered MIN_POSTS_PER_GROUP.
     passes = 0
     while True:
-        for story in page.query_selector_all(_STORY_SELECTOR):
+        for story in _stories(page):
             try:
                 raw = story.inner_text() or ""
             except Exception:
@@ -386,4 +415,6 @@ def scrape_group(page: Page, url: str) -> list[dict]:
         page.mouse.wheel(0, _SCROLL_PX)
         time.sleep(random.uniform(*config.SCRAPER_SCROLL_DELAY))
 
+    if not collected:                 # feed loaded but nothing parsed — likely a
+        _debug_shot(page, url, "debug")   # selector break; screenshot to diagnose
     return list(collected.values())
