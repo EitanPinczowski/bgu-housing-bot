@@ -59,7 +59,8 @@ SQLite + optional Google Sheets + Telegram alert`
 
 - `config.py` — all thresholds, gates, blacklist, `FB_GROUPS`, provider + scraper settings.
 - `models.py` — `ListingExtract` (LLM schema, incl. `floor`) and `PipelineResult`.
-- `llm.py` — Gemini extraction + Ollama fallback (provider-abstracted); rate-limit.
+- `llm.py` — Gemini extraction + Ollama fallback (provider-abstracted); rate-limit;
+  optional bounded OCR of image-only posts (one image, Gemini-only, capped per run).
 - `geocode.py` — static name table (primary) → cache → optional Google → Nominatim.
 - `osrm.py` — local foot routing; min over gates (drives the 20-min amber boundary).
 - `zones.py` — green polygon + no-amber (ד') polygons; walk-time tier classification.
@@ -71,7 +72,9 @@ SQLite + optional Google Sheets + Telegram alert`
 - `scraper.py` / `login.py` / `main.py` — Playwright reader, one-time login, orchestrator.
 - `manual.py` — paste-a-post CLI (risk-free entry point).
 - `top_listings.py` / `digest.py` / `dm_digest.py` — morning/evening top-N, recaps, DM digest.
-- `bot_listener.py` / `watchdog.py` — vote-button listener; dependency health check.
+- `bot_listener.py` / `watchdog.py` — vote-button listener + DM-only `/search`
+  (`query.py`) and `/status` commands; dependency health check.
+- `query.py` — parse a free Hebrew/English search into filters; ranked SQLite search.
 - `replay.py` / `stats.py` — offline re-classify (+`--apply`) and funnel stats.
 - `load_zone_from_kmz.py` — regenerate `green_zone.json` from a new My Maps export.
 - `green_zone.json` / `no_amber_zones.json` — the walkable polygon + no-amber (ד') areas.

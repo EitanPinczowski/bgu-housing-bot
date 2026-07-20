@@ -48,7 +48,20 @@ _SYSTEM_HE = """אתה מנתח מודעות שכירות של דירות שות
 החזר JSON בלבד."""
 
 
-def _extract_gemini(post_text: str) -> ListingExtract:
+def _image_part(url: str):
+    """Fetch a post image and wrap it as a Gemini image Part (for OCR of a post
+    that is a photo of its text). Raises on fetch failure so the caller can skip."""
+    import requests
+    from google.genai import types
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    mime = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+    if not mime.startswith("image/"):
+        mime = "image/jpeg"
+    return types.Part.from_bytes(data=r.content, mime_type=mime)
+
+
+def _extract_gemini(post_text: str, images=None) -> ListingExtract:
     from google import genai
     from google.genai import types
 
@@ -58,10 +71,19 @@ def _extract_gemini(post_text: str) -> ListingExtract:
         time.sleep(gap)
     _last_gemini_call = time.monotonic()
 
+    contents = [_SYSTEM_HE, "\n\nהמודעה:\n" + post_text]
+    if images:                       # OCR path — the ad text is in the picture
+        contents.append("\n\nטקסט המודעה נמצא בתמונה המצורפת — קרא אותו ממנה:")
+        for url in images[:1]:       # one image only, to bound tokens
+            try:
+                contents.append(_image_part(url))
+            except Exception as exc:
+                print(f"[llm] could not fetch OCR image: {exc}")
+
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     resp = client.models.generate_content(
         model=config.GEMINI_MODEL,
-        contents=[_SYSTEM_HE, "\n\nהמודעה:\n" + post_text],
+        contents=contents,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=ListingExtract,      # guarantees a valid, parseable object
@@ -125,10 +147,10 @@ def _extract_openai_compatible(post_text: str) -> ListingExtract:
     return ListingExtract.model_validate_json(raw)
 
 
-def _run(provider: str, post_text: str) -> ListingExtract:
+def _run(provider: str, post_text: str, images=None) -> ListingExtract:
     if provider == "gemini":
-        return _extract_gemini(post_text)
-    return _extract_openai_compatible(post_text)
+        return _extract_gemini(post_text, images)
+    return _extract_openai_compatible(post_text)   # local fallback is text-only
 
 
 def _is_quota_error(exc: Exception) -> bool:
@@ -146,20 +168,30 @@ fallback_used = 0
 # Consecutive non-quota primary errors; after LLM_MAX_CONSECUTIVE_ERRORS we give
 # up on the primary for the rest of the run (like quota). Reset on any success.
 _consecutive_errors = 0
+# How many image (OCR) extractions this run has spent, to cap token cost. Fresh
+# per run (new process), like fallback_used.
+ocr_used = 0
 
 
-def extract(post_text: str, comments: str | None = None) -> ListingExtract:
-    global _primary_exhausted, fallback_used, _consecutive_errors
+def extract(post_text: str, comments: str | None = None, images=None) -> ListingExtract:
+    global _primary_exhausted, fallback_used, _consecutive_errors, ocr_used
     if comments:
         post_text = post_text + "\n\n[תגובות למודעה]:\n" + comments
     primary = config.LLM_PROVIDER
     fallback = getattr(config, "LLM_FALLBACK_PROVIDER", None)
 
+    # OCR only on the PRIMARY (Gemini) path, one image, hard-capped per run so the
+    # free-tier quota can't be blown. The local fallback stays text-only.
+    use_img = None
+    if images and ocr_used < getattr(config, "SCRAPER_MAX_OCR_PER_RUN", 0):
+        use_img = images[:1]
+        ocr_used += 1
+
     if _primary_exhausted and fallback:
         fallback_used += 1
-        return _run(fallback, post_text)
+        return _run(fallback, post_text)          # text-only
     try:
-        result = _run(primary, post_text)
+        result = _run(primary, post_text, use_img)
         _consecutive_errors = 0
         return result
     except Exception as exc:

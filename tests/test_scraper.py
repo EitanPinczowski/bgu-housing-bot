@@ -110,3 +110,16 @@ def test_scrape_group_skips_already_seen(monkeypatch):
     assert stats["seen_skipped"] == 1
     assert len(posts) == 2
     assert all("מספר 1" not in p["text"] for p in posts)
+
+
+def test_scrape_group_keeps_thin_text_with_image(monkeypatch):
+    _stub_scraper(monkeypatch, [_FakeStory("דירה 📞")])          # ~7 chars = thin
+    monkeypatch.setattr(scraper, "_images", lambda s, **k: ["http://img"])   # but has a photo
+    posts, stats = scraper.scrape_group(_FakePage(), "https://www.facebook.com/groups/1")
+    assert len(posts) == 1 and posts[0]["images"] == ["http://img"]
+
+
+def test_scrape_group_drops_thin_text_without_image(monkeypatch):
+    _stub_scraper(monkeypatch, [_FakeStory("דירה 📞")])          # thin, and _images -> []
+    posts, stats = scraper.scrape_group(_FakePage(), "https://www.facebook.com/groups/1")
+    assert posts == []

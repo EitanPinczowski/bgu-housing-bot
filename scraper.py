@@ -409,7 +409,12 @@ def scrape_group(page: Page, url: str, already_seen=None):
                 continue
             text = _clean_story(raw)
             if len(text) < _MIN_POST_CHARS or not _HEBREW_RE.search(text):
-                continue
+                # Normally too-short / non-Hebrew text = not a post. BUT a post that
+                # is a PHOTO of the ad text has only a tiny caption — keep it if it
+                # has an image so the LLM can OCR it (bounded downstream by
+                # SCRAPER_MAX_OCR_PER_RUN). Everything else is still skipped.
+                if not (config.SCRAPER_OCR_IMAGE_ONLY and _images(story)):
+                    continue
             # Key on the text (stable across scroll passes), not the permalink —
             # FB often renders a post's body before its timestamp/permalink
             # anchor. Backfill the permalink when a later pass exposes it.

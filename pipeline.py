@@ -161,6 +161,14 @@ def process_post(raw_text: str,
     raw_text = _strip_bidi(raw_text)      # kill FB's invisible RTL control chars
     comments = _strip_bidi(comments)
 
+    # OCR path: a post that is really a PHOTO of the ad — tiny caption + an image.
+    # Its text lives in the picture, so the keyword pre-filter and text-signature
+    # dedup below (which key on the text) are meaningless and would wrongly drop or
+    # collapse it; skip them and let the LLM read the image instead. The URL dedup
+    # and the post-LLM key dedup still apply, so re-reads never re-alert.
+    ocr = (getattr(config, "SCRAPER_OCR_IMAGE_ONLY", False) and bool(images)
+           and len((raw_text or "").strip()) < config.OCR_MIN_TEXT_CHARS)
+
     # 0) URL-level dedup BEFORE the LLM. A 2×/day scraper re-sees the same posts
     #    near the top of a group; skipping them here saves an API call each,
     #    which matters on the free tier's tight daily quota. Only in commit mode
@@ -174,16 +182,18 @@ def process_post(raw_text: str,
     #     all isn't a rental ad (lost pet, furniture sale, chit-chat) — drop it
     #     without spending an LLM call. Saves Gemini quota and the slow local
     #     fallback. Not marked url-seen: re-checking is free (just a keyword scan).
-    if config.PREFILTER_KEYWORDS and not any(k in raw_text for k in config.PREFILTER_KEYWORDS):
+    if (config.PREFILTER_KEYWORDS and not ocr
+            and not any(k in raw_text for k in config.PREFILTER_KEYWORDS)):
         return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
                               source_url=source_url, group=group, images=images)
 
     # 0c) Text-signature dedup BEFORE the LLM. A comment-less post has no permalink
     #     to dedup on, so it's re-read every run; without this, inconsistent
     #     extraction (phone found one run, not the next) makes a second row with a
-    #     different dedup_key. Keying on the post text collapses those.
+    #     different dedup_key. Keying on the post text collapses those. (Skipped for
+    #     OCR posts — their text is too thin to sign reliably.)
     sig = _text_sig(raw_text)
-    if commit and storage.is_seen(sig):
+    if commit and not ocr and storage.is_seen(sig):
         return PipelineResult(status=Status.DROP, reason="already seen (text)",
                               source_url=source_url, group=group, images=images)
 
@@ -198,10 +208,13 @@ def process_post(raw_text: str,
             return PipelineResult(status=Status.DROP, reason=f"cross-post duplicate of {dup}",
                                   source_url=source_url, group=group, images=images)
 
-    e = _postprocess_extract(llm.extract(raw_text, comments=comments), raw_text, comments)
+    e = _postprocess_extract(
+        llm.extract(raw_text, comments=comments, images=(images if ocr else None)),
+        raw_text, comments)
 
     if commit:
-        storage.mark_seen(sig)
+        if not ocr:                    # thin OCR text isn't a reliable seen-key
+            storage.mark_seen(sig)
         if source_url:
             storage.mark_url_seen(source_url)
 

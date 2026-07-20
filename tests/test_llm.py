@@ -13,7 +13,7 @@ def _setup(monkeypatch, fail_with):
     monkeypatch.setattr(llm, "fallback_used", 0)
     calls = []
 
-    def fake_run(provider, text):
+    def fake_run(provider, text, images=None):
         calls.append(provider)
         if provider == "gemini":
             raise RuntimeError(fail_with)
@@ -47,7 +47,7 @@ def test_success_resets_error_counter(monkeypatch):
     monkeypatch.setattr(llm, "_consecutive_errors", 0)
     seq = iter(["boom", None, "boom"])   # error, success, error
 
-    def fake_run(provider, text):
+    def fake_run(provider, text, images=None):
         if provider == "gemini":
             v = next(seq)
             if v:
@@ -60,3 +60,34 @@ def test_success_resets_error_counter(monkeypatch):
     assert llm.extract("p") == "GEMINI_OK"     # success resets counter
     assert llm.extract("p") == "FALLBACK_OK"   # error again, counter was reset
     assert llm._primary_exhausted is False     # never reached 3 in a row
+
+
+def test_ocr_image_capped_per_run(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", None)
+    monkeypatch.setattr(config, "SCRAPER_MAX_OCR_PER_RUN", 2)
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    monkeypatch.setattr(llm, "ocr_used", 0)
+    seen = []
+
+    def fake_run(provider, text, images=None):
+        seen.append(images)
+        return "OK"
+
+    monkeypatch.setattr(llm, "_run", fake_run)
+    for _ in range(4):
+        llm.extract("p", images=["http://img"])
+    assert seen == [["http://img"], ["http://img"], None, None]   # capped at 2
+    assert llm.ocr_used == 2
+
+
+def test_ocr_not_spent_on_text_only_posts(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", None)
+    monkeypatch.setattr(config, "SCRAPER_MAX_OCR_PER_RUN", 5)
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    monkeypatch.setattr(llm, "ocr_used", 0)
+    seen = []
+    monkeypatch.setattr(llm, "_run", lambda p, t, images=None: seen.append(images) or "OK")
+    llm.extract("a normal text post")
+    assert seen == [None] and llm.ocr_used == 0

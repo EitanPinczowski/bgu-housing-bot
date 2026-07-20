@@ -39,7 +39,7 @@ def test_process_post_dedups_phone_flip(temp_db, monkeypatch):
     doesn't fire — this isolates the new numbered-address key."""
     calls = {"n": 0}
 
-    def fake_extract(text, comments=None):
+    def fake_extract(text, comments=None, images=None):
         calls["n"] += 1
         first = calls["n"] == 1
         return ListingExtract(is_apartment_ad=True,

@@ -253,6 +253,15 @@ SCRAPER_MAX_POST_AGE_HOURS = 24
 # per-post behaviour. Only affects --live runs.
 SCRAPER_BATCH_ALERTS = True
 SCRAPER_ALERT_TOP_K = 5
+# OCR image-only posts: many FB housing posts are a PHOTO of the text with only a
+# tiny caption, so they fail the text gate and are lost. When on, the scraper keeps
+# a thin-text post that has an image, and the LLM reads the ONE image (Gemini only)
+# to extract the fields. Strictly bounded so the free Gemini quota isn't blown:
+# at most SCRAPER_MAX_OCR_PER_RUN image extractions per run, one image each; a post
+# counts as "thin" (image carries the text) under OCR_MIN_TEXT_CHARS characters.
+SCRAPER_OCR_IMAGE_ONLY = True
+SCRAPER_MAX_OCR_PER_RUN = 12
+OCR_MIN_TEXT_CHARS = 40
 # Occasionally skip a scheduled LIVE run entirely (~1 in 8), so the 7×/day
 # cadence isn't perfectly periodic — a real person doesn't check like clockwork.
 # The skip is logged (SKIP line in data/search_log.txt) and sends no Telegram, so
