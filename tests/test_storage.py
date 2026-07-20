@@ -71,6 +71,21 @@ def test_post_archive_and_stats(temp_db):
     assert storage.drop_reason_counts()[0][0] == "too far"
 
 
+def test_group_yield(temp_db):
+    e = ListingExtract(is_apartment_ad=True)
+
+    def rec(sig, group, status):
+        storage.record_post(sig, "t", "", [], group, "u", e,
+                            PipelineResult(status=status, extract=e))
+
+    rec("a", "g1", Status.MATCH)
+    rec("b", "g1", Status.NEEDS_DATA)
+    rec("c", "g2", Status.DROP)
+    gy = {g: (tot, m, n, d) for g, tot, m, n, d, _na in storage.group_yield()}
+    assert gy["g1"] == (2, 1, 1, 0)
+    assert gy["g2"] == (1, 0, 0, 1)
+
+
 def test_delete_listing(temp_db):
     import sqlite3
     import config as cfg

@@ -47,6 +47,14 @@ def main() -> None:
     print("--- store ---")
     print(f"  listings: {listings} ({matches} MATCH)   votes: {votes}")
 
+    gy = storage.group_yield()
+    if gy:
+        print("--- per-group yield (match | needs | drop | total) — drop dead groups ---")
+        for g, tot, m, n, d, _na in gy:
+            gid = g.rstrip("/").split("/")[-1].split("?")[0]
+            flag = "   ← 0 matches, candidate to drop from FB_GROUPS" if m == 0 else ""
+            print(f"  {gid:>18}   {m:>3} | {n:>3} | {d:>3} | {tot:>3}{flag}")
+
     uk = storage.unknown_locations(days=3650)
     if uk:
         print("--- top unmapped locations (pin these) ---")

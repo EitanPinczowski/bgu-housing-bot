@@ -326,6 +326,19 @@ def drop_reason_counts() -> list:
                          "GROUP BY reason ORDER BY c DESC").fetchall()
 
 
+def group_yield() -> list:
+    """Per-FB-group archive yield: (group, total, match, needs, drop, not_ad),
+    most matches first — to spot dead groups worth dropping from FB_GROUPS."""
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT "group", COUNT(*),
+                      SUM(verdict='MATCH'), SUM(verdict='NEEDS_DATA'),
+                      SUM(verdict='DROP'), SUM(verdict='NOT_AD')
+               FROM posts WHERE "group" IS NOT NULL AND "group" != ''
+               GROUP BY "group" ORDER BY 3 DESC, 2 DESC""").fetchall()
+    return [(g, tot, m or 0, n or 0, d or 0, na or 0) for g, tot, m, n, d, na in rows]
+
+
 def delete_listing(dedup_key: str) -> None:
     """Remove a listing (e.g. replay --apply found it now classifies RED/NOT_AD)."""
     with _conn() as c:
