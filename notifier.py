@@ -80,6 +80,8 @@ def format_alert(res: PipelineResult) -> str:
 
     if getattr(e, "floor", None):
         lines.append(f"🏢 קומה {_esc(e.floor)}")
+    if getattr(e, "furnished", None):
+        lines.append("🛋️ מרוהט")
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:

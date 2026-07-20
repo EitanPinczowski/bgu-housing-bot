@@ -39,6 +39,9 @@ MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities (hard dro
 TARGET_PRICE_PER_ROOM_ILS = 1500   # your budget — used by the ⭐ fit score
 MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
 MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
+# Bonus added to the fit score when the flat is furnished (a bed, table, and
+# closet in each sleeping room). A bonus only — an unfurnished flat isn't penalized.
+FURNISHED_BONUS = 5
 MAX_WALK_MINUTES = 20             # AMBER = a walk of at most this many minutes to
                                   # the nearest campus gate (GREEN still = inside
                                   # the hand-drawn polygon). Beyond it = RED.

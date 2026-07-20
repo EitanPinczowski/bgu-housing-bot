@@ -305,7 +305,8 @@ def _classify(e, raw_text: str, source_url, group, images: list,
 
     res.score = fit.score(e.price_per_room_ils, walk, tier,
                           e.available_rooms_count, e.total_roommates_in_apt,
-                          e.price_from_comment, age_hours, e.lease_start_date)
+                          e.price_from_comment, age_hours, e.lease_start_date,
+                          e.furnished)
 
     if commit:
         storage.save_listing(res)

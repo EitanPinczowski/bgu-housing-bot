@@ -41,6 +41,13 @@ def test_missing_price_is_penalized():
     assert unknown < known
 
 
+def test_furnished_is_a_bonus_only():
+    base = fit.score(1400, 10, "GREEN", 2, 3)          # 81, room for +5
+    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=True) == base + config.FURNISHED_BONUS
+    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=False) == base   # no penalty
+    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=None) == base
+
+
 def test_fresher_beats_stale():
     fresh = fit.score(1400, 10, "GREEN", 2, 3, age_hours=2)
     stale = fit.score(1400, 10, "GREEN", 2, 3, age_hours=48)

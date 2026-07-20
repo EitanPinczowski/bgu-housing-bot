@@ -9,6 +9,7 @@ Factors (higher = better):
   • available rooms: the whole apartment free is best (avail / total)
   • total roommates: 2 is best, then 3, then 4, then more
   • freshness:      a just-posted listing beats a day-old repost
+  • furnished:     a small bonus if the flat is furnished (bonus only)
   • uncertainty:   unknown price, or a price taken from a comment, is penalized
 Star thresholds are deliberately strict so 5⭐ means genuinely excellent.
 """
@@ -44,7 +45,7 @@ def _lease_month(lease_start: Optional[str]) -> Optional[int]:
 def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
           price_uncertain: bool = False, age_hours: Optional[float] = None,
-          lease_start: Optional[str] = None) -> int:
+          lease_start: Optional[str] = None, furnished: Optional[bool] = None) -> int:
     s = 0
 
     # zone
@@ -95,6 +96,10 @@ def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
             diff = min((m - config.TARGET_MOVE_IN_MONTH) % 12,
                        (config.TARGET_MOVE_IN_MONTH - m) % 12)
             s += 4 if diff == 0 else 2 if diff == 1 else 0
+
+    # furnished — a small bonus, never a penalty (unfurnished flats are fine too)
+    if furnished:
+        s += config.FURNISHED_BONUS
 
     # penalize uncertainty
     if price is None:
