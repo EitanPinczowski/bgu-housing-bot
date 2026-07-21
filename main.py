@@ -120,6 +120,12 @@ def run(dry_run: bool) -> None:
         print("skipping this run (random human-like skip)")
         return
     started = time.monotonic()
+    # Single-instance guard: never open the browser while another scraper/backfill
+    # session holds the profile (two sessions deadlock Chromium's profile lock).
+    if not scraper.acquire_lock():
+        _log_search("SKIP", "another scraper session is running (lock held)")
+        print("[main] another scraper/browser session is already running — skipping this run")
+        return
     selected = _select_groups()
     _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
     print(f"=== BGU housing scraper — {mode} ===")
@@ -127,6 +133,7 @@ def run(dry_run: bool) -> None:
     if not selected:
         print("No groups configured in config.FB_GROUPS — nothing to do.")
         _log_search("END", f"{'LIVE' if not dry_run else 'DRY'}  0s  no groups configured")
+        scraper.release_lock()
         return
 
     counts: Counter[str] = Counter()
@@ -206,6 +213,7 @@ def run(dry_run: bool) -> None:
     finally:
         context.close()
         p.stop()
+        scraper.release_lock()      # browser closed → profile free for the next run
 
     # --- summary ---
     matches = counts.get("MATCH", 0)

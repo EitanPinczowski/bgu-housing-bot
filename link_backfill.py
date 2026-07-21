@@ -116,6 +116,10 @@ def run(min_score: int = 70) -> None:
     print(f"link backfill: {len(targets)} score>={min_score} listings missing a link")
     if not targets:
         return
+    # Never share the Chrome profile with a scheduled scraper run (they deadlock).
+    if not scraper.acquire_lock():
+        print("[backfill] another scraper/browser session is running — try again later")
+        return
     found = 0
     p, context = scraper.open_browser()
     try:
@@ -158,6 +162,7 @@ def run(min_score: int = 70) -> None:
     finally:
         context.close()
         p.stop()
+        scraper.release_lock()
 
     print(f"\nbackfilled {found}/{len(targets)} links")
     if found:

@@ -30,6 +30,7 @@ How the extraction works (learned from the live DOM):
 from __future__ import annotations
 
 import datetime as dt
+import os
 import random
 import re
 import time
@@ -38,6 +39,60 @@ from typing import Optional
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeout
 
 import config
+
+try:
+    import msvcrt          # Windows byte-range file lock (single-instance guard)
+except ImportError:        # non-Windows: lock is a no-op (dev only)
+    msvcrt = None
+
+
+# --- single-instance lock -----------------------------------------------------
+# TWO scraper/browser sessions on the SAME persistent Chrome profile deadlock
+# (Chromium's profile lock) — this once hung a manual dry run against a scheduled
+# --live run. Any process that opens the browser (main.py, link_backfill.py,
+# login.py) must hold this exclusive lock first; a second one refuses to start.
+# The OS releases the lock when the holder exits (even if killed), so it never
+# goes stale.
+_LOCK_PATH = config.DATA_DIR / "scraper.lock"
+_lock_fh = None
+
+
+def acquire_lock() -> bool:
+    """True if we got the exclusive scraper lock; False if another session holds it
+    (the caller should then exit WITHOUT opening a browser)."""
+    global _lock_fh
+    if _lock_fh is not None:
+        return True
+    if msvcrt is None:
+        return True
+    try:
+        fh = open(_LOCK_PATH, "a+")
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)   # exclusive on byte 0
+    except OSError:
+        try:
+            fh.close()
+        except Exception:
+            pass
+        return False
+    _lock_fh = fh
+    return True
+
+
+def release_lock() -> None:
+    global _lock_fh
+    if _lock_fh is None:
+        return
+    try:
+        _lock_fh.seek(0)
+        msvcrt.locking(_lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except Exception:
+        pass
+    try:
+        _lock_fh.close()
+    except Exception:
+        pass
+    _lock_fh = None
 
 # ============================ FRAGILE: FB specifics ==========================
 # Edit HERE when Facebook changes its DOM / UI strings.

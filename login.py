@@ -21,9 +21,14 @@ from __future__ import annotations
 from playwright.sync_api import sync_playwright
 
 import config
+import scraper
 
 
 def main() -> None:
+    # Don't open the profile while a scheduled scraper run has it (they deadlock).
+    if not scraper.acquire_lock():
+        print("A scraper session is currently running — wait for it to finish, then re-run login.py.")
+        return
     config.SCRAPER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Launching a browser with profile: {config.SCRAPER_PROFILE_DIR}")
     with sync_playwright() as p:
@@ -43,6 +48,7 @@ def main() -> None:
         )
         input("Press Enter when you're logged in... ")
         context.close()
+    scraper.release_lock()
     print("Session saved. You can now run the scraper (main.py).")
 
 
