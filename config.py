@@ -252,7 +252,8 @@ SCRAPER_MAX_POST_AGE_HOURS = 24
 # only extra interaction beyond scrolling (a hover, not a click) — bounded per run so it
 # stays human-like on a single account. Set False to disable.
 SCRAPER_HOVER_FOR_LINK = True
-SCRAPER_MAX_HOVERS_PER_RUN = 80      # hard cap on hovers per run
+SCRAPER_MAX_HOVERS_PER_RUN = 120     # hard cap on hovers per run
+SCRAPER_HOVER_MAX_PER_POST = 3       # candidates to try per link-less post
 SCRAPER_HOVER_WAIT_SEC = 0.4         # let FB populate the href after the hover
 # Batch alerts: instead of pinging the group per matching post mid-run, collect a
 # run's matches and send ONE header + the top-K ranked alerts at the end (photos +

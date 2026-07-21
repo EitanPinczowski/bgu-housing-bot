@@ -93,19 +93,36 @@ def test_hover_reveal_reconstructs_link(monkeypatch):
     monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
     scraper._hover_used = 0
     a = _HoverAnchor("/groups/1/posts/2/?__cft__=x")     # href appears on hover
-    assert scraper._hover_reveal(a, "1") == "https://www.facebook.com/groups/1/posts/2/"
+    assert scraper._hover_reveal([a], "1") == "https://www.facebook.com/groups/1/posts/2/"
     assert a.hovered is True
     # story_fbid form reconstructs with the group id from the URL
     scraper._hover_used = 0
-    assert scraper._hover_reveal(_HoverAnchor("/permalink.php?story_fbid=99&id=1"), "1") \
+    assert scraper._hover_reveal([_HoverAnchor("/permalink.php?story_fbid=99&id=1")], "1") \
         == "https://www.facebook.com/groups/1/posts/99/"
+
+
+def test_hover_reveal_tries_candidates_until_one_reveals(monkeypatch):
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    # first candidate stays a profile (no post id), second reveals the real permalink
+    cands = [_HoverAnchor("/groups/1/user/9/"), _HoverAnchor("/groups/1/posts/2/?x=1")]
+    assert scraper._hover_reveal(cands, "1") == "https://www.facebook.com/groups/1/posts/2/"
+
+
+def test_hover_reveal_respects_run_cap(monkeypatch):
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(scraper.config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)
+    scraper._hover_used = 0
+    a = _HoverAnchor("/groups/1/posts/2/")
+    assert scraper._hover_reveal([a], "1") is None      # cap reached -> no hover
+    assert a.hovered is False
 
 
 def test_hover_reveal_none_when_still_empty(monkeypatch):
     monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
     scraper._hover_used = 0
-    assert scraper._hover_reveal(_HoverAnchor("#"), "1") is None
-    assert scraper._hover_reveal(_HoverAnchor(""), "1") is None
+    assert scraper._hover_reveal([_HoverAnchor("#")], "1") is None
+    assert scraper._hover_reveal([_HoverAnchor("")], "1") is None
 
 
 def test_post_age_hours_delegates():
