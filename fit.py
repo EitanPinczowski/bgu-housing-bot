@@ -78,26 +78,29 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
     parts.append(("אזור ירוק" if tier == "GREEN" else "אזור צהוב" if tier == "AMBER"
                   else "מחוץ לאזור", 25 if tier == "GREEN" else 10 if tier == "AMBER" else 0))
 
-    # walk time
+    # walk time — forgiving bands (anything ≤10 min counts as "close")
     if walk_min is not None:
         parts.append((f"הליכה {walk_min:.0f} דק׳",
-                      25 if walk_min < 8 else 18 if walk_min < 12
-                      else 10 if walk_min < 16 else 4 if walk_min < 20 else 0))
+                      25 if walk_min <= 10 else 20 if walk_min <= 14
+                      else 13 if walk_min <= 18 else 7 if walk_min <= 20 else 0))
     else:
-        parts.append(("הליכה לא ידועה", 8))
+        parts.append(("הליכה לא ידועה", 13))
 
-    # price vs your budget
-    t = config.TARGET_PRICE_PER_ROOM_ILS
+    # price — forgiving absolute bands (₪ per room; >2000 is a hard-drop before scoring)
     if price is None:
-        parts.append(("מחיר לא צוין", 6))
-    elif price <= t * 0.8:
+        parts.append(("מחיר לא צוין", 10))
+    elif price <= 1200:
         parts.append(("מחיר מצוין", 25))
-    elif price <= t:
-        parts.append(("מחיר בתקציב", 18))
-    elif price <= t * 1.2:
-        parts.append(("מחיר מעל התקציב", 8))
+    elif price <= 1500:
+        parts.append(("מחיר בתקציב", 22))
+    elif price <= 1600:
+        parts.append(("מחיר סביר", 20))
+    elif price <= 1700:
+        parts.append(("מחיר מעט מעל", 18))
+    elif price <= 2000:
+        parts.append(("מחיר גבוה", 15))
     else:
-        parts.append(("מחיר גבוה", 2))
+        parts.append(("מחיר גבוה מאוד", 0))
 
     # available rooms — the whole apartment free is best
     if avail_rooms and total_mates:
@@ -150,7 +153,7 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
     if price is None:
         parts.append(("אי-ודאות מחיר", -6))
     if price_uncertain:
-        parts.append(("מחיר מהתגובות", -8))
+        parts.append(("מחיר מהתגובות", -3))
 
     return parts
 

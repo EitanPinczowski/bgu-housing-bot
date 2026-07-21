@@ -85,7 +85,23 @@ def test_rescale_uncompresses_the_top():
 def test_breakdown_penalties_are_negative():
     parts = dict(fit.breakdown(None, 25.0, None, price_uncertain=True))  # worst-ish
     assert parts["אי-ודאות מחיר"] == -6
-    assert parts["מחיר מהתגובות"] == -8
+    assert parts["מחיר מהתגובות"] == -3       # softened comment-price penalty
+
+
+def test_walk_and_price_bands():
+    # walk: ≤10 is the "close" band = 25
+    assert dict(fit.breakdown(1400, 8.0, "GREEN"))["הליכה 8 דק׳"] == 25
+    assert dict(fit.breakdown(1400, 13.0, "GREEN"))["הליכה 13 דק׳"] == 20
+    assert dict(fit.breakdown(1400, None, "GREEN"))["הליכה לא ידועה"] == 13
+    # price: forgiving absolute bands
+    def price_pts(p):
+        return next(v for k, v in dict(fit.breakdown(p, 8.0, "GREEN")).items() if "מחיר" in k)
+    assert price_pts(1200) == 25
+    assert price_pts(1500) == 22
+    assert price_pts(1600) == 20
+    assert price_pts(1700) == 18
+    assert price_pts(2000) == 15
+    assert price_pts(2500) == 0
 
 
 def test_floor_num_parsing():
