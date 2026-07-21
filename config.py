@@ -254,7 +254,11 @@ SCRAPER_MAX_POST_AGE_HOURS = 24
 SCRAPER_HOVER_FOR_LINK = True
 SCRAPER_MAX_HOVERS_PER_RUN = 120     # hard cap on hovers per run
 SCRAPER_HOVER_MAX_PER_POST = 3       # candidates to try per link-less post
-SCRAPER_HOVER_WAIT_SEC = 0.4         # let FB populate the href after the hover
+# The hover both reveals the permalink href AND pops a date tooltip (FB renders the
+# date in English even under he-IL, e.g. "Tuesday, July 21, 2026 at 12:56 PM"), which
+# fixes post-age detection that the Hebrew scrambled timestamp text otherwise breaks.
+# 0.6s gives the tooltip time to appear (the href alone is faster).
+SCRAPER_HOVER_WAIT_SEC = 0.6
 # Batch alerts: instead of pinging the group per matching post mid-run, collect a
 # run's matches and send ONE header + the top-K ranked alerts at the end (photos +
 # vote buttons intact). Cuts noise now that we scan 7×/day; the rest stay saved

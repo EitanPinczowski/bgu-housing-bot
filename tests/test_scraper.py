@@ -77,9 +77,11 @@ def test_no_link_when_no_post_id_anywhere():
 
 
 class _HoverAnchor:
-    """A timestamp anchor whose href only appears AFTER a hover (FB's lazy render)."""
-    def __init__(self, href_after_hover):
+    """A timestamp anchor whose href only appears AFTER a hover (FB's lazy render);
+    `tooltip` is the date text FB pops on hover (read via evaluate)."""
+    def __init__(self, href_after_hover, tooltip=""):
         self._href = href_after_hover
+        self._tip = tooltip
         self.hovered = False
 
     def hover(self, timeout=None):
@@ -88,17 +90,29 @@ class _HoverAnchor:
     def get_attribute(self, name):
         return self._href if name == "href" else ""
 
+    def evaluate(self, _script):
+        return self._tip
+
 
 def test_hover_reveal_reconstructs_link(monkeypatch):
     monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
     scraper._hover_used = 0
     a = _HoverAnchor("/groups/1/posts/2/?__cft__=x")     # href appears on hover
-    assert scraper._hover_reveal([a], "1") == "https://www.facebook.com/groups/1/posts/2/"
+    assert scraper._hover_reveal([a], "1")[0] == "https://www.facebook.com/groups/1/posts/2/"
     assert a.hovered is True
     # story_fbid form reconstructs with the group id from the URL
     scraper._hover_used = 0
-    assert scraper._hover_reveal([_HoverAnchor("/permalink.php?story_fbid=99&id=1")], "1") \
+    assert scraper._hover_reveal([_HoverAnchor("/permalink.php?story_fbid=99&id=1")], "1")[0] \
         == "https://www.facebook.com/groups/1/posts/99/"
+
+
+def test_hover_reveal_reads_age_from_tooltip(monkeypatch):
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    a = _HoverAnchor("/groups/1/posts/2/", tooltip="Tuesday, July 21, 2026 at 12:56 PM")
+    link, age = scraper._hover_reveal([a], "1")
+    assert link == "https://www.facebook.com/groups/1/posts/2/"
+    assert isinstance(age, float)                        # tooltip date parsed to an age
 
 
 def test_hover_reveal_tries_candidates_until_one_reveals(monkeypatch):
@@ -106,7 +120,7 @@ def test_hover_reveal_tries_candidates_until_one_reveals(monkeypatch):
     scraper._hover_used = 0
     # first candidate stays a profile (no post id), second reveals the real permalink
     cands = [_HoverAnchor("/groups/1/user/9/"), _HoverAnchor("/groups/1/posts/2/?x=1")]
-    assert scraper._hover_reveal(cands, "1") == "https://www.facebook.com/groups/1/posts/2/"
+    assert scraper._hover_reveal(cands, "1")[0] == "https://www.facebook.com/groups/1/posts/2/"
 
 
 def test_hover_reveal_respects_run_cap(monkeypatch):
@@ -114,15 +128,15 @@ def test_hover_reveal_respects_run_cap(monkeypatch):
     monkeypatch.setattr(scraper.config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)
     scraper._hover_used = 0
     a = _HoverAnchor("/groups/1/posts/2/")
-    assert scraper._hover_reveal([a], "1") is None      # cap reached -> no hover
+    assert scraper._hover_reveal([a], "1") == (None, None)   # cap reached -> no hover
     assert a.hovered is False
 
 
 def test_hover_reveal_none_when_still_empty(monkeypatch):
     monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
     scraper._hover_used = 0
-    assert scraper._hover_reveal([_HoverAnchor("#")], "1") is None
-    assert scraper._hover_reveal([_HoverAnchor("")], "1") is None
+    assert scraper._hover_reveal([_HoverAnchor("#")], "1")[0] is None
+    assert scraper._hover_reveal([_HoverAnchor("")], "1")[0] is None
 
 
 def test_post_age_hours_delegates():

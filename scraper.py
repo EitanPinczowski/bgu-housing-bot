@@ -443,41 +443,56 @@ def _permalink_and_age(story, group_url: Optional[str] = None):
             and getattr(config, "SCRAPER_HOVER_FOR_LINK", False)
             and _hover_used < getattr(config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)):
         ordered = [a for _, a in sorted(hover_cands, key=lambda x: x[0])]
-        link = _hover_reveal(ordered, url_gid)
+        hlink, hage = _hover_reveal(ordered, url_gid)
+        link = hlink
+        if age is None:                          # hover also fixes Hebrew-locale age
+            age = hage
     return link, age
 
 
 _hover_used = 0   # hovers spent this run (bounded by SCRAPER_MAX_HOVERS_PER_RUN)
 
 
-def _hover_reveal(anchors, url_gid) -> Optional[str]:
-    """Hover up to SCRAPER_HOVER_MAX_PER_POST candidate anchors so Facebook populates
-    the timestamp link's lazily-rendered permalink href, then read + reconstruct it.
-    Returns the first real link found, or None. Bounded/guarded — a flaky hover just
-    yields None (the group fallback stays)."""
+def _hover_reveal(anchors, url_gid):
+    """Hover up to SCRAPER_HOVER_MAX_PER_POST candidate anchors: FB populates the
+    timestamp link's lazily-rendered permalink href AND pops a date tooltip. Returns
+    (link, age_hours) — the first real link found, and the age parsed from the tooltip
+    (its English date works even under he-IL, where the on-page timestamp is scrambled).
+    Bounded/guarded — a flaky hover just yields (None, None) and the fallback stays."""
     global _hover_used
     per_post = getattr(config, "SCRAPER_HOVER_MAX_PER_POST", 3)
     run_cap = getattr(config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)
+    link = age = None
     for a in anchors[:per_post]:
         if _hover_used >= run_cap:
             break
         _hover_used += 1
         try:
             a.hover(timeout=1500)
-            time.sleep(getattr(config, "SCRAPER_HOVER_WAIT_SEC", 0.4))
+            time.sleep(getattr(config, "SCRAPER_HOVER_WAIT_SEC", 0.6))
             href = a.get_attribute("href") or ""
         except Exception:
             continue
+        if age is None:                          # read the date tooltip this hover popped
+            try:
+                tip = a.evaluate("() => { const t = document.querySelector('[role=\"tooltip\"]');"
+                                 " return t ? t.textContent : ''; }") or ""
+            except Exception:
+                tip = ""
+            if tip:
+                age = _age_from_aria(tip)         # a profile-name tooltip won't parse -> None
         gid, pid = _post_id(href)
         if pid:
             gid = gid or url_gid
             if gid:
-                return f"https://www.facebook.com/groups/{gid}/posts/{pid}/"
-        if "comment_id" not in href and any(x in href for x in _PERMALINK_HINTS):
-            return _clean_href(href)
-        if _STORY_RE.search(href):
-            return _clean_href(href)
-    return None
+                link = f"https://www.facebook.com/groups/{gid}/posts/{pid}/"
+        elif "comment_id" not in href and any(x in href for x in _PERMALINK_HINTS):
+            link = _clean_href(href)
+        elif _STORY_RE.search(href):
+            link = _clean_href(href)
+        if link is not None:                     # the timestamp anchor gave link + tooltip
+            break
+    return link, age
 
 
 def _stories(page):
