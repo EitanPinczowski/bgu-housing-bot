@@ -25,3 +25,24 @@ def test_furnished_labels():
     assert furn(1) == "מרוהט"
     assert furn(0) == "לא מרוהט"
     assert furn(None) == ""
+
+
+def test_save_listing_row_matches_headers(monkeypatch):
+    """The per-post live append must emit exactly len(HEADERS) columns in order —
+    a mismatch here silently misaligns every column of a live-appended row."""
+    from models import ListingExtract, PipelineResult, Status
+    captured = {}
+    monkeypatch.setattr(sheets, "_worksheet", lambda: object())
+    monkeypatch.setattr(sheets, "_seen", lambda: set())
+    monkeypatch.setattr(sheets, "_write_rows", lambda ws, rows: captured.update(row=rows[0]))
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 1",
+                       floor="3", furnished=True, has_balcony_or_garden=True)
+    sheets.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k",
+                        location_tier="GREEN", score=90, extract=e))
+    row = captured["row"]
+    assert len(row) == len(sheets.HEADERS)
+    assert row[sheets.HEADERS.index("floor")] == "3"
+    assert row[sheets.HEADERS.index("furnished")] == "מרוהט"
+    assert row[sheets.HEADERS.index("balcony")] == "מרפסת/גינה"
+    assert row[sheets.HEADERS.index("dedup_key")] == "k"
+    assert row[sheets.HEADERS.index("score")] == 90

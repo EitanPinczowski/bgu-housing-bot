@@ -137,13 +137,16 @@ def save_listing(res: PipelineResult) -> None:
     if key and key in _seen():
         return
     e = res.extract
-    row = [
+    furn = "מרוהט" if e.furnished else "לא מרוהט" if e.furnished is False else ""
+    balc = "מרפסת/גינה" if e.has_balcony_or_garden else ""
+    row = [                                            # MUST stay in HEADERS order
         datetime.now().isoformat(timespec="seconds"), res.status.value,
         res.location_tier, e.price_per_room_ils, e.available_rooms_count,
         e.total_roommates_in_apt, e.street_address_or_neighborhood,
         None if res.walk_minutes is None else round(res.walk_minutes),
-        res.walk_gate, e.lease_start_date, e.contact_phone_or_link,
-        e.summary_hebrew, res.source_url, res.group, key, "", res.score,   # "" = mark
+        res.walk_gate, e.lease_start_date, e.floor or "", furn, balc,
+        e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
+        key, "", res.score,   # dedup_key, "" = mark, score
     ]
     try:
         _write_rows(ws, [row])
