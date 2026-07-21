@@ -252,8 +252,11 @@ SCRAPER_MAX_POST_AGE_HOURS = 24
 # only extra interaction beyond scrolling (a hover, not a click) — bounded per run so it
 # stays human-like on a single account. Set False to disable.
 SCRAPER_HOVER_FOR_LINK = True
-SCRAPER_MAX_HOVERS_PER_RUN = 120     # hard cap on hovers per run
-SCRAPER_HOVER_MAX_PER_POST = 3       # candidates to try per link-less post
+# We hover a post when it's missing a link OR an age, so nearly every fresh post gets
+# hovered — hence the higher cap. Already-seen posts are skipped BEFORE hovering (see
+# scrape_group), so the 2nd–7th daily runs stay cheap; only run 1 hovers in bulk.
+SCRAPER_MAX_HOVERS_PER_RUN = 300     # hard cap on hovers per run
+SCRAPER_HOVER_MAX_PER_POST = 3       # candidates to try per post
 # The hover both reveals the permalink href AND pops a date tooltip (FB renders the
 # date in English even under he-IL, e.g. "Tuesday, July 21, 2026 at 12:56 PM"), which
 # fixes post-age detection that the Hebrew scrambled timestamp text otherwise breaks.

@@ -439,13 +439,16 @@ def _permalink_and_age(story, group_url: Optional[str] = None):
     # Last resort: hover the timestamp-style candidates so FB fills in the lazily
     # rendered permalink href, then read it (best candidates — is_ts, then bare '?'/'#'
     # hrefs — first). Bounded per post and per run.
-    if (link is None and group_url
+    # Hover when we're missing a link OR an age (age is unreadable under he-IL without
+    # the hover tooltip), so nearly every fresh post gets a real link + accurate age.
+    if ((link is None or age is None) and group_url
             and getattr(config, "SCRAPER_HOVER_FOR_LINK", False)
             and _hover_used < getattr(config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)):
         ordered = [a for _, a in sorted(hover_cands, key=lambda x: x[0])]
         hlink, hage = _hover_reveal(ordered, url_gid)
-        link = hlink
-        if age is None:                          # hover also fixes Hebrew-locale age
+        if link is None:
+            link = hlink
+        if age is None:
             age = hage
     return link, age
 
@@ -585,6 +588,15 @@ def scrape_group(page: Page, url: str, already_seen=None):
             # anchor. Backfill the permalink when a later pass exposes it.
             key = text[:80]
             read_keys.add(key)
+            # Skip a post we already processed (matched by text) in an earlier run
+            # WITHOUT hovering it — keeps the 2nd–7th daily runs cheap now that we
+            # hover for age too. The full check below (with the link) still runs for
+            # url-only-seen posts.
+            if already_seen is not None and already_seen(text, None):
+                collected.pop(key, None)
+                seen_skipped.add(key)
+                age_skipped.discard(key)
+                continue
             # Read the permalink AND age from the post's timestamp anchor in one
             # pass — that link IS the canonical permalink. Either can be None on an
             # early pass and get backfilled on a later one.
