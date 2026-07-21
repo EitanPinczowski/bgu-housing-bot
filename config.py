@@ -168,6 +168,13 @@ LLM_MAX_CONSECUTIVE_ERRORS = 3
 # path only (static table + Nominatim) and never touches a paid API.
 USE_GOOGLE_GEOCODE = False
 
+# Overpass (OpenStreetMap's query API) — FREE, no key/billing. Tried before
+# Nominatim because OSM's name index resolves many Be'er Sheva Hebrew street names
+# that Nominatim's geocoder returns nothing for. Bounded to the BS box and paced
+# ~1 req/s (shared public instance); successful hits are cached like the others.
+USE_OVERPASS_FALLBACK = True
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
 USE_NOMINATIM_FALLBACK = True
 NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"
 # Bounding box around Be'er Sheva, as Nominatim wants it:

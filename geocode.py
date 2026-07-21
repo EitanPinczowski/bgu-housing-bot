@@ -62,6 +62,12 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
 }
 
 
+# Minimum length of a location string for the REVERSE static-table match (the post
+# text being a fragment of a longer table key). Below this, a stray token like "ג"
+# would false-match a whole neighborhood — so short strings only match FORWARD.
+_MIN_REVERSE_MATCH = 4
+
+
 def _normalize(text: str) -> str:
     return (text or "").replace("״", "").replace("׳", "").strip().lower()
 
@@ -99,10 +105,16 @@ def geocode(location_text: Optional[str]) -> Optional[Tuple[float, float]]:
         return None
     norm = _normalize(location_text)
 
-    # 1) static table: substring match in either direction (instant, exact)
+    # 1) static table: substring match. FORWARD (the table key appears inside the
+    #    post text) is always safe — "רינגלבלום" in "גר ברינגלבלום ליד האוני'".
+    #    REVERSE (the post text is a fragment of a longer key) is only trusted for a
+    #    long-enough fragment, so a stray 1–2 char location ("ג", "ד") can't map onto
+    #    a whole-neighborhood centroid and invent a wrong coordinate.
     for key, coords in STATIC_TABLE.items():
         k = _normalize(key)
-        if k and (k in norm or norm in k):
+        if not k:
+            continue
+        if k in norm or (len(norm) >= _MIN_REVERSE_MATCH and norm in k):
             return coords
 
     # 2) cache of earlier external lookups
@@ -114,6 +126,8 @@ def geocode(location_text: Optional[str]) -> Optional[Tuple[float, float]]:
     coords = None
     if _google_enabled():
         coords = _google(location_text)
+    if coords is None and getattr(config, "USE_OVERPASS_FALLBACK", True):
+        coords = _overpass(location_text)
     if coords is None and config.USE_NOMINATIM_FALLBACK:
         coords = _nominatim(location_text)
 
@@ -195,6 +209,47 @@ def _google_places(location_text: str) -> Optional[Tuple[float, float]]:
             loc = res["geometry"]["location"]
             if _in_beer_sheva(loc["lat"], loc["lng"]):
                 return loc["lat"], loc["lng"]
+    except Exception:
+        pass
+    return None
+
+
+# Strip house numbers and street-type words so the query matches the OSM `name`
+# tag of the street itself ("רחוב רינגלבלום 5" -> "רינגלבלום").
+_OVERPASS_STRIP = re.compile(r"\d+|רחוב|רח['׳]|שדרות|שד['׳]|דרך|סמטת|סמטה|שביל")
+
+
+def _overpass_name(location_text: str) -> str:
+    s = _OVERPASS_STRIP.sub(" ", location_text)
+    s = s.translate(str.maketrans("", "", '"\\')).strip()   # keep the QL string safe
+    return re.sub(r"\s+", " ", s)
+
+
+def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
+    """Resolve a Be'er Sheva street/place name via the free public Overpass API.
+    OSM's `name` index resolves many Hebrew street names Nominatim returns nothing
+    for (see the geocode memory note). Bounded to the BS box; first hit wins. Paced
+    ~1 req/s to be polite to the shared instance; failures return None (→ Nominatim)."""
+    import requests
+
+    name = _overpass_name(location_text)
+    if len(name) < _MIN_REVERSE_MATCH:
+        return None
+    la0, lo0, la1, lo1 = _bs_bounds()
+    bbox = f"{la0},{lo0},{la1},{lo1}"                       # Overpass: S,W,N,E
+    q = (f'[out:json][timeout:25];'
+         f'(way["name"~"{name}"]({bbox});node["name"~"{name}"]({bbox}););'
+         f'out center 1;')
+    try:
+        time.sleep(1.1)                                    # be polite to the shared instance
+        r = requests.post(config.OVERPASS_URL, data={"data": q},
+                          headers={"User-Agent": config.NOMINATIM_USER_AGENT}, timeout=30)
+        r.raise_for_status()
+        for el in r.json().get("elements", []):
+            c = el.get("center") or el                     # ways carry a computed center
+            lat, lon = c.get("lat"), c.get("lon")
+            if lat is not None and lon is not None and _in_beer_sheva(float(lat), float(lon)):
+                return float(lat), float(lon)
     except Exception:
         pass
     return None

@@ -17,10 +17,12 @@ def _gmap(lat, lon):
 
 
 def _fresh(monkeypatch, tmp_path):
-    """Isolate the module cache and force Google on with a fake key."""
+    """Isolate the module cache and force Google on with a fake key. Overpass is off
+    here so the Google/Nominatim tests below don't reach it; its own tests enable it."""
     monkeypatch.setattr(geocode, "_cache", {})
     monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geo.json")
     monkeypatch.setattr(geocode.config, "USE_GOOGLE_GEOCODE", True)
+    monkeypatch.setattr(geocode.config, "USE_OVERPASS_FALLBACK", False)
     monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "fake-key")
 
 
@@ -72,3 +74,68 @@ def test_disabled_without_key(monkeypatch, tmp_path):
     _fresh(monkeypatch, tmp_path)
     monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
     assert geocode._google_enabled() is False
+
+
+# --- #2: hardened static-table match --------------------------------------------
+def test_static_forward_match_still_works():
+    # the table key appears inside a longer post text (the common, safe direction)
+    assert geocode.geocode("גר ברינגלבלום ליד האוני'") == geocode.STATIC_TABLE["רינגלבלום"]
+
+
+def test_static_reverse_match_needs_length(monkeypatch, tmp_path):
+    _fresh(monkeypatch, tmp_path)                       # Google+Overpass mocked/off
+    # a stray 1-char location must NOT map onto a whole-neighborhood centroid…
+    monkeypatch.setattr(geocode.config, "USE_NOMINATIM_FALLBACK", False)
+    monkeypatch.setattr(geocode, "_google", lambda t: None)
+    assert geocode.geocode("ג") is None
+    # …but a long-enough fragment of a key still resolves ("בלוק" ⊂ "הבלוק")
+    assert geocode.geocode("בלוק") == geocode.STATIC_TABLE["הבלוק"]
+
+
+# --- #1: Overpass fallback tier -------------------------------------------------
+def _overpass_on(monkeypatch, tmp_path):
+    monkeypatch.setattr(geocode, "_cache", {})
+    monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geo.json")
+    monkeypatch.setattr(geocode.config, "USE_GOOGLE_GEOCODE", False)
+    monkeypatch.setattr(geocode.config, "USE_OVERPASS_FALLBACK", True)
+    monkeypatch.setattr(geocode.config, "USE_NOMINATIM_FALLBACK", False)
+    monkeypatch.setattr(geocode.time, "sleep", lambda *a: None)   # no polite delay in tests
+
+
+def test_overpass_node_used_and_cached(monkeypatch, tmp_path):
+    _overpass_on(monkeypatch, tmp_path)
+    calls = {"n": 0}
+    import requests
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return _Resp({"elements": [{"type": "node", "lat": 31.256, "lon": 34.798}]})
+    monkeypatch.setattr(requests, "post", fake_post)
+    q = "רחוב שדרים ייחודי 123"                          # not in the static table
+    assert geocode.geocode(q) == (31.256, 34.798)
+    assert geocode.geocode(q) == (31.256, 34.798)       # second call served from cache
+    assert calls["n"] == 1
+
+
+def test_overpass_way_center_and_box_guard(monkeypatch, tmp_path):
+    _overpass_on(monkeypatch, tmp_path)
+    import requests
+    # a way carries a computed `center`; a first hit outside the BS box is skipped
+    monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp({"elements": [
+        {"type": "way", "center": {"lat": 32.08, "lon": 34.78}},   # Tel Aviv — rejected
+        {"type": "way", "center": {"lat": 31.257, "lon": 34.80}},  # BS — used
+    ]}))
+    assert geocode.geocode("כתובת מרחוב כלשהו") == (31.257, 34.80)
+
+
+def test_overpass_skipped_when_disabled(monkeypatch, tmp_path):
+    _overpass_on(monkeypatch, tmp_path)
+    monkeypatch.setattr(geocode.config, "USE_OVERPASS_FALLBACK", False)
+    import requests
+    monkeypatch.setattr(requests, "post",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("overpass!")))
+    assert geocode.geocode("רחוב שאינו מוכר 77") is None
+
+
+def test_overpass_name_strips_number_and_street_word():
+    assert geocode._overpass_name("רחוב רינגלבלום 5") == "רינגלבלום"
+    assert geocode._overpass_name('שד\' יצחק רגר 90') == "יצחק רגר"
