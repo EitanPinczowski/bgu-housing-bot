@@ -155,16 +155,28 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
     return parts
 
 
+def _max_possible() -> int:
+    """Sum of every factor's best-case positive contribution — the denominator that
+    rescales the raw sum onto 0–100. Without this, the base factors alone already
+    overflow 100 and clamp, hiding balcony/furnished at the top."""
+    m = 25 + 25 + 25 + 15 + 15 + 4     # zone, walk, price, rooms, roommates, freshness
+    if config.TARGET_MOVE_IN_MONTH:
+        m += 4                          # entry-date nudge
+    return m + config.FURNISHED_BONUS + config.BALCONY_BONUS
+
+
 def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
           price_uncertain: bool = False, age_hours: Optional[float] = None,
           lease_start: Optional[str] = None, furnished: Optional[bool] = None,
           floor: Optional[str] = None, has_elevator: Optional[bool] = None,
           has_balcony: Optional[bool] = None) -> int:
-    s = sum(delta for _, delta in breakdown(
+    raw = sum(delta for _, delta in breakdown(
         price, walk_min, tier, avail_rooms, total_mates, price_uncertain,
         age_hours, lease_start, furnished, floor, has_elevator, has_balcony))
-    return max(0, min(100, s))
+    # Rescale onto 0–100 so the top isn't compressed by the clamp — features like
+    # balcony/furnished now spread the best listings into distinct scores.
+    return max(0, min(100, round(100 * raw / _max_possible())))
 
 
 def top_factors(parts: list, n: int = 3) -> list:

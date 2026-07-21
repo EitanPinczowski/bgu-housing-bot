@@ -422,6 +422,32 @@ def delete_listing(dedup_key: str) -> None:
         c.execute("DELETE FROM listings WHERE dedup_key=?", (dedup_key,))
 
 
+def prune_orphan_listings() -> int:
+    """Delete listing rows whose dedup_key can't be reproduced from ANY current
+    archived post's parse — i.e. the post that created them was later re-parsed to a
+    different key, leaving the old row orphaned (e.g. today's Ollama re-parse). Safe:
+    a live listing's key is always derivable from its archived parse, so real rows are
+    never removed; no-ops if the live-key set is empty (nothing to compare against).
+    Returns rows removed."""
+    with _conn() as c:
+        live = set()
+        for (pj,) in c.execute("SELECT parsed_json FROM posts WHERE parsed_json IS NOT NULL AND parsed_json != ''"):
+            try:
+                live.add(make_dedup_key(ListingExtract.model_validate_json(pj)))
+            except Exception:
+                continue
+        if not live:
+            return 0                       # archive gives us nothing — don't wipe listings
+        removed = 0
+        for (k,) in c.execute("SELECT dedup_key FROM listings").fetchall():
+            if k not in live:
+                c.execute("DELETE FROM listings WHERE dedup_key=?", (k,))
+                c.execute("DELETE FROM marks WHERE dedup_key=?", (k,))
+                c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (k,))
+                removed += 1
+        return removed
+
+
 def _group_key(dedup_key, address) -> str:
     """The identity a listings ROW is grouped under for de-duplication: its NUMBERED
     address (collapses a phone/hash/field flip of the same flat), else the row's own

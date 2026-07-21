@@ -182,6 +182,25 @@ def test_bare_neighborhood_flats_stay_separate(temp_db):
     assert not storage.is_seen_any(storage.dedup_keys(_extract("שכונה ב", price=1500)))
 
 
+def test_prune_orphan_listings(temp_db):
+    # a listing whose key IS derivable from an archived parse is kept; one whose key
+    # is not (its post was re-parsed to a different key) is pruned.
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 1",
+                       contact_phone_or_link="050-1234567")
+    live_key = storage.make_dedup_key(e)                 # phone:501234567
+    storage.record_post("sig1", "raw", "", [], "g", "u", e,
+                        PipelineResult(status=Status.MATCH, dedup_key=live_key, score=80, extract=e))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key=live_key,
+                         location_tier="GREEN", score=80, extract=e))
+    # an orphan listing whose key maps to no archived parse
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="hash:orphan00000000",
+                         location_tier="GREEN", score=60, extract=e))
+    assert storage.prune_orphan_listings() == 1
+    import sqlite3
+    keys = [r[0] for r in sqlite3.connect(temp_db).execute("SELECT dedup_key FROM listings").fetchall()]
+    assert keys == [live_key]                            # orphan gone, derivable kept
+
+
 def test_merge_duplicate_listings(temp_db):
     def save(key, price, avail, total, contact, score):
         e = _extract("רגר 164", price, avail, total, contact)

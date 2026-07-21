@@ -23,9 +23,11 @@ def test_score_stays_in_range():
 
 
 def test_green_close_cheap_is_five_stars():
-    hi = fit.score(int(config.TARGET_PRICE_PER_ROOM_ILS * 0.7), 5, "GREEN", 3, 2)
+    # excellent base + features clears 5★; featureless-excellent is now ~4★ (rescale)
+    hi = fit.score(int(config.TARGET_PRICE_PER_ROOM_ILS * 0.7), 5, "GREEN", 3, 2,
+                   has_balcony=True, furnished=True)
     lo = fit.score(config.MAX_PRICE_PER_ROOM_ILS, 30, "AMBER", 1, 4)
-    assert hi >= 88          # genuinely excellent -> 5 stars
+    assert hi >= 88          # genuinely excellent + features -> 5 stars
     assert hi > lo           # and clearly beats a far, pricey, crowded place
 
 
@@ -41,10 +43,10 @@ def test_missing_price_is_penalized():
     assert unknown < known
 
 
-def test_furnished_is_a_bonus_only():
-    base = fit.score(1400, 10, "GREEN", 2, 3)          # 81, room for +5
-    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=True) == base + config.FURNISHED_BONUS
-    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=False) == base   # no penalty
+def test_furnished_lifts_score_one_way():
+    base = fit.score(1400, 10, "GREEN", 2, 3)
+    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=True) > base      # furnished helps
+    assert fit.score(1400, 10, "GREEN", 2, 3, furnished=False) == base    # unfurnished: no penalty
     assert fit.score(1400, 10, "GREEN", 2, 3, furnished=None) == base
 
 
@@ -60,15 +62,24 @@ def test_unknown_age_is_neutral():
            fit.score(1400, 10, "GREEN", 2, 3, age_hours=20)  # 18–36h band = 0
 
 
-def test_breakdown_sums_to_score():
+def test_score_is_rescaled_raw():
     args = (1400, 7.0, "GREEN", 2, 3, False, 3.0, "1.10", True)
     parts = fit.breakdown(*args)
     raw = sum(d for _, d in parts)
-    assert fit.score(*args) == max(0, min(100, raw))       # score is the clamped sum
-    # top_factors returns the biggest positives, descending
+    # score is the raw sum rescaled onto 0–100 by the theoretical max (not clamped raw)
+    assert fit.score(*args) == max(0, min(100, round(100 * raw / fit._max_possible())))
     top = fit.top_factors(parts, n=3)
     assert len(top) == 3 and all(d > 0 for _, d in top)
     assert [d for _, d in top] == sorted((d for _, d in top), reverse=True)
+
+
+def test_rescale_uncompresses_the_top():
+    # both of these hit the 100 clamp before; now the featureless one is strictly
+    # lower and balcony+furnished lift the score — features finally differentiate.
+    plain = fit.score(1200, 7.0, "GREEN", 2, 2, age_hours=3)
+    full = fit.score(1200, 7.0, "GREEN", 2, 2, age_hours=3, has_balcony=True, furnished=True)
+    assert plain < 100
+    assert plain < full <= 100
 
 
 def test_breakdown_penalties_are_negative():

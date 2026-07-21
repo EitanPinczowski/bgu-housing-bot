@@ -42,6 +42,7 @@ _APPLY = "--apply" in sys.argv
 # refresh on the alert-worthy top listings; keeps an LLM re-parse cheap).
 _MIN_SCORE = (int(sys.argv[sys.argv.index("--min-score") + 1])
               if "--min-score" in sys.argv else None)
+_PRUNE_ORPHANS = "--prune-orphans" in sys.argv   # drop rows whose key no longer maps to a parse
 
 
 def _reclassify(post):
@@ -100,14 +101,17 @@ def main() -> None:
         print(f"  {str(p['verdict']):10}/{str(p['score']):>4}  ->  {nv:10}/{str(ns):>4}   "
               f"{(res.location_tier or ''):6} {addr}")
     if _APPLY:
+        # Drop rows whose key no longer maps to any archived parse (orphans left when a
+        # post was re-parsed to a different key — e.g. an earlier Ollama-fallback run).
+        pruned = storage.prune_orphan_listings() if _PRUNE_ORPHANS else 0
         # Re-deriving from the archive can re-introduce phone/hash duplicates that were
         # merged earlier — collapse them again before mirroring to the sheet.
         merged = storage.merge_duplicate_listings()
         n = sheets.rebuild_from_db()
         sheets.sort_by_score()
         print(f"APPLIED → DB updated ({rescued} rescued to MATCH, {demoted} dropped, "
-              f"{merged} duplicates merged); sheet rebuilt ({n} rows). "
-              "Run top_listings.py to broadcast the new top.")
+              f"{pruned} orphans pruned, {merged} duplicates merged); sheet rebuilt "
+              f"({n} rows). Run top_listings.py to broadcast the new top.")
     elif not changes:
         print("(nothing changed — current code agrees with the stored verdicts)")
 
