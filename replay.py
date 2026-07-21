@@ -38,6 +38,10 @@ from models import ListingExtract, Status
 _USE_LLM = "--llm" in sys.argv
 _CHANGED_ONLY = "--changed" in sys.argv
 _APPLY = "--apply" in sys.argv
+# --min-score N : only replay archived posts whose STORED score is >= N (focus the
+# refresh on the alert-worthy top listings; keeps an LLM re-parse cheap).
+_MIN_SCORE = (int(sys.argv[sys.argv.index("--min-score") + 1])
+              if "--min-score" in sys.argv else None)
 
 
 def _reclassify(post):
@@ -63,6 +67,9 @@ def main() -> None:
     changes = []
     skipped = rescued = demoted = 0
     for p in posts:
+        if _MIN_SCORE is not None and (p["score"] or 0) < _MIN_SCORE:
+            skipped += 1
+            continue
         res = _reclassify(p)
         if res is None:
             skipped += 1
@@ -93,10 +100,14 @@ def main() -> None:
         print(f"  {str(p['verdict']):10}/{str(p['score']):>4}  ->  {nv:10}/{str(ns):>4}   "
               f"{(res.location_tier or ''):6} {addr}")
     if _APPLY:
+        # Re-deriving from the archive can re-introduce phone/hash duplicates that were
+        # merged earlier — collapse them again before mirroring to the sheet.
+        merged = storage.merge_duplicate_listings()
         n = sheets.rebuild_from_db()
         sheets.sort_by_score()
-        print(f"APPLIED → DB updated ({rescued} rescued to MATCH, {demoted} dropped); "
-              f"sheet rebuilt ({n} rows). Run top_listings.py to broadcast the new top.")
+        print(f"APPLIED → DB updated ({rescued} rescued to MATCH, {demoted} dropped, "
+              f"{merged} duplicates merged); sheet rebuilt ({n} rows). "
+              "Run top_listings.py to broadcast the new top.")
     elif not changes:
         print("(nothing changed — current code agrees with the stored verdicts)")
 

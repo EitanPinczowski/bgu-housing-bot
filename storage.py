@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS listings (
     score INTEGER,
     images TEXT,
     file_ids TEXT,
+    floor TEXT,
+    furnished INTEGER,
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS marks (
@@ -90,6 +92,10 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE listings ADD COLUMN images TEXT")
     if "file_ids" not in cols:
         c.execute("ALTER TABLE listings ADD COLUMN file_ids TEXT")
+    if "floor" not in cols:
+        c.execute("ALTER TABLE listings ADD COLUMN floor TEXT")
+    if "furnished" not in cols:
+        c.execute("ALTER TABLE listings ADD COLUMN furnished INTEGER")
     # marks became per-user (dedup_key,user_id); recreate the old single-mark table
     mcols = {r[1] for r in c.execute("PRAGMA table_info(marks)").fetchall()}
     if "user_id" not in mcols:
@@ -457,17 +463,36 @@ def merge_duplicate_listings() -> int:
         return removed
 
 
+def set_source_url(dedup_key: str, url: str) -> None:
+    """Backfill a listing's post link (e.g. from the live link_backfill)."""
+    if not dedup_key or not url:
+        return
+    with _conn() as c:
+        c.execute("UPDATE listings SET source_url=? WHERE dedup_key=?", (url, dedup_key))
+
+
+def set_post_source_url(sig: str, url: str) -> None:
+    """Backfill an archived post's link too, so a later replay keeps it."""
+    if not sig or not url:
+        return
+    with _conn() as c:
+        c.execute("UPDATE posts SET source_url=? WHERE sig=?", (url, sig))
+
+
 def save_listing(res: PipelineResult) -> None:
     e = res.extract
+    furnished = None if e.furnished is None else (1 if e.furnished else 0)
     with _conn() as c:
         c.execute(
             """INSERT OR REPLACE INTO listings
                (dedup_key,status,location_tier,price_per_room,available_rooms,total_roommates,
-                address,walk_minutes,lease_start,contact,summary,source_url,"group",price_from_comment,score,images)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                address,walk_minutes,lease_start,contact,summary,source_url,"group",
+                price_from_comment,score,images,floor,furnished)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (res.dedup_key, res.status.value, res.location_tier,
              e.price_per_room_ils, e.available_rooms_count, e.total_roommates_in_apt,
              e.street_address_or_neighborhood, res.walk_minutes, e.lease_start_date,
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
-             1 if e.price_from_comment else 0, res.score, json.dumps(res.images or [])),
+             1 if e.price_from_comment else 0, res.score, json.dumps(res.images or []),
+             e.floor, furnished),
         )

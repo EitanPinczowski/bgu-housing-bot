@@ -46,8 +46,9 @@ def _retry(fn, tries: int = 4, base: float = 1.5):
             time.sleep(base * (2 ** i))
 
 HEADERS = ["first_seen", "status", "tier", "price_per_room", "rooms_free",
-           "roommates", "address", "walk_min", "gate", "lease_start", "contact",
-           "summary", "source_url", "group", "dedup_key", "mark", "score"]
+           "roommates", "address", "walk_min", "gate", "lease_start", "floor",
+           "furnished", "contact", "summary", "source_url", "group", "dedup_key",
+           "mark", "score"]
 
 _DEDUP_COL = HEADERS.index("dedup_key") + 1   # 1-based column of dedup_key
 _MARK_COL = HEADERS.index("mark") + 1         # user triage: saved / dismissed
@@ -152,14 +153,16 @@ def save_listing(res: PipelineResult) -> None:
 
 
 def _row_from_db(r) -> list:
-    """Map a DB listings row (see the SELECT in sync_from_db) to a full 17-column
-    sheet row in HEADERS order. gate isn't stored in the DB (blank); the caller
-    fills dedup_key. Length MUST equal len(HEADERS) or columns misalign."""
-    (first_seen, status, tier, price, avail, total, addr, walk, lease,
-     contact, summary, url, group, score) = r
+    """Map a DB listings row (see the SELECT in sync_from_db) to a full sheet row in
+    HEADERS order. gate isn't stored in the DB (blank); the caller fills dedup_key.
+    Length MUST equal len(HEADERS) or columns misalign."""
+    (first_seen, status, tier, price, avail, total, addr, walk, lease, floor,
+     furnished, contact, summary, url, group, score) = r
+    furn = "מרוהט" if furnished == 1 else "לא מרוהט" if furnished == 0 else ""
     return [first_seen, status, tier, price, avail, total, addr,
             None if walk is None else round(walk), "",   # gate
-            lease, contact, summary, url, group, "", "", score]   # dedup_key, mark, score
+            lease, floor or "", furn, contact, summary, url, group,
+            "", "", score]   # dedup_key, mark, score
 
 
 def sync_from_db() -> int:
@@ -190,8 +193,8 @@ def sync_from_db() -> int:
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute(
             """SELECT first_seen, status, location_tier, price_per_room, available_rooms,
-                      total_roommates, address, walk_minutes, lease_start, contact,
-                      summary, source_url, "group", score, dedup_key
+                      total_roommates, address, walk_minutes, lease_start, floor, furnished,
+                      contact, summary, source_url, "group", score, dedup_key
                FROM listings ORDER BY first_seen""").fetchall()
     batch = []
     for r in rows:
@@ -241,8 +244,8 @@ def rebuild_from_db() -> int:
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute(
             """SELECT first_seen, status, location_tier, price_per_room, available_rooms,
-                      total_roommates, address, walk_minutes, lease_start, contact,
-                      summary, source_url, "group", score, dedup_key
+                      total_roommates, address, walk_minutes, lease_start, floor, furnished,
+                      contact, summary, source_url, "group", score, dedup_key
                FROM listings ORDER BY first_seen""").fetchall()
     body = [list(HEADERS)]
     for r in rows:
@@ -251,7 +254,7 @@ def rebuild_from_db() -> int:
         row[HEADERS.index("dedup_key")] = key
         adj = storage.mark_adjustment(key)
         row[HEADERS.index("mark")] = (f"+{adj}" if adj > 0 else str(adj)) if adj else ""
-        row[HEADERS.index("score")] = storage.effective_score(key, r[13] or 0)
+        row[HEADERS.index("score")] = storage.effective_score(key, r[15] or 0)
         body.append(row)
     try:
         ws.clear()

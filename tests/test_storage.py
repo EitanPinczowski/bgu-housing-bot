@@ -54,6 +54,31 @@ def test_save_listing_persists_score(temp_db):
     assert storage.base_score(k) == 80
 
 
+def test_furnished_floor_persisted(temp_db):
+    import sqlite3
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 1",
+                       floor="3", furnished=True)
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="kf",
+                         location_tier="GREEN", score=80, extract=e))
+    assert sqlite3.connect(temp_db).execute(
+        "SELECT floor, furnished FROM listings WHERE dedup_key='kf'").fetchone() == ("3", 1)
+    # False -> 0, None -> None (the null/false distinction survives)
+    for val, exp in ((False, 0), (None, None)):
+        storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="kf2",
+                             score=80, extract=ListingExtract(is_apartment_ad=True, furnished=val)))
+        assert sqlite3.connect(temp_db).execute(
+            "SELECT furnished FROM listings WHERE dedup_key='kf2'").fetchone()[0] == exp
+
+
+def test_set_source_url_backfill(temp_db):
+    storage.save_listing(_res("phone:7"))
+    storage.set_source_url("phone:7", "https://www.facebook.com/groups/1/posts/2/")
+    import sqlite3
+    assert sqlite3.connect(temp_db).execute(
+        "SELECT source_url FROM listings WHERE dedup_key='phone:7'").fetchone()[0] \
+        == "https://www.facebook.com/groups/1/posts/2/"
+
+
 def test_post_archive_and_stats(temp_db):
     e = ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
                        street_address_or_neighborhood="רגר 1")
