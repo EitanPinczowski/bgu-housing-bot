@@ -326,7 +326,7 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     res.score = fit.score(e.price_per_room_ils, walk, tier,
                           e.available_rooms_count, e.total_roommates_in_apt,
                           e.price_from_comment, age_hours, e.lease_start_date,
-                          e.furnished)
+                          e.furnished, e.floor, e.has_elevator, e.has_balcony_or_garden)
 
     if commit:
         # Mark this flat seen under ALL its stable keys (phone/content-hash/address)

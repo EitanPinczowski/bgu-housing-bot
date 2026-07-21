@@ -3,8 +3,9 @@ here is what once polluted the sheet), with furnished shown as a Hebrew label.""
 import sheets
 
 # a row shaped like the SELECT in sync_from_db/rebuild_from_db, WITHOUT dedup_key
+# (…, floor, furnished, balcony, contact, …)
 _ROW = ("2026-07-20", "MATCH", "GREEN", 1400, 2, 3, "רגר 1", 7.0, "1.10",
-        "3", 1, "050-1234567", "סיכום", "http://x", "grp", 80)
+        "3", 1, 1, "050-1234567", "סיכום", "http://x", "grp", 80)
 
 
 def test_row_from_db_matches_headers_length():
@@ -12,6 +13,7 @@ def test_row_from_db_matches_headers_length():
     assert len(row) == len(sheets.HEADERS)
     assert row[sheets.HEADERS.index("floor")] == "3"
     assert row[sheets.HEADERS.index("furnished")] == "מרוהט"
+    assert row[sheets.HEADERS.index("balcony")] == "מרפסת/גינה"
     assert row[sheets.HEADERS.index("score")] == 80
 
 

@@ -82,20 +82,26 @@ def format_alert(res: PipelineResult) -> str:
         lines.append(f"🏢 קומה {_esc(e.floor)}")
     if getattr(e, "furnished", None):
         lines.append("🛋️ מרוהט")
+    if getattr(e, "has_balcony_or_garden", None):
+        lines.append("🌿 מרפסת/גינה")
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:
         lines.append(f"📞 {_esc(e.contact_phone_or_link)}")
     # Map / WhatsApp / post links are rendered as BUTTONS (see _alert_keyboard).
 
-    # "why this score" — the top few positive factors, from the same breakdown the
-    # score is summed from (so the line can't drift from the number).
-    factors = fit.top_factors(fit.breakdown(
+    # "why this score" — the top few positive factors plus any notable penalty (e.g.
+    # a high floor with no elevator), from the same breakdown the score is summed from.
+    _bd = fit.breakdown(
         e.price_per_room_ils, res.walk_minutes, res.location_tier,
         e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment,
-        furnished=getattr(e, "furnished", None), lease_start=e.lease_start_date))
+        furnished=getattr(e, "furnished", None), lease_start=e.lease_start_date,
+        floor=getattr(e, "floor", None), has_elevator=getattr(e, "has_elevator", None),
+        has_balcony=getattr(e, "has_balcony_or_garden", None))
+    factors = fit.top_factors(_bd)
+    factors += sorted((p for p in _bd if p[1] < 0), key=lambda p: p[1])[:2]   # notable penalties
     if factors:
-        lines.append("📊 " + _esc(" · ".join(f"{lbl} +{d}" for lbl, d in factors)))
+        lines.append("📊 " + _esc(" · ".join(f"{lbl} {d:+d}" for lbl, d in factors)))
 
     if res.status == Status.NEEDS_DATA and res.reason:
         lines.append("")

@@ -77,6 +77,40 @@ def test_breakdown_penalties_are_negative():
     assert parts["מחיר מהתגובות"] == -8
 
 
+def test_floor_num_parsing():
+    assert fit._floor_num("קרקע") == 0
+    assert fit._floor_num("3 מתוך 5") == 3      # apartment's own floor, not the total
+    assert fit._floor_num("קומה 5") == 5
+    assert fit._floor_num("שלישית") == 3
+    assert fit._floor_num("ראשונה") == 1
+    assert fit._floor_num(None) is None
+    assert fit._floor_num("מרתף") is None       # no digit, no known ordinal
+
+
+_BASE = (1500, 7.0, "GREEN", 2, 3)   # price, walk, tier, avail, mates
+
+
+def test_balcony_and_furnished_factors():
+    assert dict(fit.breakdown(*_BASE, has_balcony=True))["מרפסת/גינה"] == 18
+    assert dict(fit.breakdown(*_BASE, furnished=True))["מרוהט"] == 10
+    assert "מרפסת/גינה" not in dict(fit.breakdown(*_BASE))   # absent when not present
+
+
+def test_floor_penalty_exponential_and_gated():
+    def pen(**kw):
+        d = dict(fit.breakdown(*_BASE, **kw))
+        return next((v for k, v in d.items() if k.startswith("קומה")), 0)
+    assert pen(floor="2") == -2          # base 2.5 ** 1
+    assert pen(floor="4") == -16         # 2.5 ** 3 = 15.6 -> 16
+    assert pen(floor="5") == -39         # 2.5 ** 4 = 39.06
+    assert pen(floor="8") == -40         # capped
+    assert pen(floor="5", has_elevator=True) == 0    # elevator -> no penalty
+    assert pen(floor="5", has_elevator=False) == -39  # explicit no-elevator penalizes
+    assert pen(floor="1") == 0           # floor <= 1
+    assert pen(floor="קרקע") == 0
+    assert pen(floor=None) == 0          # unknown floor
+
+
 def test_lease_month_parsing():
     assert fit._lease_month("1.10") == 10
     assert fit._lease_month("01/10") == 10

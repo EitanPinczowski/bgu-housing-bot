@@ -40,8 +40,17 @@ TARGET_PRICE_PER_ROOM_ILS = 1500   # your budget — used by the ⭐ fit score
 MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
 MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
 # Bonus added to the fit score when the flat is furnished (a bed, table, and
-# closet in each sleeping room). A bonus only — an unfurnished flat isn't penalized.
-FURNISHED_BONUS = 5
+# closet in each sleeping room). A one-way bonus — an unfurnished flat isn't penalized.
+FURNISHED_BONUS = 10
+# Bonus when the ad mentions a balcony or a garden/yard — a major, near-top-tier
+# feature (compare: zone/walk/price = 25 each).
+BALCONY_BONUS = 18
+# Penalty for a high floor with NO elevator (or elevator not mentioned): it grows
+# exponentially with the floor — -round(min(cap, base**(floor-1))) — so floor 2 ≈ -3,
+# 3 ≈ -6, 4 ≈ -16, 5 ≈ -39, 6+ = -40. No penalty for floor ≤ 1, unknown floor, or a
+# confirmed elevator.
+FLOOR_PENALTY_BASE = 2.5
+FLOOR_PENALTY_CAP = 40
 MAX_WALK_MINUTES = 20             # AMBER = a walk of at most this many minutes to
                                   # the nearest campus gate (GREEN still = inside
                                   # the hand-drawn polygon). Beyond it = RED.

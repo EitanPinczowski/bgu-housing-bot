@@ -17,6 +17,8 @@ class ListingExtract(BaseModel):
     lease_start_date: Optional[str] = None
     floor: Optional[str] = None            # as written ("קרקע", "3", "3 מתוך 5")
     furnished: Optional[bool] = None       # bed + table + closet per sleeping room
+    has_balcony_or_garden: Optional[bool] = None   # מרפסת / גינה / חצר
+    has_elevator: Optional[bool] = None    # מעלית — True/False/None (unmentioned)
     contact_phone_or_link: Optional[str] = None
     missing_critical_data: bool = False
     price_from_comment: bool = False       # price came from a comment, not the post

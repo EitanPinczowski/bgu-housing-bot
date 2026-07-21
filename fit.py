@@ -42,11 +42,32 @@ def _lease_month(lease_start: Optional[str]) -> Optional[int]:
     return None
 
 
+_HE_FLOORS = {"קרקע": 0, "כניסה": 0, "ראשונה": 1, "שניה": 2, "שנייה": 2,
+              "שלישית": 3, "רביעית": 4, "חמישית": 5, "שישית": 6, "שביעית": 7,
+              "שמינית": 8, "תשיעית": 9, "עשירית": 10}
+_FLOOR_DIGIT = re.compile(r"\d+")
+
+
+def _floor_num(floor) -> Optional[int]:
+    """A numeric floor from the free-text field: the first digit run (so "3 מתוך 5"
+    → 3), else a Hebrew ordinal ("קרקע"→0 … "עשירית"→10), else None."""
+    if not floor:
+        return None
+    s = str(floor)
+    if (m := _FLOOR_DIGIT.search(s)):
+        return int(m.group())
+    for word, n in _HE_FLOORS.items():
+        if word in s:
+            return n
+    return None
+
+
 def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
               avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
               price_uncertain: bool = False, age_hours: Optional[float] = None,
-              lease_start: Optional[str] = None,
-              furnished: Optional[bool] = None) -> list:
+              lease_start: Optional[str] = None, furnished: Optional[bool] = None,
+              floor: Optional[str] = None, has_elevator: Optional[bool] = None,
+              has_balcony: Optional[bool] = None) -> list:
     """The score's per-factor contributions as [(hebrew_label, delta), …], in the
     order they're applied. `score()` is just the clamped sum of the deltas — this is
     the single source of truth, so the alert's "why this score" line can never drift
@@ -108,9 +129,22 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
                        (config.TARGET_MOVE_IN_MONTH - m) % 12)
             parts.append(("תאריך כניסה", 4 if diff == 0 else 2 if diff == 1 else 0))
 
-    # furnished — a small bonus, never a penalty (unfurnished flats are fine too)
+    # furnished — a one-way bonus (config.FURNISHED_BONUS); unfurnished isn't penalized
     if furnished:
         parts.append(("מרוהט", config.FURNISHED_BONUS))
+
+    # balcony / garden — a major, near-top-tier feature
+    if has_balcony:
+        parts.append(("מרפסת/גינה", config.BALCONY_BONUS))
+
+    # high floor with NO elevator (unmentioned counts as none): penalty grows
+    # exponentially with the floor. No penalty for floor ≤ 1, unknown floor, or a
+    # confirmed elevator.
+    fnum = _floor_num(floor)
+    if fnum is not None and fnum > 1 and has_elevator is not True:
+        pen = -round(min(config.FLOOR_PENALTY_CAP,
+                         config.FLOOR_PENALTY_BASE ** (fnum - 1)))
+        parts.append((f"קומה {fnum} ללא מעלית", pen))
 
     # penalize uncertainty
     if price is None:
@@ -124,10 +158,12 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
 def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           avail_rooms: Optional[int] = None, total_mates: Optional[int] = None,
           price_uncertain: bool = False, age_hours: Optional[float] = None,
-          lease_start: Optional[str] = None, furnished: Optional[bool] = None) -> int:
+          lease_start: Optional[str] = None, furnished: Optional[bool] = None,
+          floor: Optional[str] = None, has_elevator: Optional[bool] = None,
+          has_balcony: Optional[bool] = None) -> int:
     s = sum(delta for _, delta in breakdown(
         price, walk_min, tier, avail_rooms, total_mates, price_uncertain,
-        age_hours, lease_start, furnished))
+        age_hours, lease_start, furnished, floor, has_elevator, has_balcony))
     return max(0, min(100, s))
 
 
