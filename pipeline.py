@@ -51,9 +51,9 @@ def _tokens(text: str) -> set:
     return set(_TOKEN_RE.findall(text or ""))
 
 
-_IMMEDIATE_RE = re.compile(r"מייד|מיד\b|עכשיו|היום|כניסה מיידית")
+_IMMEDIATE_RE = re.compile(r"מיידית|מידית|מייד|מיד\b|עכשיו|היום")
 _FLEX_RE = re.compile(r"גמיש")
-_DATE_RE = re.compile(r"\b(\d{1,2})[./](\d{1,2})")
+_DATE_RE = re.compile(r"\b(\d{1,2})[-./](\d{1,2})")   # 1.9 / 01/10 / 1-9 -> DD.MM
 
 
 def _normalize_entry_date(s: Optional[str]) -> Optional[str]:

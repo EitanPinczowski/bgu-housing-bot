@@ -20,6 +20,9 @@ def test_normalize_entry_date():
     assert pipeline._normalize_entry_date("15 בספטמבר") == "15.09"   # day kept
     assert pipeline._normalize_entry_date("גמיש") == "גמיש"
     assert pipeline._normalize_entry_date("1.9 או 1.10") == "01.09, 01.10"   # multiple
+    assert pipeline._normalize_entry_date("1-9") == "01.09"          # hyphen separator
+    assert pipeline._normalize_entry_date("כניסה מידית") == "מיידי"  # misspelled immediate
+    assert pipeline._normalize_entry_date("2026-2027") == "2026-2027"  # year range, not a date
     assert pipeline._normalize_entry_date(None) is None
 
 
