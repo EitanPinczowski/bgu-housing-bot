@@ -362,14 +362,15 @@ def _post_id(href: str):
     return gid, pid
 
 
-def _permalink_and_age(story, group_url: Optional[str] = None):
+def _permalink_and_age(story, group_url: Optional[str] = None, allow_hover: bool = True):
     """(permalink, age_hours) for one post. Facebook seldom exposes a clean
     permalink anchor (comment-less posts especially), but the post's ID sits in the
     feed unit's OTHER anchors — reaction/comment/share links — so we recover it and
     rebuild the canonical /groups/{gid}/posts/{pid}/ (gid known from the scraped URL).
     Preference: the timestamp anchor's own permalink href → reconstruct from the
     timestamp anchor's id → reconstruct from any anchor's id → a /stories/ link →
-    the first hint anchor. age comes from the timestamp anchor as before."""
+    the first hint anchor. `allow_hover` gates the hover-to-reveal fallback — the
+    caller passes False on scroll re-reads so each post is hovered at most once."""
     link_ts = link_any = link_story = None
     ts_gid = ts_pid = any_gid = any_pid = None
     hover_cands = []                            # (priority, anchor) to hover if no link found
@@ -441,7 +442,7 @@ def _permalink_and_age(story, group_url: Optional[str] = None):
     # hrefs — first). Bounded per post and per run.
     # Hover when we're missing a link OR an age (age is unreadable under he-IL without
     # the hover tooltip), so nearly every fresh post gets a real link + accurate age.
-    if ((link is None or age is None) and group_url
+    if (allow_hover and (link is None or age is None) and group_url
             and getattr(config, "SCRAPER_HOVER_FOR_LINK", False)
             and _hover_used < getattr(config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)):
         ordered = [a for _, a in sorted(hover_cands, key=lambda x: x[0])]
@@ -563,6 +564,7 @@ def scrape_group(page: Page, url: str, already_seen=None):
     read_keys: set = set()            # every distinct post parsed (for the funnel)
     age_skipped: set = set()          # dropped as >= the age cutoff
     seen_skipped: set = set()         # dropped as already processed in an earlier run
+    hovered_keys: set = set()         # posts already hovered — never hover the same one twice
     # read, then scroll. Do at least MAX_SCROLLS passes, keep going (up to the hard
     # cap) until MIN_POSTS_PER_GROUP — but stop EARLY once scrolling stops turning up
     # new fresh posts (the feed is newest-first, so below that is all old/seen).
@@ -597,10 +599,14 @@ def scrape_group(page: Page, url: str, already_seen=None):
                 seen_skipped.add(key)
                 age_skipped.discard(key)
                 continue
-            # Read the permalink AND age from the post's timestamp anchor in one
-            # pass — that link IS the canonical permalink. Either can be None on an
-            # early pass and get backfilled on a later one.
-            link, age = _permalink_and_age(story, url)
+            # Read the permalink AND age from the post's timestamp anchor. Hover
+            # (to reveal the lazy href / date tooltip) only the FIRST time we see a
+            # post — re-reads on later scroll passes must not re-hover it, or the
+            # per-run hover budget burns on the same posts.
+            allow_hover = key not in hovered_keys
+            link, age = _permalink_and_age(story, url, allow_hover=allow_hover)
+            if allow_hover:
+                hovered_keys.add(key)
             # age filter: skip posts we can READ as >= the cutoff. Because the
             # timestamp may render late, also drop one we'd already added if a
             # later read reveals it's old. Unknown age is kept, so a recent

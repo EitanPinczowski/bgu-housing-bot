@@ -169,7 +169,8 @@ def _stub_scraper(monkeypatch, stories):
     monkeypatch.setattr(scraper, "_clean_story", lambda raw: raw)
     monkeypatch.setattr(scraper, "_images", lambda s, **k: [])
     monkeypatch.setattr(scraper, "_comments", lambda s: "")
-    monkeypatch.setattr(scraper, "_permalink_and_age", lambda s, g=None: (None, 2.0))  # fresh
+    monkeypatch.setattr(scraper, "_permalink_and_age",
+                        lambda s, g=None, allow_hover=True: (None, 2.0))  # fresh
     monkeypatch.setattr(scraper, "_expand_see_more", lambda page: None)
 
     def fake_stories(page):
