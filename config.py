@@ -246,6 +246,14 @@ MARK_SCORE_DELTA = 25
 # read (timestamp not rendered) are KEPT, not dropped, so a recent listing is
 # never lost to a missed timestamp. Set to None to disable the age filter.
 SCRAPER_MAX_POST_AGE_HOURS = 24
+# Hover-to-reveal permalinks: for a post whose real link couldn't be read/reconstructed
+# from its anchors (~60% of posts — FB renders the timestamp link's href lazily), briefly
+# HOVER the timestamp so Facebook fills in the real permalink, then read it. This is the
+# only extra interaction beyond scrolling (a hover, not a click) — bounded per run so it
+# stays human-like on a single account. Set False to disable.
+SCRAPER_HOVER_FOR_LINK = True
+SCRAPER_MAX_HOVERS_PER_RUN = 80      # hard cap on hovers per run
+SCRAPER_HOVER_WAIT_SEC = 0.4         # let FB populate the href after the hover
 # Batch alerts: instead of pinging the group per matching post mid-run, collect a
 # run's matches and send ONE header + the top-K ranked alerts at the end (photos +
 # vote buttons intact). Cuts noise now that we scan 7×/day; the rest stay saved

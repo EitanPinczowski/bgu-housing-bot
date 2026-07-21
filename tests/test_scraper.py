@@ -76,6 +76,38 @@ def test_no_link_when_no_post_id_anywhere():
                                       "https://www.facebook.com/groups/1") == (None, None)
 
 
+class _HoverAnchor:
+    """A timestamp anchor whose href only appears AFTER a hover (FB's lazy render)."""
+    def __init__(self, href_after_hover):
+        self._href = href_after_hover
+        self.hovered = False
+
+    def hover(self, timeout=None):
+        self.hovered = True
+
+    def get_attribute(self, name):
+        return self._href if name == "href" else ""
+
+
+def test_hover_reveal_reconstructs_link(monkeypatch):
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    a = _HoverAnchor("/groups/1/posts/2/?__cft__=x")     # href appears on hover
+    assert scraper._hover_reveal(a, "1") == "https://www.facebook.com/groups/1/posts/2/"
+    assert a.hovered is True
+    # story_fbid form reconstructs with the group id from the URL
+    scraper._hover_used = 0
+    assert scraper._hover_reveal(_HoverAnchor("/permalink.php?story_fbid=99&id=1"), "1") \
+        == "https://www.facebook.com/groups/1/posts/99/"
+
+
+def test_hover_reveal_none_when_still_empty(monkeypatch):
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    assert scraper._hover_reveal(_HoverAnchor("#"), "1") is None
+    assert scraper._hover_reveal(_HoverAnchor(""), "1") is None
+
+
 def test_post_age_hours_delegates():
     ts = _Anchor(href="/groups/1/posts/2/", text="3d")
     assert scraper._post_age_hours(_Story([ts])) == 72.0   # 3 * 24

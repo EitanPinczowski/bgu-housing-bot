@@ -372,6 +372,7 @@ def _permalink_and_age(story, group_url: Optional[str] = None):
     the first hint anchor. age comes from the timestamp anchor as before."""
     link_ts = link_any = link_story = None
     ts_gid = ts_pid = any_gid = any_pid = None
+    ts_anchor = None                            # timestamp anchor handle, for hover-to-reveal
     age = None
     url_gid = _GID_RE.search(group_url or "")
     url_gid = url_gid.group(1) if url_gid else None
@@ -397,6 +398,8 @@ def _permalink_and_age(story, group_url: Optional[str] = None):
                 if aria and (h := _age_from_aria(aria)) is not None:
                     age = h
                     is_ts = True
+            if is_ts and ts_anchor is None:
+                ts_anchor = a                    # keep it — we may hover it below
             # a clean permalink anchor (best case, kept verbatim)
             hint = "comment_id" not in href and any(x in href for x in _PERMALINK_HINTS)
             if is_ts and link_ts is None and hint:
@@ -427,7 +430,41 @@ def _permalink_and_age(story, group_url: Optional[str] = None):
             or _canon(any_gid, any_pid)
             or link_story
             or link_any)
+    # Last resort: hover the timestamp so FB fills in its lazily-rendered permalink.
+    if (link is None and ts_anchor is not None and group_url
+            and getattr(config, "SCRAPER_HOVER_FOR_LINK", False)
+            and _hover_used < getattr(config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)):
+        link = _hover_reveal(ts_anchor, url_gid)
     return link, age
+
+
+_hover_used = 0   # hovers spent this run (bounded by SCRAPER_MAX_HOVERS_PER_RUN)
+
+
+def _hover_reveal(anchor, url_gid) -> Optional[str]:
+    """Hover the timestamp anchor so Facebook populates its real permalink href
+    (it renders lazily), then read + reconstruct the link. Returns a link or None.
+    Bounded/guarded — a flaky hover just yields None (the group fallback stays)."""
+    global _hover_used
+    _hover_used += 1
+    try:
+        anchor.hover(timeout=1500)
+        time.sleep(getattr(config, "SCRAPER_HOVER_WAIT_SEC", 0.4))
+        href = anchor.get_attribute("href") or ""
+    except Exception:
+        return None
+    if not href or href == "#":
+        return None
+    gid, pid = _post_id(href)
+    if pid:
+        gid = gid or url_gid
+        if gid:
+            return f"https://www.facebook.com/groups/{gid}/posts/{pid}/"
+    if "comment_id" not in href and any(x in href for x in _PERMALINK_HINTS):
+        return _clean_href(href)
+    if _STORY_RE.search(href):
+        return _clean_href(href)
+    return None
 
 
 def _stories(page):
