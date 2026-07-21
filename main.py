@@ -149,6 +149,7 @@ def run(dry_run: bool) -> None:
     # capped batch to the group at the end (see notifier.send_batch).
     batch = (not dry_run) and getattr(config, "SCRAPER_BATCH_ALERTS", False)
     alertable: list = []
+    posts_with_link = 0            # how many returned posts captured a real permalink
 
     p, context = scraper.open_browser()
     try:
@@ -174,6 +175,8 @@ def run(dry_run: bool) -> None:
                 groups_with_posts += 1
             for post in posts:
                 total_posts += 1
+                if post.get("permalink"):
+                    posts_with_link += 1
                 try:
                     res = pipeline.process_post(
                         post["text"],
@@ -212,6 +215,8 @@ def run(dry_run: bool) -> None:
     print(f"posts processed: {total_posts} (groups with posts: {groups_with_posts}/{len(selected)})")
     print(f"funnel: read {scan['read']} · age-skip {scan['age_skipped']} · "
           f"seen-skip {scan['seen_skipped']} · processed {total_posts}")
+    _nolink_pct = round(100 * (total_posts - posts_with_link) / total_posts) if total_posts else 0
+    print(f"post links: {posts_with_link}/{total_posts} captured · {_nolink_pct}% without a link")
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")

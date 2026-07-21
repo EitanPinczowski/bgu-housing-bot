@@ -54,6 +54,15 @@ _MIN_POST_CHARS = 40                         # shorter than this = not a real po
 # newer /stories/<set>/<base64>/ form — cover them all. Tracking query junk
 # (?comment_id=, __cft__, __tn__) is stripped by _permalink via split("?").
 _PERMALINK_HINTS = ("/posts/", "/permalink/", "/stories/", "story_fbid", "/share/")
+# Facebook rarely exposes a clean permalink anchor on a post, but the post's ID sits
+# in OTHER anchors of the same feed unit — reaction/comment links (which we used to
+# skip for carrying comment_id) contain /groups/{gid}/posts/{pid}/, and share links
+# carry story_fbid={pid}. With the group id (the URL being scraped) we reconstruct
+# the canonical permalink. These pull the ids out of any such href.
+_GID_RE = re.compile(r"/groups/(\d+)")
+_PID_RE = re.compile(r"/(?:posts|permalink)/(\d+)")
+_STORYFBID_RE = re.compile(r"story_fbid=(\d+)")
+_STORY_RE = re.compile(r"/stories/\d+")          # already a valid permalink form
 
 # Post photos: the biggest <img> in the story is the apartment photo. Skip small
 # avatars/emoji and non-photo CDN assets. Min side keeps out avatars (~40px).
@@ -289,13 +298,28 @@ def _permalink(story) -> Optional[str]:
     return None
 
 
-def _permalink_and_age(story):
-    """(permalink, age_hours) read from the post's TIMESTAMP anchor — the "13h"/date
-    link, which IS the canonical permalink and renders on ~every post (comment-less
-    ones too, which the old first-hint scan usually missed). Falls back to the first
-    permalink-hint anchor for the link, and None for either when not present."""
-    link_ts = link_any = None
+def _post_id(href: str):
+    """(group_id, post_id) recovered from any post-bearing href, either None."""
+    gid = (m.group(1) if (m := _GID_RE.search(href)) else None)
+    pid = (m.group(1) if (m := _PID_RE.search(href)) else None)
+    if not pid and (m := _STORYFBID_RE.search(href)):
+        pid = m.group(1)
+    return gid, pid
+
+
+def _permalink_and_age(story, group_url: Optional[str] = None):
+    """(permalink, age_hours) for one post. Facebook seldom exposes a clean
+    permalink anchor (comment-less posts especially), but the post's ID sits in the
+    feed unit's OTHER anchors — reaction/comment/share links — so we recover it and
+    rebuild the canonical /groups/{gid}/posts/{pid}/ (gid known from the scraped URL).
+    Preference: the timestamp anchor's own permalink href → reconstruct from the
+    timestamp anchor's id → reconstruct from any anchor's id → a /stories/ link →
+    the first hint anchor. age comes from the timestamp anchor as before."""
+    link_ts = link_any = link_story = None
+    ts_gid = ts_pid = any_gid = any_pid = None
     age = None
+    url_gid = _GID_RE.search(group_url or "")
+    url_gid = url_gid.group(1) if url_gid else None
     try:
         anchors = (story.query_selector_all('a[role="link"]')
                    or story.query_selector_all("a[href]"))
@@ -318,16 +342,37 @@ def _permalink_and_age(story):
                 if aria and (h := _age_from_aria(aria)) is not None:
                     age = h
                     is_ts = True
+            # a clean permalink anchor (best case, kept verbatim)
             hint = "comment_id" not in href and any(x in href for x in _PERMALINK_HINTS)
             if is_ts and link_ts is None and hint:
-                link_ts = _clean_href(href)      # the timestamp link IS the permalink
+                link_ts = _clean_href(href)
             if link_any is None and hint:
                 link_any = _clean_href(href)
-            if link_ts is not None and age is not None:
-                break
+            if link_story is None and _STORY_RE.search(href):
+                link_story = _clean_href(href)
+            # recover the post id from ANY anchor (incl. comment/reaction links)
+            gid, pid = _post_id(href)
+            if pid:
+                if is_ts and ts_pid is None:
+                    ts_gid, ts_pid = gid, pid
+                if any_pid is None:
+                    any_gid, any_pid = gid, pid
     except Exception:
         pass
-    return (link_ts or link_any), age
+
+    def _canon(gid, pid):
+        gid = gid or url_gid
+        return f"https://www.facebook.com/groups/{gid}/posts/{pid}/" if (gid and pid) else None
+
+    # Reconstruct from the id FIRST — it survives query-based links like
+    # permalink.php?story_fbid=… whose id _clean_href would strip. Fall back to a
+    # clean hint anchor, then a /stories/ link, then the old first-hint capture.
+    link = (_canon(ts_gid, ts_pid)
+            or link_ts
+            or _canon(any_gid, any_pid)
+            or link_story
+            or link_any)
+    return link, age
 
 
 def _stories(page):
@@ -423,7 +468,7 @@ def scrape_group(page: Page, url: str, already_seen=None):
             # Read the permalink AND age from the post's timestamp anchor in one
             # pass — that link IS the canonical permalink. Either can be None on an
             # early pass and get backfilled on a later one.
-            link, age = _permalink_and_age(story)
+            link, age = _permalink_and_age(story, url)
             # age filter: skip posts we can READ as >= the cutoff. Because the
             # timestamp may render late, also drop one we'd already added if a
             # later read reveals it's old. Unknown age is kept, so a recent

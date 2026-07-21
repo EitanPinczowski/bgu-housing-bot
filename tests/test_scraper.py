@@ -45,9 +45,35 @@ def test_falls_back_to_hint_anchor_when_no_timestamp():
     assert age is None
 
 
-def test_comment_anchor_is_not_taken_as_permalink():
-    only_comment = _Anchor(href="/groups/1/posts/2/?comment_id=9", text="Reply")
-    assert scraper._permalink_and_age(_Story([only_comment])) == (None, None)
+def test_comment_link_reconstructs_permalink():
+    # a comment link carries THIS post's id — reconstruct the clean permalink from it
+    # (the whole point of the fix), even with no plain permalink anchor on the post.
+    ts = _Anchor(href="#", text="5h")                       # timestamp, JS-only href
+    comment = _Anchor(href="/groups/1/posts/2/?comment_id=9", text="Reply")
+    link, age = scraper._permalink_and_age(_Story([ts, comment]),
+                                           "https://www.facebook.com/groups/1")
+    assert link == "https://www.facebook.com/groups/1/posts/2/" and age == 5.0
+
+
+def test_reconstructs_from_story_fbid_query():
+    # permalink.php?story_fbid=… — the id is in the query that _clean_href strips,
+    # so we must reconstruct rather than use the raw href. gid comes from the URL.
+    ts = _Anchor(href="/permalink.php?story_fbid=555&id=1", text="3h")
+    link, age = scraper._permalink_and_age(_Story([ts]),
+                                           "https://www.facebook.com/groups/1")
+    assert link == "https://www.facebook.com/groups/1/posts/555/" and age == 3.0
+
+
+def test_keeps_stories_link_as_is():
+    ts = _Anchor(href="/stories/999/AbC==/?src=x", text="2h")
+    link, _ = scraper._permalink_and_age(_Story([ts]), "https://www.facebook.com/groups/1")
+    assert link == "https://www.facebook.com/stories/999/AbC==/"
+
+
+def test_no_link_when_no_post_id_anywhere():
+    only_profile = _Anchor(href="/user/abc", text="דנה כהן")
+    assert scraper._permalink_and_age(_Story([only_profile]),
+                                      "https://www.facebook.com/groups/1") == (None, None)
 
 
 def test_post_age_hours_delegates():
@@ -80,7 +106,7 @@ def _stub_scraper(monkeypatch, stories):
     monkeypatch.setattr(scraper, "_clean_story", lambda raw: raw)
     monkeypatch.setattr(scraper, "_images", lambda s, **k: [])
     monkeypatch.setattr(scraper, "_comments", lambda s: "")
-    monkeypatch.setattr(scraper, "_permalink_and_age", lambda s: (None, 2.0))  # fresh
+    monkeypatch.setattr(scraper, "_permalink_and_age", lambda s, g=None: (None, 2.0))  # fresh
     monkeypatch.setattr(scraper, "_expand_see_more", lambda page: None)
 
     def fake_stories(page):
