@@ -52,15 +52,60 @@ def _tokens(text: str) -> set:
 
 
 _IMMEDIATE_RE = re.compile(r"מייד|מיד\b|עכשיו|היום|כניסה מיידית")
+_FLEX_RE = re.compile(r"גמיש")
+_DATE_RE = re.compile(r"\b(\d{1,2})[./](\d{1,2})")
 
 
 def _normalize_entry_date(s: Optional[str]) -> Optional[str]:
-    """Canonicalize 'available now' phrasings to 'מיידי'; leave dates as written."""
+    """Uniform lease-start: `DD.MM` for dates (a month name alone → the 1st of that
+    month, `01.MM`; a day before the month name is kept, `15 בספטמבר` → `15.09`),
+    `גמיש` for flexible, `מיידי` for immediate. Multiple values joined with ', '.
+    Falls back to the trimmed original if nothing parses."""
     if not s:
         return s
+    out = []
+    for m in _DATE_RE.finditer(s):                 # 1.9 / 01/10 / 15.8.26 -> DD.MM
+        d, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            out.append(f"{d:02d}.{mo:02d}")
+    for name, num in fit._HE_MONTHS.items():       # month name -> day (or 1st) . month
+        i = s.find(name)
+        if i == -1:
+            continue
+        dm = re.search(r"(\d{1,2})\s*ב?ל?\s*$", s[max(0, i - 6):i])
+        day = int(dm.group(1)) if (dm and 1 <= int(dm.group(1)) <= 31) else 1
+        out.append(f"{day:02d}.{num:02d}")
+    if _FLEX_RE.search(s):
+        out.append("גמיש")
     if _IMMEDIATE_RE.search(s):
-        return "מיידי"
-    return s.strip() or None
+        out.append("מיידי")
+    seen: list = []
+    for x in out:
+        if x not in seen:
+            seen.append(x)
+    return ", ".join(seen) if seen else (s.strip() or None)
+
+
+_PHONE_CHUNK_RE = re.compile(r"(?:\+?972|0)[\d\s().\-]{8,}")
+
+
+def _normalize_phone(contact: Optional[str]) -> Optional[str]:
+    """Format Israeli mobile number(s) as `05X-XXXXXXX` — from any 0/+972 form (incl.
+    the number inside a wa.me/972… link), tolerating spaces/dots/dashes. Multiple
+    distinct numbers joined with ', '. A non-mobile string (landline, plain link with
+    no 05X) is returned unchanged."""
+    if not contact:
+        return contact
+    nums: list = []
+    for chunk in _PHONE_CHUNK_RE.findall(contact):
+        d = re.sub(r"\D", "", chunk)
+        if d.startswith("972"):
+            d = "0" + d[3:]
+        if len(d) == 10 and d.startswith("05"):
+            f = f"{d[:3]}-{d[3:]}"
+            if f not in nums:
+                nums.append(f)
+    return ", ".join(nums) if nums else contact
 
 
 _PRICE_MARKERS = ("₪", 'ש"ח', "ש״ח", "שח", 'שכ"ד', "שכ״ד", "שכד", "לחודש", "מחיר")
@@ -110,6 +155,7 @@ def _postprocess_extract(e, raw_text, comments):
             e.price_from_comment = True                  # recovered -> treat as uncertain
     e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
     e.lease_start_date = _normalize_entry_date(e.lease_start_date)
+    e.contact_phone_or_link = _normalize_phone(e.contact_phone_or_link)
     return e
 
 

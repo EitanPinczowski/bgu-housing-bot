@@ -13,8 +13,26 @@ def test_price_second_chance():
 
 def test_normalize_entry_date():
     assert pipeline._normalize_entry_date("כניסה מיידית!") == "מיידי"
-    assert pipeline._normalize_entry_date("1.9") == "1.9"
+    assert pipeline._normalize_entry_date("1.9") == "01.09"          # DD.MM, zero-padded
+    assert pipeline._normalize_entry_date("01/10") == "01.10"
+    assert pipeline._normalize_entry_date("15.8.26") == "15.08"      # year dropped
+    assert pipeline._normalize_entry_date("ספטמבר") == "01.09"       # month only -> 1st
+    assert pipeline._normalize_entry_date("15 בספטמבר") == "15.09"   # day kept
+    assert pipeline._normalize_entry_date("גמיש") == "גמיש"
+    assert pipeline._normalize_entry_date("1.9 או 1.10") == "01.09, 01.10"   # multiple
     assert pipeline._normalize_entry_date(None) is None
+
+
+def test_normalize_phone():
+    assert pipeline._normalize_phone("0501234567") == "050-1234567"
+    assert pipeline._normalize_phone("050 123 4567") == "050-1234567"
+    assert pipeline._normalize_phone("+972-50-1234567") == "050-1234567"
+    assert pipeline._normalize_phone("צרו קשר 050-1234567 או 052-7654321") == \
+        "050-1234567, 052-7654321"
+    assert pipeline._normalize_phone("https://wa.me/972501234567") == "050-1234567"
+    assert pipeline._normalize_phone("08-6412345") == "08-6412345"   # landline left as-is
+    assert pipeline._normalize_phone("https://facebook.com/x") == "https://facebook.com/x"
+    assert pipeline._normalize_phone(None) is None
 
 
 def test_clean_address():
