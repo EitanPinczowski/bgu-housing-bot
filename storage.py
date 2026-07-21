@@ -530,5 +530,5 @@ def save_listing(res: PipelineResult) -> None:
              e.street_address_or_neighborhood, res.walk_minutes, e.lease_start_date,
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
              1 if e.price_from_comment else 0, res.score, json.dumps(res.images or []),
-             e.floor, _tri(e.furnished), _tri(e.has_balcony_or_garden), _tri(e.has_elevator)),
+             e.floor, _tri(e.furnished), e.balcony_or_garden, _tri(e.has_elevator)),
         )

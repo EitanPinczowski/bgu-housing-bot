@@ -3,7 +3,7 @@ Gemini's guaranteed structured output). PipelineResult is what we compute."""
 from __future__ import annotations
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ListingExtract(BaseModel):
@@ -17,9 +17,19 @@ class ListingExtract(BaseModel):
     lease_start_date: Optional[str] = None
     floor: Optional[str] = None            # as written ("קרקע", "3", "3 מתוך 5")
     furnished: Optional[bool] = None       # bed + table + closet per sleeping room
-    has_balcony_or_garden: Optional[bool] = None   # מרפסת / גינה / חצר
+    balcony_or_garden: Optional[str] = None   # the specific one: "מרפסת" or "גינה" (else None)
     has_elevator: Optional[bool] = None    # מעלית — True/False/None (unmentioned)
     contact_phone_or_link: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_balcony(cls, data):
+        # older archived parses used a bool has_balcony_or_garden — map a truthy one to
+        # the combined label so they still score (+bonus) and display without a re-parse.
+        if isinstance(data, dict) and not data.get("balcony_or_garden") \
+                and data.get("has_balcony_or_garden"):
+            data["balcony_or_garden"] = "מרפסת/גינה"
+        return data
     missing_critical_data: bool = False
     price_from_comment: bool = False       # price came from a comment, not the post
     summary_hebrew: Optional[str] = None

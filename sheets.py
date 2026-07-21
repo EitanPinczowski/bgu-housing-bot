@@ -47,7 +47,7 @@ def _retry(fn, tries: int = 4, base: float = 1.5):
 
 HEADERS = ["first_seen", "status", "tier", "price_per_room", "rooms_free",
            "roommates", "address", "walk_min", "gate", "lease_start", "floor",
-           "furnished", "balcony", "contact", "summary", "source_url", "group",
+           "furnished", "balcony/garden", "contact", "summary", "source_url", "group",
            "dedup_key", "mark", "score"]
 
 _DEDUP_COL = HEADERS.index("dedup_key") + 1   # 1-based column of dedup_key
@@ -138,7 +138,7 @@ def save_listing(res: PipelineResult) -> None:
         return
     e = res.extract
     furn = "מרוהט" if e.furnished else "לא מרוהט" if e.furnished is False else ""
-    balc = "מרפסת/גינה" if e.has_balcony_or_garden else ""
+    balc = e.balcony_or_garden or ""
     row = [                                            # MUST stay in HEADERS order
         datetime.now().isoformat(timespec="seconds"), res.status.value,
         res.location_tier, e.price_per_room_ils, e.available_rooms_count,
@@ -162,7 +162,9 @@ def _row_from_db(r) -> list:
     (first_seen, status, tier, price, avail, total, addr, walk, lease, floor,
      furnished, balcony, contact, summary, url, group, score) = r
     furn = "מרוהט" if furnished == 1 else "לא מרוהט" if furnished == 0 else ""
-    balc = "מרפסת/גינה" if balcony == 1 else ""
+    # balcony now holds the specific amenity text ("מרפסת"/"גינה"); a legacy int 1
+    # (rows saved before this change) falls back to the combined label.
+    balc = balcony if isinstance(balcony, str) and balcony else ("מרפסת/גינה" if balcony == 1 else "")
     return [first_seen, status, tier, price, avail, total, addr,
             None if walk is None else round(walk), "",   # gate
             lease, floor or "", furn, balc, contact, summary, url, group,

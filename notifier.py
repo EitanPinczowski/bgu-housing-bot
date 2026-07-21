@@ -82,8 +82,8 @@ def format_alert(res: PipelineResult) -> str:
         lines.append(f"🏢 קומה {_esc(e.floor)}")
     if getattr(e, "furnished", None):
         lines.append("🛋️ מרוהט")
-    if getattr(e, "has_balcony_or_garden", None):
-        lines.append("🌿 מרפסת/גינה")
+    if getattr(e, "balcony_or_garden", None):
+        lines.append(f"🌿 {_esc(e.balcony_or_garden)}")
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:
@@ -97,7 +97,7 @@ def format_alert(res: PipelineResult) -> str:
         e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment,
         furnished=getattr(e, "furnished", None), lease_start=e.lease_start_date,
         floor=getattr(e, "floor", None), has_elevator=getattr(e, "has_elevator", None),
-        has_balcony=getattr(e, "has_balcony_or_garden", None))
+        has_balcony=getattr(e, "balcony_or_garden", None))
     factors = fit.top_factors(_bd)
     factors += sorted((p for p in _bd if p[1] < 0), key=lambda p: p[1])[:2]   # notable penalties
     if factors:

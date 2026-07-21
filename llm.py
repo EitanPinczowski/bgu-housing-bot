@@ -39,8 +39,9 @@ _SYSTEM_HE = """אתה מנתח מודעות שכירות של דירות שות
 - furnished = true אם הדירה מרוהטת — לכל חדר שינה יש לפחות מיטה, שולחן וארון (למשל
   "בכל חדר מיטה, ארון ושולחן"). false אם כתוב "לא מרוהט"/"ריקה"/"מרוהט חלקית". אם לא
   מצוין ריהוט כלל — null.
-- has_balcony_or_garden = true אם מוזכרת מרפסת (כולל מרפסת שמש) או גינה/חצר. אם לא
-  מוזכר — null.
+- balcony_or_garden = "מרפסת" אם מוזכרת מרפסת (כולל מרפסת שמש); אחרת "גינה" אם מוזכרת
+  גינה או חצר; אם מוזכרות גם מרפסת וגם גינה — החזר "מרפסת". אם לא מוזכר כלל — null.
+  החזר בדיוק אחת מהמילים "מרפסת" או "גינה" (לא שתיהן).
 - has_elevator = true אם מוזכרת מעלית. false אם כתוב "אין מעלית"/"ללא מעלית"/"בלי
   מעלית". אם לא מוזכר כלל — null.
 - summary_hebrew = משפט תקציר אחד.
@@ -108,7 +109,7 @@ _SCHEMA_HINT = (
     '"available_rooms_count": מספר או null, "total_roommates_in_apt": מספר או null, '
     '"street_address_or_neighborhood": מחרוזת או null, "lease_start_date": מחרוזת או null, '
     '"floor": מחרוזת או null, "furnished": true/false/null, '
-    '"has_balcony_or_garden": true/null, "has_elevator": true/false/null, '
+    '"balcony_or_garden": "מרפסת"/"גינה"/null, "has_elevator": true/false/null, '
     '"contact_phone_or_link": מחרוזת או null, "missing_critical_data": true/false, '
     '"price_from_comment": true/false, "summary_hebrew": מחרוזת או null}'
 )
