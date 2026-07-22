@@ -13,6 +13,28 @@ import requests
 
 import config
 
+# Circuit breaker: probe OSRM ONCE per process; if it's down, skip it for every
+# listing (fall back to the straight-line walk estimate in zones) instead of paying a
+# multi-second retry per gate per listing — a down OSRM must not turn a replay/run into
+# an hours-long crawl. `osrm_down` is exposed so a run can report it (see #41 metrics).
+_alive: Optional[bool] = None
+osrm_down = False
+
+
+def _alive_check() -> bool:
+    """True if OSRM answered a quick probe (cached for the process). One short,
+    no-retry request so a dead server costs ~2s total, not 2s × every listing."""
+    global _alive, osrm_down
+    if _alive is None:
+        try:
+            r = requests.get(f"{config.OSRM_BASE_URL}/route/v1/foot/34.8,31.25;34.8015,31.262",
+                             params={"overview": "false"}, timeout=3)
+            _alive = r.status_code == 200 and r.json().get("code") == "Ok"
+        except Exception:
+            _alive = False
+        osrm_down = not _alive
+    return _alive
+
 
 def _foot_minutes(lat: float, lon: float, gate: dict, tries: int = 3) -> Optional[float]:
     # OSRM wants lon,lat  ->  {src_lon},{src_lat};{dst_lon},{dst_lat}
@@ -41,8 +63,8 @@ def walk_to_nearest(lat: Optional[float], lon: Optional[float]
     """(minutes, gate name) for the CLOSEST configured gate, or (None, None).
     The gate name (config.GATES[...]["name"], else the key) lets the alert say
     which gate the walk time is to."""
-    if lat is None or lon is None:
-        return None, None
+    if lat is None or lon is None or not _alive_check():
+        return None, None                              # no coord, or OSRM down → straight-line
     best_min, best_name = None, None
     for key, g in config.GATES.items():
         m = _foot_minutes(lat, lon, g)

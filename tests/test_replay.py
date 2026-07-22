@@ -9,11 +9,14 @@ def _post(location):
     return {"parsed_json": e.model_dump_json()}
 
 
-def test_is_bare_nbhd_post():
-    assert replay._is_bare_nbhd_post(_post("שכונה ג"))          # bare neighborhood
-    assert replay._is_bare_nbhd_post(_post("שכונה ד'"))
-    assert not replay._is_bare_nbhd_post(_post("רינגלבלום 5"))  # a specific street
-    assert not replay._is_bare_nbhd_post(_post("רחוב הנדיב"))   # a named street
-    assert not replay._is_bare_nbhd_post(_post(None))           # no location
-    assert not replay._is_bare_nbhd_post({"parsed_json": None}) # no parse
-    assert not replay._is_bare_nbhd_post({"parsed_json": "not json"})
+def test_is_imprecise_post():
+    # --only-imprecise = bare neighborhood OR bare street (no house number)
+    assert replay._is_imprecise_post(_post("שכונה ג"))          # bare neighborhood
+    assert replay._is_imprecise_post(_post("רחוב הנדיב"))       # bare street (no number)
+    assert not replay._is_imprecise_post(_post("רינגלבלום 5"))  # numbered street = precise
+    assert not replay._is_imprecise_post(_post(None))
+    assert not replay._is_imprecise_post({"parsed_json": None})
+    assert not replay._is_imprecise_post({"parsed_json": "not json"})
+    # --only-bare-nbhd (bare_nbhd_only) is the narrower subset: a bare street is excluded
+    assert replay._is_imprecise_post(_post("שכונה ג"), bare_nbhd_only=True)
+    assert not replay._is_imprecise_post(_post("רחוב הנדיב"), bare_nbhd_only=True)

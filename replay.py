@@ -44,16 +44,19 @@ _APPLY = "--apply" in sys.argv
 _MIN_SCORE = (int(sys.argv[sys.argv.index("--min-score") + 1])
               if "--min-score" in sys.argv else None)
 _PRUNE_ORPHANS = "--prune-orphans" in sys.argv   # drop rows whose key no longer maps to a parse
-# --only-bare-nbhd : replay ONLY posts whose stored location is a bare neighborhood
-# (no street). Pair with --llm to cheaply re-extract just those under the improved
-# "prefer the street over the neighborhood" prompt, spending Gemini quota only where
-# it can help (a street buried under a neighborhood name).
+# --only-imprecise : replay ONLY posts whose stored location is IMPRECISE — a bare
+# neighborhood OR a bare street with no house number. Pair with --llm to cheaply
+# re-extract just those under the improved prompt (recover a missing house number /
+# neighborhood), spending Gemini quota only where it can help. (--only-bare-nbhd kept
+# as an alias for the narrower bare-neighborhood-only subset.)
+_ONLY_IMPRECISE = "--only-imprecise" in sys.argv
 _ONLY_BARE = "--only-bare-nbhd" in sys.argv
 
 
-def _is_bare_nbhd_post(post) -> bool:
-    """True if the post's stored parse resolved to a bare neighborhood (a whole area,
-    no specific street) — the population --only-bare-nbhd re-extracts."""
+def _is_imprecise_post(post, bare_nbhd_only: bool = False) -> bool:
+    """True if the post's stored location is a bare neighborhood, or (unless
+    bare_nbhd_only) a bare street with no house number — the imprecise placements a
+    re-extract might sharpen."""
     pj = post.get("parsed_json")
     if not pj:
         return False
@@ -61,7 +64,7 @@ def _is_bare_nbhd_post(post) -> bool:
         loc = ListingExtract.model_validate_json(pj).street_address_or_neighborhood
     except Exception:
         return False
-    return geocode.is_bare_neighborhood(loc)
+    return geocode.is_bare_neighborhood(loc) or (not bare_nbhd_only and geocode.is_bare_street(loc))
 
 
 def _reclassify(post):
@@ -90,7 +93,7 @@ def main() -> None:
         if _MIN_SCORE is not None and (p["score"] or 0) < _MIN_SCORE:
             skipped += 1
             continue
-        if _ONLY_BARE and not _is_bare_nbhd_post(p):
+        if (_ONLY_IMPRECISE or _ONLY_BARE) and not _is_imprecise_post(p, bare_nbhd_only=_ONLY_BARE):
             skipped += 1
             continue
         res = _reclassify(p)

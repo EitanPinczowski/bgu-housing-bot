@@ -53,3 +53,19 @@ def test_no_route_answer_does_not_retry(monkeypatch):
     monkeypatch.setattr(osrm.requests, "get", no_route)
     assert osrm._foot_minutes(31.25, 34.79, _GATE) is None
     assert calls["n"] == 1                          # a real 'no route' is not retried
+
+
+def test_circuit_breaker_skips_when_down(monkeypatch):
+    # OSRM down: probe fails once, then walk_to_nearest short-circuits (no per-gate calls)
+    monkeypatch.setattr(osrm, "_alive", None)
+    calls = {"n": 0}
+
+    def down(url, **kw):
+        calls["n"] += 1
+        raise ConnectionError("down")
+
+    monkeypatch.setattr(osrm.requests, "get", down)
+    assert osrm.walk_to_nearest(31.25, 34.79) == (None, None)
+    assert osrm.walk_to_nearest(31.26, 34.80) == (None, None)
+    assert calls["n"] == 1                          # a single probe, cached — not 4 gates × 2
+    assert osrm.osrm_down is True
