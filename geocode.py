@@ -239,19 +239,25 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
     bbox = f"{la0},{lo0},{la1},{lo1}"                       # Overpass: S,W,N,E
     q = (f'[out:json][timeout:25];'
          f'(way["name"~"{name}"]({bbox});node["name"~"{name}"]({bbox}););'
-         f'out center 1;')
-    try:
-        time.sleep(1.1)                                    # be polite to the shared instance
-        r = requests.post(config.OVERPASS_URL, data={"data": q},
-                          headers={"User-Agent": config.NOMINATIM_USER_AGENT}, timeout=30)
-        r.raise_for_status()
-        for el in r.json().get("elements", []):
+         f'out center 5;')
+    timeout = getattr(config, "OVERPASS_TIMEOUT_SEC", 15)
+    for url in config.OVERPASS_URLS:                        # first mirror that responds wins
+        try:
+            time.sleep(1.0)                                # be polite to the shared instance
+            r = requests.post(url, data={"data": q},
+                              headers={"User-Agent": config.NOMINATIM_USER_AGENT}, timeout=timeout)
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            continue                                       # this mirror timed out — try the next
+        # A valid response is authoritative (OSM data is identical across mirrors):
+        # return the first in-box hit, or None — never keep hammering other mirrors.
+        for el in data.get("elements", []):
             c = el.get("center") or el                     # ways carry a computed center
             lat, lon = c.get("lat"), c.get("lon")
             if lat is not None and lon is not None and _in_beer_sheva(float(lat), float(lon)):
                 return float(lat), float(lon)
-    except Exception:
-        pass
+        return None
     return None
 
 

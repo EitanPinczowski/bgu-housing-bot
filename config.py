@@ -171,9 +171,18 @@ USE_GOOGLE_GEOCODE = False
 # Overpass (OpenStreetMap's query API) — FREE, no key/billing. Tried before
 # Nominatim because OSM's name index resolves many Be'er Sheva Hebrew street names
 # that Nominatim's geocoder returns nothing for. Bounded to the BS box and paced
-# ~1 req/s (shared public instance); successful hits are cached like the others.
+# ~1 req/s; successful hits are cached like the others. We try a list of public
+# mirrors in order and take the FIRST that responds — any single instance is often
+# overloaded and times out. OSM data is identical across mirrors, so a mirror that
+# answers with an empty result is authoritative (we don't keep retrying elsewhere).
 USE_OVERPASS_FALLBACK = True
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = [
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+OVERPASS_TIMEOUT_SEC = 15          # per-mirror; short so a dead mirror fails fast
 
 USE_NOMINATIM_FALLBACK = True
 NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"
