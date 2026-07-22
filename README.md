@@ -299,9 +299,17 @@ Desktop is set to start on login if you want walk times on scheduled runs.
 ### Helper tasks (also scheduled)
 
 - **`BGU Watchdog`** (`watchdog.py`) — runs 07:30/11:30/15:30/19:30, 30 min before
-  each scrape. Checks OSRM + Ollama and pings Telegram if a dependency is down,
-  so you can fix it before a run degrades. (Facebook-login loss is caught by the
-  scraper's own "0 posts" alert.)
+  each scrape. A thin wrapper around `doctor` (below) that pings Telegram if a
+  dependency is down, so you can fix it before a run degrades. (Facebook-login loss
+  is caught by the scraper's own "0 posts" alert.)
+
+Run **`python doctor.py`** anytime for a full, human-readable health check: it
+probes config, the data files (green zone / neighborhoods / boundary streets / …),
+the SQLite DB, OSRM, Telegram, Gemini, and the optional Google Sheet, prints a
+PASS/FAIL/WARN table **with the fix for anything broken** (e.g. OSRM down →
+`docker start osrm_bgu`), and shows which backend of each fallback chain
+(geocode / LLM / Overpass mirrors) is currently live. `python doctor.py --alert`
+adds the Telegram DM (what `watchdog.py` runs).
 - **`BGU Morning`** (`top_listings.py 3 24`) — every day at 08:00, posts the
   **top 3** listings of the last 24 h to Telegram as **full listings** (photo
   album + details + ⭐/🗑 vote buttons), ranked by the **vote-adjusted** score.
