@@ -104,11 +104,16 @@ def main() -> None:
         now[nv] += 1
         if nv != p["verdict"] or ns != p["score"]:
             changes.append((p, nv, ns, res))
-        if _APPLY and res.dedup_key:
-            if res.status in (Status.MATCH, Status.NEEDS_DATA):
+        if _APPLY:
+            if res.status in (Status.MATCH, Status.NEEDS_DATA) and res.dedup_key:
                 storage.save_listing(res)              # upsert (update or add)
-            else:
-                storage.delete_listing(res.dedup_key)  # now RED/NOT_AD -> drop
+            elif res.extract:
+                # now RED/NOT_AD/blacklisted → drop any stored row for this listing.
+                # Delete by ALL the extract's keys: an EARLY drop (blacklist / non-ב-ג-ד
+                # neighborhood) returns no dedup_key, so a stale MATCH row would survive
+                # a plain delete(res.dedup_key) — that was the "שכונה ו" leak.
+                for k in storage.dedup_keys(res.extract):
+                    storage.delete_listing(k)
             storage.record_post(p["sig"], p["raw_text"] or "", p["comments"] or "",
                                 res.images or [], p["group"], p["source_url"],
                                 res.extract, res)       # refresh the archive verdict
