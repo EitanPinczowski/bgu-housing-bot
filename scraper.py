@@ -30,7 +30,6 @@ How the extraction works (learned from the live DOM):
 from __future__ import annotations
 
 import datetime as dt
-import os
 import random
 import re
 import time

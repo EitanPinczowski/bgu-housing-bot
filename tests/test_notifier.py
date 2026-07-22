@@ -59,12 +59,18 @@ def test_plain_text_fallback_on_400(monkeypatch):
     seen = []
 
     class _R:
-        def __init__(self, code): self.status_code = code
+        def __init__(self, code):
+            self.status_code = code
+
         def raise_for_status(self):
             if self.status_code != 200:
                 import requests as rq
-                e = rq.exceptions.HTTPError("bad"); e.response = self; raise e
-        def json(self): return {"ok": True, "result": {}}
+                e = rq.exceptions.HTTPError("bad")
+                e.response = self
+                raise e
+
+        def json(self):
+            return {"ok": True, "result": {}}
 
     def fake_post(url, json=None, timeout=None):
         seen.append(json)

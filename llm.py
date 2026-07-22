@@ -7,7 +7,6 @@ OpenAI-compatible endpoint (a local Ollama model for full privacy, or Groq)
 by changing LLM_PROVIDER in config.py — pipeline code never changes.
 """
 from __future__ import annotations
-import json
 import os
 import time
 

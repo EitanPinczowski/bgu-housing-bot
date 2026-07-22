@@ -1,0 +1,17 @@
+# Ruff lint config. Deliberately focused: pyflakes (F) catches the high-value bugs —
+# undefined names, unused imports/vars, f-strings with no placeholders — which is
+# exactly the class that let the OVERPASS_URL -> OVERPASS_URLS rename slip through.
+# pycodestyle (E/W) keeps style consistent. Import-sorting (I) is intentionally OFF:
+# several scripts call load_dotenv() between imports, and reordering would break that.
+line-length = 125
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E402",   # module import not at top — several scripts load_dotenv() before importing
+    "E741",   # ambiguous var name (l/O/I) — a few short locals read fine in context
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E501", "E731"]   # long asserts and lambda monkeypatches are fine in tests
