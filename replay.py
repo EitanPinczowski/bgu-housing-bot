@@ -30,6 +30,7 @@ try:
 except Exception:
     pass
 
+import geocode
 import pipeline
 import sheets
 import storage
@@ -43,6 +44,24 @@ _APPLY = "--apply" in sys.argv
 _MIN_SCORE = (int(sys.argv[sys.argv.index("--min-score") + 1])
               if "--min-score" in sys.argv else None)
 _PRUNE_ORPHANS = "--prune-orphans" in sys.argv   # drop rows whose key no longer maps to a parse
+# --only-bare-nbhd : replay ONLY posts whose stored location is a bare neighborhood
+# (no street). Pair with --llm to cheaply re-extract just those under the improved
+# "prefer the street over the neighborhood" prompt, spending Gemini quota only where
+# it can help (a street buried under a neighborhood name).
+_ONLY_BARE = "--only-bare-nbhd" in sys.argv
+
+
+def _is_bare_nbhd_post(post) -> bool:
+    """True if the post's stored parse resolved to a bare neighborhood (a whole area,
+    no specific street) — the population --only-bare-nbhd re-extracts."""
+    pj = post.get("parsed_json")
+    if not pj:
+        return False
+    try:
+        loc = ListingExtract.model_validate_json(pj).street_address_or_neighborhood
+    except Exception:
+        return False
+    return geocode.is_bare_neighborhood(loc)
 
 
 def _reclassify(post):
@@ -69,6 +88,9 @@ def main() -> None:
     skipped = rescued = demoted = 0
     for p in posts:
         if _MIN_SCORE is not None and (p["score"] or 0) < _MIN_SCORE:
+            skipped += 1
+            continue
+        if _ONLY_BARE and not _is_bare_nbhd_post(p):
             skipped += 1
             continue
         res = _reclassify(p)
