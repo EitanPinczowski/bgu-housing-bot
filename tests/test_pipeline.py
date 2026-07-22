@@ -118,6 +118,36 @@ def test_blacklisted_named_neighborhood_drops():
         assert res.status.value == "DROP", area
 
 
+def test_recover_house_number():
+    # a numberless street + a "<street> <n>" in the post text -> number appended
+    assert pipeline._recover_house_number(
+        "רחוב אברהם אבינו", "דירה ברחוב אברהם אבינו 38 להשכרה") == "רחוב אברהם אבינו 38"
+    # already numbered -> untouched; bare neighborhood -> untouched
+    assert pipeline._recover_house_number("אברהם אבינו 5", "אברהם אבינו 5") == "אברהם אבינו 5"
+    assert pipeline._recover_house_number("שכונה ג", "שכונה ג 12 משהו") == "שכונה ג"
+
+
+def test_boundary_street_imprecise_is_red(monkeypatch):
+    from models import ListingExtract
+    # geocode returns an imprecise (street-name) GREEN point on a boundary street
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.262, 34.795), "overpass"))
+    monkeypatch.setattr(pipeline.geocode, "is_boundary_street", lambda a: True)
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (5.0, "gate"))
+    monkeypatch.setattr(pipeline.zones, "classify_location", lambda lat, lon, walk_min=None: "GREEN")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.zones, "in_allowed_neighborhood", lambda lat, lon: True)
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="אברהם אבינו 38",
+                       available_rooms_count=2, total_roommates_in_apt=3)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value == "DROP" and "גבול האזור" in res.reason
+    # a PRECISE placement on the same street keeps its GREEN tier (MATCH)
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.262, 34.795), "osm_addr"))
+    res2 = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res2.status.value == "MATCH"
+
+
 def test_no_amber_area_matches_dalet_only():
     assert pipeline._no_amber_area("שכונה ד'")
     assert pipeline._no_amber_area("רחוב הפלמ\"ח, שכונה ד")

@@ -147,8 +147,35 @@ def test_overpass_pick_prefers_exact_highway():
         {"type": "way", "center": {"lat": 31.264, "lon": 34.792},
          "tags": {"name": "רגר", "highway": "primary"}},
     ]
-    # the actual street (highway) wins over a same-named shop node
-    assert geocode._overpass_pick(els, "רגר") == (31.264, 34.792)
+    # the actual street (highway) wins over a same-named shop node; source = street-level
+    assert geocode._overpass_pick(els, "רגר") == ((31.264, 34.792), "overpass")
+
+
+def test_overpass_pick_prefers_precise_address_node():
+    els = [
+        {"type": "way", "center": {"lat": 31.264, "lon": 34.792},
+         "tags": {"name": "אברהם אבינו", "highway": "residential"}},
+        {"type": "node", "lat": 31.270, "lon": 34.798,
+         "tags": {"addr:street": "אברהם אבינו", "addr:housenumber": "38"}},
+    ]
+    # the exact house node wins and is labelled precise
+    assert geocode._overpass_pick(els, "אברהם אבינו", "38") == ((31.270, 34.798), "osm_addr")
+
+
+def test_bare_street_and_precise_source():
+    assert geocode.is_bare_street("אברהם אבינו") is True
+    assert geocode.is_bare_street("רחוב הנדיב") is True
+    assert geocode.is_bare_street("אברהם אבינו 60") is False   # has a number
+    assert geocode.is_bare_street("שכונה ג") is False          # bare neighborhood
+    assert geocode.is_precise_source("static") and geocode.is_precise_source("osm_addr")
+    assert not geocode.is_precise_source("overpass")           # street-level = imprecise
+
+
+def test_overpass_name_hardening():
+    assert geocode._overpass_name("רחבת רד״ק 13/6, באר שבע").startswith("רד")
+    assert geocode._house_number("אברהם אבינו 38") == "38"
+    assert geocode._house_number("רחבת רד״ק 13/6") == "13"     # compound -> first
+    assert geocode._house_number("רחוב קדש") is None
 
 
 # --- #1: negative-result cache with a TTL ---------------------------------------

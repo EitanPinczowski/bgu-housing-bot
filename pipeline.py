@@ -154,9 +154,26 @@ def _postprocess_extract(e, raw_text, comments):
             e.price_per_room_ils = p
             e.price_from_comment = True                  # recovered -> treat as uncertain
     e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
+    e.street_address_or_neighborhood = _recover_house_number(
+        e.street_address_or_neighborhood, raw_text)
     e.lease_start_date = _normalize_entry_date(e.lease_start_date)
     e.contact_phone_or_link = _normalize_phone(e.contact_phone_or_link)
     return e
+
+
+def _recover_house_number(address, raw_text):
+    """If the LLM returned a numberless street but the post text has '<that street>
+    <number>', append the number so it geocodes precisely (safety net, like
+    _price_second_chance). Bare neighborhoods and already-numbered addresses untouched."""
+    if not address or not raw_text or any(ch.isdigit() for ch in address):
+        return address
+    if geocode.is_bare_neighborhood(address):
+        return address
+    core = geocode._overpass_name(address)               # the street token, no street-words
+    if len(core) < 3:
+        return address
+    m = re.search(re.escape(core) + r"\s+(\d{1,4})\b", raw_text)
+    return f"{address} {m.group(1)}" if m else address
 
 
 def _blacklisted(location: Optional[str]) -> bool:
@@ -363,6 +380,17 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     # its real tier and can still be GREEN.
     elif tier == "GREEN" and geocode.is_bare_neighborhood(e.street_address_or_neighborhood):
         tier = "AMBER"
+    # Address precision: an IMPRECISELY-placed listing (a street-name / bare point, not a
+    # precise house/POI hit) can't be a confident GREEN. On a boundary-crossing street
+    # (green on one end, red on the other) a name-only point could be the wrong side →
+    # RED; a numberless street elsewhere → cap GREEN to AMBER. A precise hit keeps its tier.
+    addr = e.street_address_or_neighborhood
+    boundary = False
+    if tier in ("GREEN", "AMBER") and not geocode.is_precise_source(geo_source):
+        if geocode.is_boundary_street(addr):
+            tier, boundary = "RED", True
+        elif tier == "GREEN" and geocode.is_bare_street(addr):
+            tier = "AMBER"
     # ב/ג/ד-ONLY: only the three imported neighborhoods are acceptable. Any in-range
     # point outside them is RED — even inside the hand-drawn green zone (the polygons
     # win). Fail-open if neighborhoods.json is missing (in_allowed_neighborhood).
@@ -372,7 +400,8 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     mark_seen(key)
 
     if tier == "RED":
-        reason = ("מחוץ לשכונות ב/ג/ד" if outside_bgd
+        reason = ("רחוב שחוצה את גבול האזור — כתובת מדויקת לא נקבעה" if boundary
+                  else "מחוץ לשכונות ב/ג/ד" if outside_bgd
                   else "שכונה ד' מחוץ לפוליגון הירוק (ללא מרווח)" if no_amber
                   else f"more than {config.MAX_WALK_MINUTES} min walk from a gate")
         return result(Status.DROP, reason, geo_source=geo_source,

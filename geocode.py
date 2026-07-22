@@ -40,6 +40,51 @@ def is_bare_neighborhood(s: Optional[str]) -> bool:
         return False
     return not is_precise_address(s)
 
+
+def is_bare_street(s: Optional[str]) -> bool:
+    """A street/area with NO house number — a line, not a point ("אברהם אבינו",
+    "רחוב הנדיב"). False for a numbered address ("אברהם אבינו 60") and for a bare
+    neighborhood ("שכונה ג"). Used to cap an imprecise GREEN to AMBER."""
+    if not s or is_bare_neighborhood(s):
+        return False
+    return not any(ch.isdigit() for ch in s)
+
+
+# Which geocoders give a PRECISE point (a specific place / house number) vs a
+# street-LEVEL point that only says "somewhere on this street". A street-level point
+# can't be trusted as GREEN on a boundary-crossing street (see pipeline).
+_PRECISE_SOURCES = {"static", "google", "osm_addr"}
+
+
+def is_precise_source(source: Optional[str]) -> bool:
+    return source in _PRECISE_SOURCES
+
+
+# --- boundary streets: streets whose OSM geometry crosses the in-range↔RED line, so a
+# name-only (imprecise) placement on them can't be trusted GREEN. Built by
+# load_boundary_streets.py; matched by name substring against the address text. -------
+_boundary_streets: Optional[set] = None
+
+
+def _load_boundary_streets() -> set:
+    global _boundary_streets
+    if _boundary_streets is None:
+        try:
+            data = json.loads((config.ROOT / "boundary_streets.json").read_text(encoding="utf-8"))
+            _boundary_streets = {_normalize(s) for s in data.get("streets", []) if s}
+        except Exception:
+            _boundary_streets = set()
+    return _boundary_streets
+
+
+def is_boundary_street(address: Optional[str]) -> bool:
+    """True if the address is on a known boundary-crossing street (its name appears in
+    the address text). Empty set (no file) → False, so the feature is simply off."""
+    if not address:
+        return False
+    norm = _normalize(address)
+    return any(len(s) >= _MIN_REVERSE_MATCH and s in norm for s in _load_boundary_streets())
+
 # name (as it tends to appear in posts) -> (lat, lon)
 # Seed values below are ILLUSTRATIVE placeholders near BGU — replace/extend
 # with your real green-area list. Keys are matched by normalized substring,
@@ -181,10 +226,10 @@ def geocode_detailed(location_text: Optional[str]):
     if _google_enabled():
         coords, source = _google(location_text), "google"
     if coords is None and getattr(config, "USE_OVERPASS_FALLBACK", True):
-        ocoords, responded = _overpass(location_text)
+        ocoords, osrc, responded = _overpass(location_text)
         authoritative = responded
         if ocoords:
-            coords, source = ocoords, "overpass"
+            coords, source = ocoords, osrc          # 'osm_addr' (precise) or 'overpass'
     if coords is None and config.USE_NOMINATIM_FALLBACK:
         ncoords = _nominatim(location_text)
         if ncoords:
@@ -278,15 +323,23 @@ def _google_places(location_text: str) -> Optional[Tuple[float, float]]:
     return None
 
 
-# Strip house numbers and street-type words so the query matches the OSM `name`
-# tag of the street itself ("רחוב רינגלבלום 5" -> "רינגלבלום").
-_OVERPASS_STRIP = re.compile(r"\d+|רחוב|רח['׳]|שדרות|שד['׳]|דרך|סמטת|סמטה|שביל")
+# Strip house numbers (incl. a compound "13/6") and street-type words so the query
+# matches the OSM `name` tag of the street itself ("רחוב רינגלבלום 5" -> "רינגלבלום",
+# "רחבת רד״ק 13/6" -> "רד ק"). Covers רחבת/כיכר/שדרה that earlier misses left in.
+_OVERPASS_STRIP = re.compile(
+    r"\d+(?:/\d+)?|רחוב|רח['׳]|שדרות|שדרה|שד['׳]|דרך|סמטת|סמטה|שביל|רחבת|רחבה|כיכר")
 
 
 def _overpass_name(location_text: str) -> str:
     s = _OVERPASS_STRIP.sub(" ", location_text)
-    s = s.translate(str.maketrans("", "", '"\\')).strip()   # keep the QL string safe
-    return re.sub(r"\s+", " ", s)
+    s = s.translate(str.maketrans("", "", '"\\/'))          # keep the QL string safe
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _house_number(location_text: Optional[str]) -> Optional[str]:
+    """The house number in an address ('אברהם אבינו 38' -> '38', '13/6' -> '13'), else None."""
+    m = re.search(r"\b(\d{1,4})\b", location_text or "")
+    return m.group(1) if m else None
 
 
 def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
@@ -298,16 +351,20 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
 
     name = _overpass_name(location_text)
     if len(name) < _MIN_REVERSE_MATCH:
-        return None, True                                  # nothing to look up = a real miss
+        return None, None, True                            # nothing to look up = a real miss
+    hn = _house_number(location_text)
     la0, lo0, la1, lo1 = _bs_bounds()
     bbox = f"{la0},{lo0},{la1},{lo1}"                       # Overpass: S,W,N,E
-    # Ask for named streets (highways) AND any named node/way; we rank client-side so
-    # a real road wins over an unrelated POI that happens to share the name.
+    # For a numbered address, ALSO ask for the exact OSM address node (street+number) —
+    # a precise point. Plus named streets (highways) and any named node/way; we rank
+    # client-side so the precise addr node > a real road > a same-named POI.
+    addr = (f'node["addr:housenumber"="{hn}"]["addr:street"~"{name}"]({bbox});' if hn else "")
     q = (f'[out:json][timeout:25];'
-         f'(way["highway"]["name"~"{name}"]({bbox});'
+         f'({addr}'
+         f'way["highway"]["name"~"{name}"]({bbox});'
          f'way["name"~"{name}"]({bbox});'
          f'node["name"~"{name}"]({bbox}););'
-         f'out center tags 20;')
+         f'out center tags 25;')
     timeout = getattr(config, "OVERPASS_TIMEOUT_SEC", 15)
     for url in config.OVERPASS_URLS:                        # first mirror that responds wins
         try:
@@ -320,26 +377,30 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
             continue                                       # this mirror timed out — try the next
         # A valid response is authoritative (OSM data is identical across mirrors):
         # take the best-ranked in-box hit, or None — never keep hammering other mirrors.
-        return _overpass_pick(data.get("elements", []), name), True
-    return None, False                                     # every mirror failed — transient, not a real miss
+        coords, source = _overpass_pick(data.get("elements", []), name, hn)
+        return coords, source, True
+    return None, None, False                               # every mirror failed — transient, not a real miss
 
 
-def _overpass_pick(elements: list, name: str) -> Optional[Tuple[float, float]]:
-    """Choose the best in-box element: prefer an exact-name match, then an actual
-    street (highway), over a generic named node/way — so a street name resolves to
-    the road, not a same-named shop or point."""
+def _overpass_pick(elements: list, name: str, housenumber: Optional[str] = None):
+    """(coords, source) for the best in-box element, or (None, None). Prefers an exact
+    ADDRESS NODE (street+number → precise, source 'osm_addr'), then an exact-name street
+    (highway), over a generic named node/way (source 'overpass', a street-level point)."""
+    def is_addr(el) -> bool:
+        t = el.get("tags", {}) or {}
+        return bool(housenumber and t.get("addr:housenumber") == housenumber
+                    and name in (t.get("addr:street") or ""))
+
     def rank(el) -> tuple:
-        tags = el.get("tags", {}) or {}
-        return (tags.get("name", "") == name, "highway" in tags)   # higher tuple = better
+        t = el.get("tags", {}) or {}
+        return (is_addr(el), t.get("name", "") == name, "highway" in t)   # higher = better
 
-    best = None
     for el in sorted(elements, key=rank, reverse=True):
         c = el.get("center") or el                         # ways carry a computed center
         lat, lon = c.get("lat"), c.get("lon")
         if lat is not None and lon is not None and _in_beer_sheva(float(lat), float(lon)):
-            best = (float(lat), float(lon))
-            break
-    return best
+            return (float(lat), float(lon)), ("osm_addr" if is_addr(el) else "overpass")
+    return None, None
 
 
 def _nominatim(location_text: str) -> Optional[Tuple[float, float]]:
