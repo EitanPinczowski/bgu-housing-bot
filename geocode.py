@@ -103,6 +103,23 @@ def _save_cache() -> None:
         pass
 
 
+def uncache(name: str) -> list:
+    """Drop every cached entry whose key CONTAINS the given text (normalized), so a
+    wrong pin (or a stale miss) can be cleared without hand-editing the JSON. The
+    static table is unaffected and is re-checked first, so the name re-resolves on the
+    next lookup. Returns the keys removed."""
+    q = _normalize(name)
+    if not q:
+        return []
+    cache = _load_cache()
+    hit = [k for k in cache if q in k]
+    for k in hit:
+        del cache[k]
+    if hit:
+        _save_cache()
+    return hit
+
+
 def _cache_lookup(norm: str):
     """('hit', coords, source) for a cached success, ('miss', None, None) for a
     negative result still within its TTL, or ('none', None, None) — meaning nothing
@@ -355,3 +372,12 @@ def _nominatim(location_text: str) -> Optional[Tuple[float, float]]:
     except Exception:
         pass
     return None
+
+
+if __name__ == "__main__":       # small CLI:  python geocode.py uncache <location text>
+    import sys
+    if len(sys.argv) >= 3 and sys.argv[1] == "uncache":
+        removed = uncache(" ".join(sys.argv[2:]))
+        print(f"uncached {len(removed)} entr(y/ies): {removed}" if removed else "nothing matched")
+    else:
+        print("usage: python geocode.py uncache <location text>")

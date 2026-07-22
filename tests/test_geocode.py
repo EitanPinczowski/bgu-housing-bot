@@ -194,3 +194,16 @@ def test_geocode_detailed_reports_source(monkeypatch, tmp_path):
         {"elements": [{"type": "node", "lat": 31.257, "lon": 34.80}]}))
     assert geocode.geocode_detailed("גר בשכונה ג")[1] == "static"     # static table
     assert geocode.geocode_detailed("רחוב חדש כלשהו 5")[1] == "overpass"
+
+
+# --- #11: uncache a bad pin / stale miss -----------------------------------------
+def test_uncache_removes_matching_entries(monkeypatch, tmp_path):
+    monkeypatch.setattr(geocode, "_cache", {
+        "גר ברינגלבלום 5": {"c": [31.26, 34.79], "s": "overpass"},
+        "רחוב אחר": {"c": [31.25, 34.80], "s": "nominatim"},
+    })
+    monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geo.json")
+    assert geocode.uncache("רינגלבלום") == ["גר ברינגלבלום 5"]
+    assert "גר ברינגלבלום 5" not in geocode._cache
+    assert "רחוב אחר" in geocode._cache      # untouched
+    assert geocode.uncache("") == []
