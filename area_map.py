@@ -103,25 +103,30 @@ def build() -> str:
     svg.append(f'<rect width="{_W}" height="{_H}" fill="#eef1f4"/>')
     svg += _tier_grid(xy, bounds)                    # 1) the tier color field
 
-    # 2) main streets — a white casing + a dark line so they read over the colored
-    #    tier grid, and each street NAMED once at the midpoint of its longest segment.
+    # 2) streets — a white casing + a line so they read over the colored tier grid.
+    #    Main arteries are drawn boldly and always named; minor (residential) streets
+    #    are a finer mesh and named only when a long-enough segment is in view.
     street_labels = []
     for st in feats.get("streets", []):
+        main = st.get("main", True)                    # old files had arteries only
+        cw, lw, lc, lo = (3.6, 1.7, "#2b333b", 0.9) if main else (2.2, 0.9, "#68727d", 0.6)
         best_seg, best_len = None, 0.0
         for seg in st.get("segments", []):
             if not any(_in_bounds(la, lo, bounds) for la, lo in seg):
                 continue
             pts = _poly(xy, seg)
             svg.append(f'<polyline points="{pts}" fill="none" stroke="#ffffff" '
-                       f'stroke-width="3.6" stroke-opacity="0.55" stroke-linejoin="round"/>')
-            svg.append(f'<polyline points="{pts}" fill="none" stroke="#39424c" '
-                       f'stroke-width="1.6" stroke-opacity="0.85" stroke-linejoin="round"/>')
+                       f'stroke-width="{cw}" stroke-opacity="0.5" stroke-linejoin="round"/>')
+            svg.append(f'<polyline points="{pts}" fill="none" stroke="{lc}" '
+                       f'stroke-width="{lw}" stroke-opacity="{lo}" stroke-linejoin="round"/>')
             (ax, ay), (bx, by) = xy(*seg[0]), xy(*seg[-1])
             seglen = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
             if seglen > best_len:
                 best_len, best_seg = seglen, seg
-        if best_seg and best_len > 60:                 # long enough in view to label legibly
-            street_labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"]))
+        # name only the longer arteries (the dense network of lines carries the rest,
+        # so labels stay readable, not a wall of text)
+        if best_seg and best_len > (95 if main else 200):
+            street_labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"], main))
 
     # 3) green zone outline
     svg.append(f'<polygon points="{_poly(xy, zone)}" fill="none" stroke="#1b5e20" '
@@ -153,9 +158,11 @@ def build() -> str:
                    f'text-anchor="middle" font-weight="bold" opacity="0.75">'
                    f'שכונה {html.escape(letter)}</text>')
 
-    # 6) street names — on top, white-haloed so they read over everything
-    for (sx, sy), name in street_labels:
-        svg.append(f'<text x="{sx:.0f}" y="{sy:.0f}" font-size="10.5" fill="#22282e" '
+    # 6) street names — on top, white-haloed so they read over everything. Main
+    #    arteries a touch larger/darker than minor streets.
+    for (sx, sy), name, main in street_labels:
+        fs, fill = (11, "#1c2229") if main else (9, "#3c454e")
+        svg.append(f'<text x="{sx:.0f}" y="{sy:.0f}" font-size="{fs}" fill="{fill}" '
                    f'text-anchor="middle" style="paint-order:stroke;stroke:#fff;'
                    f'stroke-width:2.6px">{html.escape(name)}</text>')
 

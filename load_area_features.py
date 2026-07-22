@@ -59,24 +59,34 @@ def fetch_landmarks() -> list:
     return out
 
 
+# Highway classes we draw. "main" ones are rendered prominently + labeled; the rest
+# (residential…) are a finer mesh so the whole street network shows.
+_MAIN_HW = {"primary", "secondary", "tertiary", "trunk"}
+
+
 def fetch_streets() -> list:
     la0, lo0, la1, lo1 = geocode._bs_bounds()
     bbox = f"{la0},{lo0},{la1},{lo1}"
-    q = (f'[out:json][timeout:60];'
-         f'way["highway"~"^(primary|secondary|trunk)$"]["name"]({bbox});'
+    q = (f'[out:json][timeout:120];'
+         f'way["highway"~"^(primary|secondary|tertiary|trunk|residential|unclassified|'
+         f'living_street|pedestrian)$"]["name"]({bbox});'
          f'out geom;')
     data = _overpass(q)
     if not data:
         return []
-    # merge segments of the same street name into one entry (keep the longest few)
+    # merge segments of the same street name; flag it "main" if any segment is an artery
     streets: dict = {}
     for el in data.get("elements", []):
-        nm = el.get("tags", {}).get("name")
+        t = el.get("tags", {})
+        nm, hw = t.get("name"), t.get("highway")
         g = _way_geom(el)
         if nm and len(g) >= 2:
-            streets.setdefault(nm, []).append(g)
-    out = [{"name": nm, "segments": segs} for nm, segs in streets.items()]
-    print(f"  streets: {len(out)} named arteries")
+            e = streets.setdefault(nm, {"segments": [], "main": False})
+            e["segments"].append(g)
+            if hw in _MAIN_HW:
+                e["main"] = True
+    out = [{"name": nm, "main": v["main"], "segments": v["segments"]} for nm, v in streets.items()]
+    print(f"  streets: {len(out)} named ({sum(s['main'] for s in out)} arteries)")
     return out
 
 
