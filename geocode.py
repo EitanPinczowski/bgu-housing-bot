@@ -159,20 +159,28 @@ def geocode_detailed(location_text: Optional[str]):
 
     # 3) external geocoders, most accurate first
     coords = source = None
+    authoritative = True          # only cache a MISS if we actually reached a geocoder,
+                                  # so a network blackout doesn't suppress a good name
     if _google_enabled():
         coords, source = _google(location_text), "google"
     if coords is None and getattr(config, "USE_OVERPASS_FALLBACK", True):
-        coords, source = _overpass(location_text), "overpass"
+        ocoords, responded = _overpass(location_text)
+        authoritative = responded
+        if ocoords:
+            coords, source = ocoords, "overpass"
     if coords is None and config.USE_NOMINATIM_FALLBACK:
-        coords, source = _nominatim(location_text), "nominatim"
+        ncoords = _nominatim(location_text)
+        if ncoords:
+            coords, source = ncoords, "nominatim"
 
     cache = _load_cache()
     if coords:
         cache[norm] = {"c": [coords[0], coords[1]], "s": source}
         _save_cache()
         return coords, source
-    cache[norm] = {"m": datetime.now().isoformat(timespec="seconds")}   # remember the miss
-    _save_cache()
+    if authoritative:             # a real not-found (a geocoder answered) — remember it
+        cache[norm] = {"m": datetime.now().isoformat(timespec="seconds")}
+        _save_cache()
     return None, None
 
 
@@ -273,7 +281,7 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
 
     name = _overpass_name(location_text)
     if len(name) < _MIN_REVERSE_MATCH:
-        return None
+        return None, True                                  # nothing to look up = a real miss
     la0, lo0, la1, lo1 = _bs_bounds()
     bbox = f"{la0},{lo0},{la1},{lo1}"                       # Overpass: S,W,N,E
     # Ask for named streets (highways) AND any named node/way; we rank client-side so
@@ -295,8 +303,8 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
             continue                                       # this mirror timed out — try the next
         # A valid response is authoritative (OSM data is identical across mirrors):
         # take the best-ranked in-box hit, or None — never keep hammering other mirrors.
-        return _overpass_pick(data.get("elements", []), name)
-    return None
+        return _overpass_pick(data.get("elements", []), name), True
+    return None, False                                     # every mirror failed — transient, not a real miss
 
 
 def _overpass_pick(elements: list, name: str) -> Optional[Tuple[float, float]]:

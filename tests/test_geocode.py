@@ -170,6 +170,22 @@ def test_negative_result_cached_with_ttl(monkeypatch, tmp_path):
     assert calls["n"] == 2                                  # expired miss -> re-queried
 
 
+def test_transient_overpass_failure_is_not_cached(monkeypatch, tmp_path):
+    _overpass_on(monkeypatch, tmp_path)
+    import requests
+    calls = {"n": 0}
+    def boom(url, **kw):
+        calls["n"] += 1
+        raise requests.exceptions.ReadTimeout("down")       # every mirror times out
+    monkeypatch.setattr(requests, "post", boom)
+    q = "רחוב שהשרת נפל עליו 42"
+    assert geocode.geocode(q) is None
+    assert geocode.geocode(q) is None
+    # a network blackout is NOT a real miss -> re-queried every time (all mirrors each call)
+    assert calls["n"] == 2 * len(geocode.config.OVERPASS_URLS)
+    assert geocode._normalize(q) not in geocode._cache
+
+
 # --- #3: geocode_detailed reports which tier resolved the name ------------------
 def test_geocode_detailed_reports_source(monkeypatch, tmp_path):
     _overpass_on(monkeypatch, tmp_path)
