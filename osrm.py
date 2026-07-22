@@ -6,6 +6,7 @@ can be far from another. This is the ONLY place we convert to OSRM's (lon,lat)
 coordinate order.
 """
 from __future__ import annotations
+import json
 import time
 from typing import Optional, Tuple
 
@@ -58,19 +59,77 @@ def _foot_minutes(lat: float, lon: float, gate: dict, tries: int = 3) -> Optiona
     return None
 
 
+# Persistent walk-time cache, keyed on the rounded coordinate. Routing is the slow part
+# of a replay/map rebuild (geocode is cached but walk-times weren't); reuse them across
+# runs. ~4-decimal rounding ≈ 11 m — plenty for a walk-minute figure.
+_WALK_CACHE_PATH = config.DATA_DIR / "walk_cache.json"
+_walk_cache: Optional[dict] = None
+
+
+def _load_walk_cache() -> dict:
+    global _walk_cache
+    if _walk_cache is None:
+        try:
+            _walk_cache = json.loads(_WALK_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            _walk_cache = {}
+    return _walk_cache
+
+
+def _save_walk_cache() -> None:
+    try:
+        _WALK_CACHE_PATH.write_text(json.dumps(_walk_cache, ensure_ascii=False),
+                                    encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _table_walk(lat: float, lon: float, tries: int = 3):
+    """(minutes, gate name) via ONE OSRM /table call — source × all gates in a single
+    request instead of a /route per gate — taking the nearest. (None, None) on failure."""
+    gates = list(config.GATES.items())
+    # OSRM wants lon,lat; point 0 = the listing, points 1..N = the gates
+    coords = f"{lon},{lat}" + "".join(f";{g['lon']},{g['lat']}" for _, g in gates)
+    url = f"{config.OSRM_BASE_URL}/table/v1/foot/{coords}"
+    for i in range(tries):
+        try:
+            r = requests.get(url, params={"sources": "0", "annotations": "duration"}, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != "Ok" or not data.get("durations"):
+                return None, None                      # answered, no table — don't retry
+            durs = data["durations"][0][1:]            # source 0 -> each gate (skip self at 0)
+            best = min((d for d in durs if d is not None), default=None)
+            if best is None:
+                return None, None
+            gk, gv = gates[durs.index(best)]
+            return best / 60.0, gv.get("name", gk)
+        except Exception:
+            if i == tries - 1:
+                return None, None
+            time.sleep(0.5 * (2 ** i))
+    return None, None
+
+
 def walk_to_nearest(lat: Optional[float], lon: Optional[float]
                     ) -> Tuple[Optional[float], Optional[str]]:
-    """(minutes, gate name) for the CLOSEST configured gate, or (None, None).
-    The gate name (config.GATES[...]["name"], else the key) lets the alert say
-    which gate the walk time is to."""
-    if lat is None or lon is None or not _alive_check():
-        return None, None                              # no coord, or OSRM down → straight-line
-    best_min, best_name = None, None
-    for key, g in config.GATES.items():
-        m = _foot_minutes(lat, lon, g)
-        if m is not None and (best_min is None or m < best_min):
-            best_min, best_name = m, g.get("name", key)
-    return best_min, best_name
+    """(minutes, gate name) for the CLOSEST configured gate, or (None, None) — cached
+    per rounded coordinate, one OSRM /table call on a miss. The gate name lets the alert
+    say which gate the walk is to."""
+    if lat is None or lon is None:
+        return None, None
+    cache = _load_walk_cache()
+    key = f"{round(lat, 4)},{round(lon, 4)}"
+    if key in cache:
+        v = cache[key]
+        return (v[0], v[1]) if v else (None, None)
+    if not _alive_check():
+        return None, None                              # OSRM down → straight-line (don't cache)
+    minutes, gate = _table_walk(lat, lon)
+    if minutes is not None:
+        cache[key] = [minutes, gate]                   # cache successes only
+        _save_walk_cache()
+    return minutes, gate
 
 
 def walk_minutes(lat: Optional[float], lon: Optional[float]) -> Optional[float]:

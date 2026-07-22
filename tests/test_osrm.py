@@ -55,6 +55,27 @@ def test_no_route_answer_does_not_retry(monkeypatch):
     assert calls["n"] == 1                          # a real 'no route' is not retried
 
 
+def test_table_walk_picks_nearest_gate(monkeypatch, tmp_path):
+    monkeypatch.setattr(osrm, "_alive", True)
+    monkeypatch.setattr(osrm, "_walk_cache", None)
+    monkeypatch.setattr(osrm, "_WALK_CACHE_PATH", tmp_path / "walk.json")
+    calls = {"n": 0}
+
+    def fake_get(url, **kw):
+        calls["n"] += 1
+        # source 0 to itself (0) then to each gate in config.GATES order, seconds
+        durs = [0] + [900, 300, 600, 480][:len(osrm.config.GATES)]
+        return _R({"code": "Ok", "durations": [durs]})
+
+    monkeypatch.setattr(osrm.requests, "get", fake_get)
+    minutes, gate = osrm.walk_to_nearest(31.26, 34.80)
+    assert minutes == 5.0                          # 300s = 5 min, the nearest gate
+    assert calls["n"] == 1                          # ONE /table call, not one per gate
+    # second lookup of the same rounded coord is served from cache — no HTTP
+    assert osrm.walk_to_nearest(31.26, 34.80) == (5.0, gate)
+    assert calls["n"] == 1
+
+
 def test_circuit_breaker_skips_when_down(monkeypatch):
     # OSRM down: probe fails once, then walk_to_nearest short-circuits (no per-gate calls)
     monkeypatch.setattr(osrm, "_alive", None)

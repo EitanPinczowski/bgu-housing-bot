@@ -112,6 +112,7 @@ def _select_groups() -> list[str]:
 
 
 def run(dry_run: bool) -> None:
+    config.validate()                 # fail fast on a broken config, before opening a browser
     mode = "DRY RUN" if dry_run else "LIVE"
     # Occasionally skip a live run so the cadence isn't clockwork (see config).
     if not dry_run and random.random() < config.SCRAPER_SKIP_RUN_PROBABILITY:
@@ -229,6 +230,9 @@ def run(dry_run: bool) -> None:
             print(f"  {status}: {counts[status]}")
     if llm.fallback_used:
         print(f"  (served by local fallback: {llm.fallback_used} — Gemini quota was hit)")
+    # dependency health (#41): geocode misses + whether OSRM was reachable this run
+    print(f"geocode misses: {pipeline.geocode.misses}"
+          + ("  ·  ⚠️ OSRM DOWN (used straight-line walk estimate)" if pipeline.osrm.osrm_down else ""))
 
     if blocked_reason:
         print(f"run ABORTED — Facebook block: {blocked_reason}")

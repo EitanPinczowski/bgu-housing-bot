@@ -128,6 +128,7 @@ def _normalize(text: str) -> str:
 _CACHE_PATH = config.DATA_DIR / "geocode_cache.json"
 _MISS_TTL_DAYS = 7
 _cache: Optional[dict] = None
+misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
 
 def _load_cache() -> dict:
@@ -240,6 +241,8 @@ def geocode_detailed(location_text: Optional[str]):
         cache[norm] = {"c": [coords[0], coords[1]], "s": source}
         _save_cache()
         return coords, source
+    global misses
+    misses += 1                   # a real location string we couldn't map (for run metrics)
     if authoritative:             # a real not-found (a geocoder answered) — remember it
         cache[norm] = {"m": datetime.now().isoformat(timespec="seconds")}
         _save_cache()

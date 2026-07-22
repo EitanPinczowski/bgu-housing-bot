@@ -341,3 +341,23 @@ SCRAPER_DEBUG_SCREENSHOTS = False
 # nulled (its dedup key + verdict are kept forever, so it's never rescanned), to
 # bound DB growth. Replay stays useful within this window. Pruned at end of run.
 POST_ARCHIVE_RETENTION_DAYS = 90
+
+
+def validate() -> None:
+    """Fail fast on an obviously-broken config, with a clear message — call at the
+    start of main.run()/manual so a bad edit surfaces at startup, not mid-run."""
+    problems = []
+    if not GATES:
+        problems.append("GATES is empty — no campus gates to route to")
+    try:
+        if len([float(x) for x in BEER_SHEVA_VIEWBOX.split(",")]) != 4:
+            problems.append("BEER_SHEVA_VIEWBOX must be 4 comma-separated numbers")
+    except Exception:
+        problems.append(f"BEER_SHEVA_VIEWBOX does not parse: {BEER_SHEVA_VIEWBOX!r}")
+    if TARGET_PRICE_PER_ROOM_ILS > MAX_PRICE_PER_ROOM_ILS:
+        problems.append(f"TARGET_PRICE_PER_ROOM_ILS ({TARGET_PRICE_PER_ROOM_ILS}) > "
+                        f"MAX_PRICE_PER_ROOM_ILS ({MAX_PRICE_PER_ROOM_ILS})")
+    if not GREEN_ZONE_PATH.exists():
+        problems.append(f"green-zone file missing: {GREEN_ZONE_PATH}")
+    if problems:
+        raise SystemExit("config error — fix config.py:\n  - " + "\n  - ".join(problems))

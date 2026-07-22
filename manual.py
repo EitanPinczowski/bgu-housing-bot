@@ -38,6 +38,8 @@ def read_post() -> str | None:
 
 
 def main() -> None:
+    import config
+    config.validate()                 # fail fast on a broken config
     print(BANNER)
     while True:
         print("\n--- paste post below ---")

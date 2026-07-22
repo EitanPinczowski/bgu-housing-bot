@@ -19,27 +19,10 @@ from typing import Optional
 
 import config
 
-# Hebrew month names -> number, for lease dates written as words ("בספטמבר").
-_HE_MONTHS = {
-    "ינואר": 1, "פברואר": 2, "מרץ": 3, "אפריל": 4, "מאי": 5, "יוני": 6,
-    "יולי": 7, "אוגוסט": 8, "ספטמבר": 9, "אוקטובר": 10, "נובמבר": 11, "דצמבר": 12,
-}
-_DM = re.compile(r"\b(\d{1,2})[./](\d{1,2})\b")   # "1.9", "01/10" -> (day, month)
+import dates
 
-
-def _lease_month(lease_start: Optional[str]) -> Optional[int]:
-    """Best-effort month (1–12) from a free-text lease-start string, else None."""
-    if not lease_start:
-        return None
-    s = str(lease_start)
-    m = _DM.search(s)
-    if m:
-        mon = int(m.group(2))
-        return mon if 1 <= mon <= 12 else None
-    for name, num in _HE_MONTHS.items():
-        if name in s:
-            return num
-    return None
+_HE_MONTHS = dates.HE_MONTHS       # kept as a module attr for back-compat (pipeline reads it)
+_lease_month = dates.month_of      # shared lease-month parser (one source of truth)
 
 
 _HE_FLOORS = {"קרקע": 0, "כניסה": 0, "ראשונה": 1, "שניה": 2, "שנייה": 2,

@@ -11,6 +11,7 @@ import re
 from typing import Optional
 
 import config
+import dates
 import fit
 import geocode
 import llm
@@ -53,7 +54,7 @@ def _tokens(text: str) -> set:
 
 _IMMEDIATE_RE = re.compile(r"מיידית|מידית|מייד|מיד\b|עכשיו|היום")
 _FLEX_RE = re.compile(r"גמיש")
-_DATE_RE = re.compile(r"\b(\d{1,2})[-./](\d{1,2})")   # 1.9 / 01/10 / 1-9 -> DD.MM
+_DATE_RE = dates.DATE_RE                               # shared 1.9 / 01/10 / 1-9 -> DD.MM
 
 
 def _normalize_entry_date(s: Optional[str]) -> Optional[str]:
@@ -68,7 +69,7 @@ def _normalize_entry_date(s: Optional[str]) -> Optional[str]:
         d, mo = int(m.group(1)), int(m.group(2))
         if 1 <= d <= 31 and 1 <= mo <= 12:
             out.append(f"{d:02d}.{mo:02d}")
-    for name, num in fit._HE_MONTHS.items():       # month name -> day (or 1st) . month
+    for name, num in dates.HE_MONTHS.items():      # month name -> day (or 1st) . month
         i = s.find(name)
         if i == -1:
             continue
