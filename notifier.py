@@ -163,24 +163,57 @@ def _recipients(target: str) -> list:
     return ids
 
 
+def _unesc(s) -> str:
+    """Strip the MarkdownV2 escape backslashes _esc added, for a plain-text resend."""
+    return re.sub(r"\\([" + re.escape(r"_*[]()~`>#+-=|{}.!") + r"])", r"\1", "" if s is None else str(s))
+
+
+def _plain_payload(payload: dict) -> dict:
+    """The same payload with MarkdownV2 dropped and its text/caption de-escaped — a
+    readable plain-text fallback when Telegram rejects the formatted version."""
+    p = {k: v for k, v in payload.items() if k != "parse_mode"}
+    if "text" in p:
+        p["text"] = _unesc(p["text"])
+    if "caption" in p:
+        p["caption"] = _unesc(p["caption"])
+    if isinstance(p.get("media"), list):
+        p["media"] = [{k: (_unesc(v) if k == "caption" else v)
+                       for k, v in item.items() if k != "parse_mode"} for item in p["media"]]
+    return p
+
+
+def _try_send(token: str, method: str, body: dict, timeout: int):
+    """(response_json, http_status). response_json is None on failure; status is the
+    HTTP code when the server answered (e.g. 400 for a bad MarkdownV2), else None."""
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{token}/{method}", json=body, timeout=timeout)
+        r.raise_for_status()
+        return r.json(), r.status_code
+    except Exception as exc:
+        return None, getattr(getattr(exc, "response", None), "status_code", None)
+
+
 def _post_to_all(method: str, payload: dict, timeout: int, target: str = "all"):
     """Send `payload` to the chosen recipients (see _recipients). Returns the
     first successful response JSON (truthy) or None (falsy), so callers can both
-    test success and read file_ids out of it."""
+    test success and read file_ids out of it. On a 400 (Telegram rejected the
+    MarkdownV2 formatting — a stray unescaped char), the same content is resent as
+    PLAIN TEXT so a formatting slip never silently loses an alert."""
     token, ids = _token(), _recipients(target)
     if not token or not ids:
         print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
         return None
+    formatted = "parse_mode" in payload or method == "sendMediaGroup"
     first_ok = None
     for cid in ids:
-        try:
-            r = requests.post(f"https://api.telegram.org/bot{token}/{method}",
-                              json={**payload, "chat_id": cid}, timeout=timeout)
-            r.raise_for_status()
-            if first_ok is None:
-                first_ok = r.json()
-        except Exception as exc:
-            print(f"[notifier] {method} to {cid} failed: {exc}")
+        resp, status = _try_send(token, method, {**payload, "chat_id": cid}, timeout)
+        if resp is None and status == 400 and formatted:
+            print(f"[notifier] {method} to {cid}: 400 (bad formatting) — resending as plain text")
+            resp, status = _try_send(token, method, {**_plain_payload(payload), "chat_id": cid}, timeout)
+        if resp is None:
+            print(f"[notifier] {method} to {cid} failed (status {status})")
+        elif first_ok is None:
+            first_ok = resp
     return first_ok
 
 

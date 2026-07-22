@@ -6,6 +6,7 @@ can be far from another. This is the ONLY place we convert to OSRM's (lon,lat)
 coordinate order.
 """
 from __future__ import annotations
+import time
 from typing import Optional, Tuple
 
 import requests
@@ -13,18 +14,25 @@ import requests
 import config
 
 
-def _foot_minutes(lat: float, lon: float, gate: dict) -> Optional[float]:
+def _foot_minutes(lat: float, lon: float, gate: dict, tries: int = 3) -> Optional[float]:
     # OSRM wants lon,lat  ->  {src_lon},{src_lat};{dst_lon},{dst_lat}
     coords = f"{lon},{lat};{gate['lon']},{gate['lat']}"
     url = f"{config.OSRM_BASE_URL}/route/v1/foot/{coords}"
-    try:
-        r = requests.get(url, params={"overview": "false"}, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("code") == "Ok" and data.get("routes"):
-            return data["routes"][0]["duration"] / 60.0
-    except Exception:
-        return None
+    # A transient blip (server busy / momentary network) here silently drops the walk
+    # time and can misclassify a listing, so retry a couple of times with backoff
+    # before giving up. A real "no route" (code != Ok) is returned immediately.
+    for i in range(tries):
+        try:
+            r = requests.get(url, params={"overview": "false"}, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") == "Ok" and data.get("routes"):
+                return data["routes"][0]["duration"] / 60.0
+            return None                                    # answered, but no route — don't retry
+        except Exception:
+            if i == tries - 1:
+                return None
+            time.sleep(0.5 * (2 ** i))                     # 0.5s, 1s backoff
     return None
 
 
