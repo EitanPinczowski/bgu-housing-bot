@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import config
@@ -73,9 +74,14 @@ def _normalize(text: str) -> str:
 
 
 # --- persistent cache: each distinct location string is resolved (and billed)
-# once, then remembered across runs. Only successful hits are cached, so an
-# as-yet-unresolvable name is retried later (e.g. after you add it to the table).
+# once, then remembered across runs. We cache successes AND negative results (with a
+# TTL) — a miss is expensive now that Overpass is in the chain (~1s/mirror), so an
+# unresolvable name shouldn't be re-queried every run. The static table is always
+# checked FIRST, so pinning a name resolves it immediately even if a miss was cached.
+# Cache value shapes:  {"c": [lat, lon], "s": <source>}  |  {"m": <iso-ts>}  |
+# a bare [lat, lon] list (legacy successes written before this change).
 _CACHE_PATH = config.DATA_DIR / "geocode_cache.json"
+_MISS_TTL_DAYS = 7
 _cache: Optional[dict] = None
 
 
@@ -97,12 +103,39 @@ def _save_cache() -> None:
         pass
 
 
+def _cache_lookup(norm: str):
+    """('hit', coords, source) for a cached success, ('miss', None, None) for a
+    negative result still within its TTL, or ('none', None, None) — meaning nothing
+    usable, so go query (an expired miss falls here and is re-tried)."""
+    v = _load_cache().get(norm)
+    if isinstance(v, list) and len(v) == 2:                 # legacy success
+        return "hit", (v[0], v[1]), "cache"
+    if isinstance(v, dict):
+        if "c" in v:
+            return "hit", (v["c"][0], v["c"][1]), v.get("s", "cache")
+        if "m" in v:
+            try:
+                fresh = datetime.now() - datetime.fromisoformat(v["m"]) < timedelta(days=_MISS_TTL_DAYS)
+            except Exception:
+                fresh = False
+            if fresh:
+                return "miss", None, None
+    return "none", None, None
+
+
 def geocode(location_text: Optional[str]) -> Optional[Tuple[float, float]]:
-    """Return (lat, lon) or None. Order: static table -> cache -> Google -> Nominatim.
-    A guessed point is never emitted — unknown locations return None so the
-    pipeline flags NEEDS_DATA rather than inventing a wrong coordinate."""
+    """Return (lat, lon) or None (see geocode_detailed). A guessed point is never
+    emitted — unknown locations return None so the pipeline flags NEEDS_DATA."""
+    return geocode_detailed(location_text)[0]
+
+
+def geocode_detailed(location_text: Optional[str]):
+    """(coords, source) or (None, None). source ∈
+    static/cache/google/overpass/nominatim — which tier resolved the name, so a
+    lower-confidence hit (overpass/nominatim) can be flagged for a human check.
+    Order: static table -> cache -> Google -> Overpass -> Nominatim."""
     if not location_text:
-        return None
+        return None, None
     norm = _normalize(location_text)
 
     # 1) static table: substring match. FORWARD (the table key appears inside the
@@ -115,26 +148,32 @@ def geocode(location_text: Optional[str]) -> Optional[Tuple[float, float]]:
         if not k:
             continue
         if k in norm or (len(norm) >= _MIN_REVERSE_MATCH and norm in k):
-            return coords
+            return coords, "static"
 
-    # 2) cache of earlier external lookups
-    cache = _load_cache()
-    if cache.get(norm):
-        return tuple(cache[norm])
+    # 2) cache of earlier lookups (success or a still-fresh miss)
+    kind, coords, source = _cache_lookup(norm)
+    if kind == "hit":
+        return coords, source
+    if kind == "miss":
+        return None, None                                   # recent negative — don't re-query
 
     # 3) external geocoders, most accurate first
-    coords = None
+    coords = source = None
     if _google_enabled():
-        coords = _google(location_text)
+        coords, source = _google(location_text), "google"
     if coords is None and getattr(config, "USE_OVERPASS_FALLBACK", True):
-        coords = _overpass(location_text)
+        coords, source = _overpass(location_text), "overpass"
     if coords is None and config.USE_NOMINATIM_FALLBACK:
-        coords = _nominatim(location_text)
+        coords, source = _nominatim(location_text), "nominatim"
 
+    cache = _load_cache()
     if coords:
-        cache[norm] = list(coords)
+        cache[norm] = {"c": [coords[0], coords[1]], "s": source}
         _save_cache()
-    return coords
+        return coords, source
+    cache[norm] = {"m": datetime.now().isoformat(timespec="seconds")}   # remember the miss
+    _save_cache()
+    return None, None
 
 
 # --- Google Maps geocoding (optional; see config.USE_GOOGLE_GEOCODE) -----------
@@ -237,9 +276,13 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
         return None
     la0, lo0, la1, lo1 = _bs_bounds()
     bbox = f"{la0},{lo0},{la1},{lo1}"                       # Overpass: S,W,N,E
+    # Ask for named streets (highways) AND any named node/way; we rank client-side so
+    # a real road wins over an unrelated POI that happens to share the name.
     q = (f'[out:json][timeout:25];'
-         f'(way["name"~"{name}"]({bbox});node["name"~"{name}"]({bbox}););'
-         f'out center 5;')
+         f'(way["highway"]["name"~"{name}"]({bbox});'
+         f'way["name"~"{name}"]({bbox});'
+         f'node["name"~"{name}"]({bbox}););'
+         f'out center tags 20;')
     timeout = getattr(config, "OVERPASS_TIMEOUT_SEC", 15)
     for url in config.OVERPASS_URLS:                        # first mirror that responds wins
         try:
@@ -251,14 +294,27 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
         except Exception:
             continue                                       # this mirror timed out — try the next
         # A valid response is authoritative (OSM data is identical across mirrors):
-        # return the first in-box hit, or None — never keep hammering other mirrors.
-        for el in data.get("elements", []):
-            c = el.get("center") or el                     # ways carry a computed center
-            lat, lon = c.get("lat"), c.get("lon")
-            if lat is not None and lon is not None and _in_beer_sheva(float(lat), float(lon)):
-                return float(lat), float(lon)
-        return None
+        # take the best-ranked in-box hit, or None — never keep hammering other mirrors.
+        return _overpass_pick(data.get("elements", []), name)
     return None
+
+
+def _overpass_pick(elements: list, name: str) -> Optional[Tuple[float, float]]:
+    """Choose the best in-box element: prefer an exact-name match, then an actual
+    street (highway), over a generic named node/way — so a street name resolves to
+    the road, not a same-named shop or point."""
+    def rank(el) -> tuple:
+        tags = el.get("tags", {}) or {}
+        return (tags.get("name", "") == name, "highway" in tags)   # higher tuple = better
+
+    best = None
+    for el in sorted(elements, key=rank, reverse=True):
+        c = el.get("center") or el                         # ways carry a computed center
+        lat, lon = c.get("lat"), c.get("lon")
+        if lat is not None and lon is not None and _in_beer_sheva(float(lat), float(lon)):
+            best = (float(lat), float(lon))
+            break
+    return best
 
 
 def _nominatim(location_text: str) -> Optional[Tuple[float, float]]:

@@ -139,3 +139,42 @@ def test_overpass_skipped_when_disabled(monkeypatch, tmp_path):
 def test_overpass_name_strips_number_and_street_word():
     assert geocode._overpass_name("רחוב רינגלבלום 5") == "רינגלבלום"
     assert geocode._overpass_name('שד\' יצחק רגר 90') == "יצחק רגר"
+
+
+def test_overpass_pick_prefers_exact_highway():
+    els = [
+        {"type": "node", "lat": 31.25, "lon": 34.79, "tags": {"name": "רגר", "shop": "kiosk"}},
+        {"type": "way", "center": {"lat": 31.264, "lon": 34.792},
+         "tags": {"name": "רגר", "highway": "primary"}},
+    ]
+    # the actual street (highway) wins over a same-named shop node
+    assert geocode._overpass_pick(els, "רגר") == (31.264, 34.792)
+
+
+# --- #1: negative-result cache with a TTL ---------------------------------------
+def test_negative_result_cached_with_ttl(monkeypatch, tmp_path):
+    _overpass_on(monkeypatch, tmp_path)
+    import requests
+    calls = {"n": 0}
+    def empty_post(url, **kw):
+        calls["n"] += 1
+        return _Resp({"elements": []})                      # a real "not found"
+    monkeypatch.setattr(requests, "post", empty_post)
+    q = "רחוב שלא נמצא בכלל 12345"
+    assert geocode.geocode(q) is None
+    assert geocode.geocode(q) is None                       # served from the negative cache
+    assert calls["n"] == 1                                  # not re-queried within TTL
+    from datetime import datetime, timedelta
+    geocode._cache[geocode._normalize(q)] = {"m": (datetime.now() - timedelta(days=8)).isoformat()}
+    assert geocode.geocode(q) is None
+    assert calls["n"] == 2                                  # expired miss -> re-queried
+
+
+# --- #3: geocode_detailed reports which tier resolved the name ------------------
+def test_geocode_detailed_reports_source(monkeypatch, tmp_path):
+    _overpass_on(monkeypatch, tmp_path)
+    import requests
+    monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp(
+        {"elements": [{"type": "node", "lat": 31.257, "lon": 34.80}]}))
+    assert geocode.geocode_detailed("גר בשכונה ג")[1] == "static"     # static table
+    assert geocode.geocode_detailed("רחוב חדש כלשהו 5")[1] == "overpass"
