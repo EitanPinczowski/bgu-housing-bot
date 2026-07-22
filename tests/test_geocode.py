@@ -82,6 +82,14 @@ def test_static_forward_match_still_works():
     assert geocode.geocode("גר ברינגלבלום ליד האוני'") == geocode.STATIC_TABLE["רינגלבלום"]
 
 
+def test_static_prefers_first_mentioned_location():
+    # a multi-cue address must resolve to the EARLIEST-mentioned static key, so a
+    # trailing slang POI ("…כיכר האבות, הבלוק") can't hijack the real anchor.
+    coords, src = geocode.geocode_detailed("רחוב אברהם אבינו, על כיכר האבות, הבלוק")
+    assert src == "static"
+    assert coords == geocode.STATIC_TABLE["כיכר האבות"]     # not הבלוק (which comes later)
+
+
 def test_static_reverse_match_needs_length(monkeypatch, tmp_path):
     _fresh(monkeypatch, tmp_path)                       # Google+Overpass mocked/off
     # a stray 1-char location must NOT map onto a whole-neighborhood centroid…

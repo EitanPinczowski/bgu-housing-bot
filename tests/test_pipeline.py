@@ -118,6 +118,18 @@ def test_blacklisted_named_neighborhood_drops():
         assert res.status.value == "DROP", area
 
 
+def test_bare_neighborhood_is_needs_data():
+    from models import ListingExtract
+    # a bare neighborhood has no street — not a real address -> missing critical data
+    assert pipeline._missing_critical(ListingExtract(
+        is_apartment_ad=True, street_address_or_neighborhood="שכונה ד", available_rooms_count=2))
+    assert pipeline._missing_critical(ListingExtract(
+        is_apartment_ad=True, street_address_or_neighborhood="שכונה ג'", available_rooms_count=2))
+    # a real street address is complete
+    assert not pipeline._missing_critical(ListingExtract(
+        is_apartment_ad=True, street_address_or_neighborhood="רגר 153", available_rooms_count=2))
+
+
 def test_recover_house_number():
     # a numberless street + a "<street> <n>" in the post text -> number appended
     assert pipeline._recover_house_number(

@@ -212,8 +212,11 @@ def _missing_critical(e) -> bool:
     # LLM's own missing_critical_data flag — it was over-eager and pushed
     # complete-enough posts into NEEDS_DATA. Price stays optional; a known price
     # is still enforced against MAX_PRICE_PER_ROOM_ILS in process_post.
+    # A BARE neighborhood ("שכונה ד") is not a real address — we know the area but
+    # not the street — so it's NEEDS_DATA, not a confident MATCH.
     return (e.available_rooms_count is None
-            or e.street_address_or_neighborhood is None)
+            or e.street_address_or_neighborhood is None
+            or geocode.is_bare_neighborhood(e.street_address_or_neighborhood))
 
 
 def process_post(raw_text: str,

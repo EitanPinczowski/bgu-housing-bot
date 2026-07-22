@@ -29,6 +29,10 @@ CASES = [
      dict(street_address_or_neighborhood="הבלוק", available_rooms_count=2,
           total_roommates_in_apt=3, price_per_room_ils=3200),
      (31.259386, 34.796130, "static"), 8.0, "DROP", None),
+    ("bare neighborhood — not a real address → NEEDS_DATA",
+     dict(street_address_or_neighborhood="שכונה ד", available_rooms_count=2,
+          total_roommates_in_apt=3, price_per_room_ils=1500),
+     (31.2635, 34.7975, "static"), 12.0, "NEEDS_DATA", None),
 ]
 
 

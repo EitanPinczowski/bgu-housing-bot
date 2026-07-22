@@ -104,6 +104,11 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
     # Both forms so it matches whether the model writes "הבלוק" or "בבלוק".
     "הבלוק": (31.259386, 34.796130),
     "בבלוק": (31.259386, 34.796130),
+    # כיכר האבות — a known square at the south (campus) end of אברהם אבינו; GREEN
+    # (inside the green zone, in ד). Pinned so a post that names it resolves HERE
+    # instead of falling through to a coincidental match elsewhere in the address.
+    "כיכר האבות": (31.26183, 34.79475),
+    "כיכר אבות": (31.26183, 34.79475),
     # -------------------------------------------
 }
 
@@ -206,12 +211,22 @@ def geocode_detailed(location_text: Optional[str]):
     #    REVERSE (the post text is a fragment of a longer key) is only trusted for a
     #    long-enough fragment, so a stray 1–2 char location ("ג", "ד") can't map onto
     #    a whole-neighborhood centroid and invent a wrong coordinate.
+    #    When several keys match, prefer the one mentioned EARLIEST in the address (the
+    #    primary location), so a trailing slang POI ("…כיכר האבות, הבלוק") can't override
+    #    the real anchor. Reverse matches rank last.
+    best_pos, best_coords = None, None
     for key, coords in STATIC_TABLE.items():
         k = _normalize(key)
         if not k:
             continue
-        if k in norm or (len(norm) >= _MIN_REVERSE_MATCH and norm in k):
-            return coords, "static"
+        pos = norm.find(k)
+        if pos != -1:                                       # forward: key inside the address
+            if best_pos is None or pos < best_pos:
+                best_pos, best_coords = pos, coords
+        elif len(norm) >= _MIN_REVERSE_MATCH and norm in k and best_coords is None:
+            best_pos, best_coords = 10 ** 6, coords         # reverse: lowest priority
+    if best_coords is not None:
+        return best_coords, "static"
 
     # 2) cache of earlier lookups (success or a still-fresh miss)
     kind, coords, source = _cache_lookup(norm)
