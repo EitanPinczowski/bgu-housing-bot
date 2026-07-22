@@ -90,6 +90,18 @@ def neighborhood_of(lat: Optional[float], lon: Optional[float]) -> Optional[str]
     return None
 
 
+def in_allowed_neighborhood(lat: Optional[float], lon: Optional[float]) -> bool:
+    """True if the point is inside one of the imported ב/ג/ד polygons — the ONLY
+    acceptable neighborhoods. FAIL-OPEN: if no polygons are loaded (missing
+    neighborhoods.json), return True so a missing file can't red-out the whole map."""
+    polys = _neighborhood_polys()
+    if not polys:
+        return True
+    if lat is None or lon is None:
+        return False
+    return any(_point_in(lat, lon, p) for _, p in polys)
+
+
 def _to_xy(lat: float, lon: float) -> tuple[float, float]:
     """Local equirectangular projection to metres (accurate over a few km)."""
     x = math.radians(lon) * _R * math.cos(math.radians(_lat0()))
@@ -164,10 +176,14 @@ def classify_location(lat: Optional[float], lon: Optional[float],
 
 def classify_effective(lat: Optional[float], lon: Optional[float],
                        walk_min: Optional[float] = None) -> str:
-    """classify_location, but with the no-amber rule applied: an AMBER point that
-    falls inside a no-amber neighborhood (e.g. שכונה ד') becomes RED. This is the
-    tier the pipeline and the map both use."""
+    """classify_location, plus two red rules: an AMBER point inside a no-amber
+    neighborhood (e.g. שכונה ד') becomes RED, and — the ב/ג/ד-only rule — ANY
+    GREEN/AMBER point outside the imported ב/ג/ד polygons becomes RED (only those
+    three neighborhoods are acceptable). This is the tier the pipeline and map use."""
     t = classify_location(lat, lon, walk_min)
-    if t == "AMBER" and in_no_amber_zone(lat, lon):
-        return "RED"
+    if t in ("GREEN", "AMBER"):
+        if in_no_amber_zone(lat, lon) and t == "AMBER":
+            return "RED"
+        if not in_allowed_neighborhood(lat, lon):
+            return "RED"
     return t

@@ -57,6 +57,27 @@ def test_neighborhood_of_resolves_imported_polygons():
     assert zones.neighborhood_of(None, None) is None
 
 
+def test_in_allowed_neighborhood_and_fail_open(monkeypatch):
+    polys = zones._neighborhood_polys()
+    letter, poly = polys[0]
+    la = sum(p[0] for p in poly) / len(poly)
+    lo = sum(p[1] for p in poly) / len(poly)
+    assert zones.in_allowed_neighborhood(la, lo) is True        # inside ב/ג/ד
+    assert zones.in_allowed_neighborhood(32.0853, 34.7818) is False   # Tel Aviv
+    # FAIL-OPEN: if no polygons are loaded, everything is allowed (never red-out)
+    monkeypatch.setattr(zones, "_neighborhood_polys", lambda: [])
+    assert zones.in_allowed_neighborhood(32.0853, 34.7818) is True
+
+
+def test_classify_effective_reds_outside_bgd():
+    import config
+    # a point within walk of a gate but OUTSIDE ב/ג/ד: classify_location says AMBER,
+    # the ב/ג/ד-only rule makes classify_effective RED.
+    far = (32.0853, 34.7818)   # Tel Aviv — outside the polygons
+    assert zones.classify_location(*far, walk_min=config.MAX_WALK_MINUTES - 1) == "AMBER"
+    assert zones.classify_effective(*far, walk_min=config.MAX_WALK_MINUTES - 1) == "RED"
+
+
 def test_zone_centre_is_in_range():
     # The polygon's centroid is inside it (or, at worst for a concave zone,
     # well within the 500 m buffer) — so it must classify as in-range, not RED.

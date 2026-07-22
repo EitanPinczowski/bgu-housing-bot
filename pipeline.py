@@ -363,10 +363,17 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     # its real tier and can still be GREEN.
     elif tier == "GREEN" and geocode.is_bare_neighborhood(e.street_address_or_neighborhood):
         tier = "AMBER"
+    # ב/ג/ד-ONLY: only the three imported neighborhoods are acceptable. Any in-range
+    # point outside them is RED — even inside the hand-drawn green zone (the polygons
+    # win). Fail-open if neighborhoods.json is missing (in_allowed_neighborhood).
+    outside_bgd = tier in ("GREEN", "AMBER") and not zones.in_allowed_neighborhood(lat, lon)
+    if outside_bgd:
+        tier = "RED"
     mark_seen(key)
 
     if tier == "RED":
-        reason = ("שכונה ד' מחוץ לפוליגון הירוק (ללא מרווח)" if no_amber
+        reason = ("מחוץ לשכונות ב/ג/ד" if outside_bgd
+                  else "שכונה ד' מחוץ לפוליגון הירוק (ללא מרווח)" if no_amber
                   else f"more than {config.MAX_WALK_MINUTES} min walk from a gate")
         return result(Status.DROP, reason, geo_source=geo_source,
                       walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=False)

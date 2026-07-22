@@ -101,11 +101,16 @@ GATES = {
 # Add the Hebrew spellings from your red-area map here.
 # ---------------------------------------------------------------------------
 BLACKLIST_NEIGHBORHOODS = [
-    "רמות",        # Ramot
+    "רמות",        # Ramot (also covers רמות ב'/ד' by substring)
     "נווה זאב",    # Neve Zeev
     "נחל עשן",     # Nahal Ashan
     "פלח 7",       # Pelach 7
-    # TODO: add every red-area name from your map, incl. common misspellings
+    # Only שכונה ב/ג/ד are acceptable — every OTHER named Be'er Sheva neighborhood is
+    # an instant hard-drop (the שכונה-letter areas א/ה/ו/ז/ח/ט/י are already dropped
+    # pre-geocode by pipeline._neighborhood_letter + ALLOWED_NEIGHBORHOODS). These are
+    # the NAMED areas that carry no letter. Substrings chosen to avoid false matches.
+    "נאות אברהם", "נאות לון", "העיר העתיקה", "נווה מנחם", "כלניות", "סיגליות",
+    "נחל בקע", "מרכז העיר", "שכונה דרום", "קרית יהודית", "הרובע", "רסקו",
 ]
 
 # Neighborhoods where the 500m amber grace does NOT apply: anything OUTSIDE the

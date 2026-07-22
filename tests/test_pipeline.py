@@ -108,6 +108,16 @@ def test_drop_neighborhood_outside_allowed_set():
         assert letter in pipeline.config.ALLOWED_NEIGHBORHOODS
 
 
+def test_blacklisted_named_neighborhood_drops():
+    from models import ListingExtract
+    # a NAMED non-ב/ג/ד neighborhood is an instant hard-drop before geocoding
+    for area in ("נאות לון", "הרובע", "רסקו", "העיר העתיקה"):
+        e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood=area,
+                           available_rooms_count=2)
+        res = pipeline._classify(e, "", None, None, [], None, commit=False)
+        assert res.status.value == "DROP", area
+
+
 def test_no_amber_area_matches_dalet_only():
     assert pipeline._no_amber_area("שכונה ד'")
     assert pipeline._no_amber_area("רחוב הפלמ\"ח, שכונה ד")
