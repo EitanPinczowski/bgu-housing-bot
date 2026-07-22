@@ -103,12 +103,25 @@ def build() -> str:
     svg.append(f'<rect width="{_W}" height="{_H}" fill="#eef1f4"/>')
     svg += _tier_grid(xy, bounds)                    # 1) the tier color field
 
-    # 2) main streets (clipped by the SVG viewport)
+    # 2) main streets — a white casing + a dark line so they read over the colored
+    #    tier grid, and each street NAMED once at the midpoint of its longest segment.
+    street_labels = []
     for st in feats.get("streets", []):
+        best_seg, best_len = None, 0.0
         for seg in st.get("segments", []):
-            if any(_in_bounds(la, lo, bounds) for la, lo in seg):
-                svg.append(f'<polyline points="{_poly(xy, seg)}" fill="none" '
-                           f'stroke="#5b6570" stroke-width="1.4" stroke-opacity="0.55"/>')
+            if not any(_in_bounds(la, lo, bounds) for la, lo in seg):
+                continue
+            pts = _poly(xy, seg)
+            svg.append(f'<polyline points="{pts}" fill="none" stroke="#ffffff" '
+                       f'stroke-width="3.6" stroke-opacity="0.55" stroke-linejoin="round"/>')
+            svg.append(f'<polyline points="{pts}" fill="none" stroke="#39424c" '
+                       f'stroke-width="1.6" stroke-opacity="0.85" stroke-linejoin="round"/>')
+            (ax, ay), (bx, by) = xy(*seg[0]), xy(*seg[-1])
+            seglen = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+            if seglen > best_len:
+                best_len, best_seg = seglen, seg
+        if best_seg and best_len > 60:                 # long enough in view to label legibly
+            street_labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"]))
 
     # 3) green zone outline
     svg.append(f'<polygon points="{_poly(xy, zone)}" fill="none" stroke="#1b5e20" '
@@ -140,12 +153,18 @@ def build() -> str:
                    f'text-anchor="middle" font-weight="bold" opacity="0.75">'
                    f'שכונה {html.escape(letter)}</text>')
 
-    # 6) gates
+    # 6) street names — on top, white-haloed so they read over everything
+    for (sx, sy), name in street_labels:
+        svg.append(f'<text x="{sx:.0f}" y="{sy:.0f}" font-size="10.5" fill="#22282e" '
+                   f'text-anchor="middle" style="paint-order:stroke;stroke:#fff;'
+                   f'stroke-width:2.6px">{html.escape(name)}</text>')
+
+    # 7) gates
     for la, lo, name in gates:
         gx, gy = xy(la, lo)
         svg.append(f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="4.5" fill="#111"/>')
         svg.append(f'<text x="{gx + 7:.1f}" y="{gy + 4:.1f}" font-size="12" fill="#111" '
-                   f'style="paint-order:stroke;stroke:#fff;stroke-width:3px">'
+                   f'font-weight="bold" style="paint-order:stroke;stroke:#fff;stroke-width:3.5px">'
                    f'★ {html.escape(name)}</text>')
     svg.append("</svg>")
 
@@ -162,7 +181,7 @@ def build() -> str:
         "<b style='color:#1b5e20'>▭ green zone</b> (hand-drawn) &nbsp; "
         "<b style='color:#1a237e'>▭ ב/ג/ד</b> neighborhoods &nbsp; "
         "<b style='color:#3949ab'>■ BGU</b> &nbsp; <b style='color:#ad1457'>■ Soroka</b> &nbsp; "
-        "● ★ campus gates &nbsp; — grey lines are the main streets.</p>"
+        "● ★ campus gates &nbsp; — dark named lines are the main streets.</p>"
         + "".join(svg) +
         "</div>")
     OUT.write_text(page, encoding="utf-8")
