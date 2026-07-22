@@ -117,6 +117,20 @@ NO_AMBER_NEIGHBORHOODS = [
     "שכונת ד",
 ]
 
+# The ONLY numbered neighborhoods we want. A post that explicitly names a שכונה
+# outside this set (e.g. שכונה א/ה/ו/ז/ט…) is an instant hard-drop, like the
+# blacklist — only ב/ג/ד are relevant to this search. Matched on the address TEXT
+# (see pipeline._neighborhood_letter); a plain street or a named area (הבלוק,
+# הרובע…) is unaffected.
+ALLOWED_NEIGHBORHOODS = ["ב", "ג", "ד"]
+# Among the allowed ones, ב is preferred over ג and ד (which tie). A small fit-score
+# tie-breaker (letter -> bonus points); letters not listed get 0.
+NEIGHBORHOOD_BONUS = {"ב": 4}
+# Neighborhood boundary polygons (שכונה ב/ג/ד) imported from OSM by
+# load_neighborhoods.py — used by zones.neighborhood_of to resolve a listing's
+# neighborhood from its coordinate (the fallback when the text doesn't name one).
+NEIGHBORHOODS_PATH = ROOT / "neighborhoods.json"
+
 # ---------------------------------------------------------------------------
 # OSRM — local, self-hosted foot-routing server (see README).
 # ---------------------------------------------------------------------------

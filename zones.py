@@ -65,6 +65,31 @@ def in_no_amber_zone(lat: Optional[float], lon: Optional[float]) -> bool:
     return any(_point_in(lat, lon, p) for p in _no_amber_polys())
 
 
+@lru_cache(maxsize=1)
+def _neighborhood_polys() -> list:
+    """[(letter, polygon)] for the imported ב/ג/ד boundaries (neighborhoods.json,
+    written by load_neighborhoods.py). Empty if the file is missing."""
+    try:
+        with open(config.NEIGHBORHOODS_PATH, encoding="utf-8") as f:
+            return [(z["letter"], z["polygon_latlon"])
+                    for z in json.load(f).get("neighborhoods", [])]
+    except Exception:
+        return []
+
+
+def neighborhood_of(lat: Optional[float], lon: Optional[float]) -> Optional[str]:
+    """The neighborhood letter ('ב'/'ג'/'ד') whose polygon contains the point, else
+    None (point outside all imported polygons, or no coordinate). Only ב/ג/ד are
+    imported, so this never reports a droppable 'other' neighborhood — the drop rule
+    is text-based (pipeline._neighborhood_letter)."""
+    if lat is None or lon is None:
+        return None
+    for letter, poly in _neighborhood_polys():
+        if _point_in(lat, lon, poly):
+            return letter
+    return None
+
+
 def _to_xy(lat: float, lon: float) -> tuple[float, float]:
     """Local equirectangular projection to metres (accurate over a few km)."""
     x = math.radians(lon) * _R * math.cos(math.radians(_lat0()))

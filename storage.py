@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS listings (
     furnished INTEGER,
     balcony INTEGER,
     elevator INTEGER,
+    geocode_source TEXT,
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS marks (
@@ -102,6 +103,8 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE listings ADD COLUMN balcony INTEGER")
     if "elevator" not in cols:
         c.execute("ALTER TABLE listings ADD COLUMN elevator INTEGER")
+    if "geocode_source" not in cols:
+        c.execute("ALTER TABLE listings ADD COLUMN geocode_source TEXT")
     # marks became per-user (dedup_key,user_id); recreate the old single-mark table
     mcols = {r[1] for r in c.execute("PRAGMA table_info(marks)").fetchall()}
     if "user_id" not in mcols:
@@ -304,6 +307,17 @@ def unknown_locations(days: int = 7) -> list:
         return c.execute("SELECT location, count, last_seen FROM unknown_locations "
                          "WHERE last_seen >= ? ORDER BY count DESC, last_seen DESC",
                          (since,)).fetchall()
+
+
+def low_confidence_geocodes(limit: int = 15) -> list:
+    """[(address, tier, geocode_source)] for kept listings resolved by a FUZZY geocoder
+    (overpass/nominatim) rather than the trusted static table — worth a human glance
+    (and pinning to STATIC_TABLE if the point is off). Newest first."""
+    with _conn() as c:
+        return c.execute(
+            "SELECT address, location_tier, geocode_source FROM listings "
+            "WHERE geocode_source IN ('overpass','nominatim') "
+            "ORDER BY first_seen DESC LIMIT ?", (limit,)).fetchall()
 
 
 # --- fuzzy cross-post dedup: a fingerprint (set of Hebrew word tokens) of each
@@ -523,12 +537,13 @@ def save_listing(res: PipelineResult) -> None:
             """INSERT OR REPLACE INTO listings
                (dedup_key,status,location_tier,price_per_room,available_rooms,total_roommates,
                 address,walk_minutes,lease_start,contact,summary,source_url,"group",
-                price_from_comment,score,images,floor,furnished,balcony,elevator)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                price_from_comment,score,images,floor,furnished,balcony,elevator,geocode_source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (res.dedup_key, res.status.value, res.location_tier,
              e.price_per_room_ils, e.available_rooms_count, e.total_roommates_in_apt,
              e.street_address_or_neighborhood, res.walk_minutes, e.lease_start_date,
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
              1 if e.price_from_comment else 0, res.score, json.dumps(res.images or []),
-             e.floor, _tri(e.furnished), e.balcony_or_garden, _tri(e.has_elevator)),
+             e.floor, _tri(e.furnished), e.balcony_or_garden, _tri(e.has_elevator),
+             res.geo_source),
         )

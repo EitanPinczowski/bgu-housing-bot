@@ -85,6 +85,29 @@ def test_process_post_dedups_phone_flip(temp_db, monkeypatch):
     assert r2.status.value == "DROP" and "already seen" in r2.reason
 
 
+def test_neighborhood_letter():
+    assert pipeline._neighborhood_letter("שכונה ב") == "ב"
+    assert pipeline._neighborhood_letter("בשכונה ג'") == "ג"
+    assert pipeline._neighborhood_letter("שכונת ד, רחוב כלשהו") == "ד"
+    assert pipeline._neighborhood_letter("שכונה ה'") == "ה"
+    assert pipeline._neighborhood_letter("רינגלבלום 5") is None       # a plain street
+    assert pipeline._neighborhood_letter("הבלוק") is None             # a named area
+    assert pipeline._neighborhood_letter("שכונה ברושים") is None      # not a lone letter
+    assert pipeline._neighborhood_letter(None) is None
+
+
+def test_drop_neighborhood_outside_allowed_set():
+    from models import ListingExtract
+    # a post that NAMES שכונה ה (not ב/ג/ד) is dropped before geocoding (no network)
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="שכונה ה'",
+                       available_rooms_count=2)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value == "DROP" and "ב/ג/ד" in res.reason
+    # ב/ג/ד are allowed (the letter parses, and it's in the allowed set)
+    for letter in ("ב", "ג", "ד"):
+        assert letter in pipeline.config.ALLOWED_NEIGHBORHOODS
+
+
 def test_no_amber_area_matches_dalet_only():
     assert pipeline._no_amber_area("שכונה ד'")
     assert pipeline._no_amber_area("רחוב הפלמ\"ח, שכונה ד")

@@ -174,6 +174,20 @@ def _no_amber_area(location: Optional[str]) -> bool:
     return any(m in norm for m in config.NO_AMBER_NEIGHBORHOODS)
 
 
+# "שכונה ב" / "בשכונה ג'" / "שכונת ד" -> the letter. The trailing negative lookahead
+# keeps it to a standalone letter (so "שכונה ברושים" doesn't read as ב).
+_NBHD_STRIP = str.maketrans("", "", "״׳'`\"")
+_NBHD_RE = re.compile(r"שכונ[הת]?\s+([א-י])(?![א-ת])")
+
+
+def _neighborhood_letter(location: Optional[str]) -> Optional[str]:
+    """The שכונה letter named in the address text ('ב'/'ג'/…), else None."""
+    if not location:
+        return None
+    m = _NBHD_RE.search(location.translate(_NBHD_STRIP))
+    return m.group(1) if m else None
+
+
 def _missing_critical(e) -> bool:
     # NEEDS_DATA only when a field we truly need is absent: rooms (for the >=2
     # gate) or street/neighborhood (to geocode). We deliberately do NOT trust the
@@ -277,10 +291,10 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     on a STORED extract -- re-testing zone/threshold/scoring changes with no
     browser and no LLM call. commit=False = pure, side-effect-free classify."""
     def result(status: Status, reason: str = "", walk=None, walk_gate=None,
-               lat=None, lon=None, key=None, tier=None, preferred=None):
+               lat=None, lon=None, key=None, tier=None, preferred=None, geo_source=None):
         return PipelineResult(status=status, reason=reason, walk_minutes=walk,
                               walk_gate=walk_gate, location_tier=tier, preferred=preferred,
-                              lat=lat, lon=lon, dedup_key=key,
+                              lat=lat, lon=lon, dedup_key=key, geo_source=geo_source,
                               source_url=source_url, group=group, images=images,
                               extract=e)
 
@@ -291,6 +305,15 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     # 2) blacklisted neighborhood -> drop before touching the router
     if _blacklisted(e.street_address_or_neighborhood):
         return result(Status.DROP, f"blacklisted area: {e.street_address_or_neighborhood}")
+
+    # 2b) allowed-neighborhood gate: if the post NAMES a שכונה that isn't ב/ג/ד,
+    #     drop it — only those neighborhoods are relevant. Text-based (what the post
+    #     says); a plain street or a named area (הבלוק, הרובע…) names no letter and
+    #     passes. Coordinates are never used to drop (a boundary miss must not lose a
+    #     good listing) — only ב/ג/ד polygons exist, and they feed the score only.
+    nbhd_letter = _neighborhood_letter(e.street_address_or_neighborhood)
+    if nbhd_letter and nbhd_letter not in config.ALLOWED_NEIGHBORHOODS:
+        return result(Status.DROP, f"שכונה {nbhd_letter} מחוץ לאזורים הרלוונטיים (ב/ג/ד)")
 
     # 3) dedup. Check ALL of the listing's stable keys (phone, content-hash, and —
     #    for a numbered address — the address key), so the SAME flat is caught even
@@ -318,7 +341,7 @@ def _classify(e, raw_text: str, source_url, group, images: list,
 
     # 5) locate it: geocode -> tier (GREEN/AMBER/RED/UNKNOWN). OSRM minutes are
     #    informational only now; your green zone + 500m buffer make the call.
-    coords = geocode.geocode(e.street_address_or_neighborhood)
+    coords, geo_source = geocode.geocode_detailed(e.street_address_or_neighborhood)
     # A name we HAVE but couldn't map -> log it so the daily DM digest can suggest
     # pinning it to the static table (this is exactly how "הבלוק" was missed).
     if commit and coords is None and e.street_address_or_neighborhood:
@@ -345,7 +368,7 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     if tier == "RED":
         reason = ("שכונה ד' מחוץ לפוליגון הירוק (ללא מרווח)" if no_amber
                   else f"more than {config.MAX_WALK_MINUTES} min walk from a gate")
-        return result(Status.DROP, reason,
+        return result(Status.DROP, reason, geo_source=geo_source,
                       walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=False)
 
     # 6) classify. GREEN/AMBER + complete -> MATCH (amber = acceptable, not
@@ -361,18 +384,22 @@ def _classify(e, raw_text: str, source_url, group, images: list,
             reasons.append("location not geocoded")
         elif tier == "AMBER":
             reasons.append("within a 20-min walk of a gate (acceptable, not preferred)")
-        res = result(Status.NEEDS_DATA, "; ".join(reasons),
+        res = result(Status.NEEDS_DATA, "; ".join(reasons), geo_source=geo_source,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
     else:
         label = ("in green zone (preferred)" if tier == "GREEN"
                  else "within a 20-min walk of a gate (acceptable, not preferred)")
-        res = result(Status.MATCH, label,
+        res = result(Status.MATCH, label, geo_source=geo_source,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
 
+    # Preferred-neighborhood tie-breaker (ב > ג = ד): the letter the post NAMES wins
+    # (the user's rule is about what the post says); else infer from the coordinate.
+    neighborhood = nbhd_letter or zones.neighborhood_of(lat, lon)
     res.score = fit.score(e.price_per_room_ils, walk, tier,
                           e.available_rooms_count, e.total_roommates_in_apt,
                           e.price_from_comment, age_hours, e.lease_start_date,
-                          e.furnished, e.floor, e.has_elevator, e.balcony_or_garden)
+                          e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
+                          neighborhood)
 
     if commit:
         # Mark this flat seen under ALL its stable keys (phone/content-hash/address)

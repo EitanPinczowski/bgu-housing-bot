@@ -52,6 +52,7 @@ class PipelineResult(BaseModel):
     preferred: Optional[bool] = None      # True only for GREEN matches
     lat: Optional[float] = None
     lon: Optional[float] = None
+    geo_source: Optional[str] = None      # which geocoder resolved it (static/overpass/…)
     dedup_key: Optional[str] = None
     source_url: Optional[str] = None
     group: Optional[str] = None

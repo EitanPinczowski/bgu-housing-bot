@@ -73,19 +73,38 @@ def _suggest(name: str):
     return res
 
 
+def _low_confidence_section() -> list:
+    """Kept listings geocoded by a fuzzy source (Overpass/Nominatim) rather than the
+    trusted static table — flagged so a wrong pin gets a human glance."""
+    rows = storage.low_confidence_geocodes()
+    if not rows:
+        return []
+    out = [notifier._esc("📍 מוקמו ע\"י גאוקוד לא-ודאי (Overpass/Nominatim) — שווה מבט:")]
+    for addr, tier, src in rows:
+        out.append(notifier._esc(f"• {addr or '—'} [{tier or '?'}] ({src})"))
+    return out
+
+
 def build(days: int = 1, suggest: bool = True) -> str | None:
     rows = storage.unknown_locations(days)
-    if not rows:
+    low = _low_confidence_section()
+    if not rows and not low:
         return None
-    head = f"🗺️ מקומות שלא הצלחתי למפות ({days} ימים אחרונים) — שווה להוסיף לטבלת הגאוקוד:"
-    lines = [notifier._esc(head), ""]
-    for i, (loc, cnt, _) in enumerate(rows[:20]):
-        line = f"• {loc} ×{cnt}"
-        s = _suggest(loc) if (suggest and i < 15) else None      # cap the paced calls
-        if s:
-            osm_name, la, lo = s
-            line += f"  →  {osm_name} {la},{lo} (לאימות)"
-        lines.append(notifier._esc(line))
+    lines: list = []
+    if rows:
+        head = f"🗺️ מקומות שלא הצלחתי למפות ({days} ימים אחרונים) — שווה להוסיף לטבלת הגאוקוד:"
+        lines += [notifier._esc(head), ""]
+        for i, (loc, cnt, _) in enumerate(rows[:20]):
+            line = f"• {loc} ×{cnt}"
+            s = _suggest(loc) if (suggest and i < 15) else None      # cap the paced calls
+            if s:
+                osm_name, la, lo = s
+                line += f"  →  {osm_name} {la},{lo} (לאימות)"
+            lines.append(notifier._esc(line))
+    if low:
+        if lines:
+            lines.append("")
+        lines += low
     return "\n".join(lines)
 
 

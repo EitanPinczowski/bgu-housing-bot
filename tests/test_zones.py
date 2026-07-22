@@ -44,6 +44,19 @@ def test_no_amber_zone_forces_red():
         assert zones.classify_effective(la, lo) == "GREEN"
 
 
+def test_neighborhood_of_resolves_imported_polygons():
+    # each imported ב/ג/ד polygon: a point inside it (its centroid) reports its letter
+    polys = zones._neighborhood_polys()
+    assert polys, "neighborhoods.json should be imported (run load_neighborhoods.py)"
+    for letter, poly in polys:
+        lat = sum(p[0] for p in poly) / len(poly)
+        lon = sum(p[1] for p in poly) / len(poly)
+        assert zones.neighborhood_of(lat, lon) == letter
+    # far away / no coordinate -> None (never a droppable 'other' neighborhood)
+    assert zones.neighborhood_of(32.0853, 34.7818) is None
+    assert zones.neighborhood_of(None, None) is None
+
+
 def test_zone_centre_is_in_range():
     # The polygon's centroid is inside it (or, at worst for a concave zone,
     # well within the 500 m buffer) — so it must classify as in-range, not RED.

@@ -147,6 +147,18 @@ def test_lease_month_parsing():
     assert fit._lease_month(None) is None
 
 
+def test_neighborhood_preference_b_over_c_equals_d():
+    base = fit.score(1500, 10, "GREEN", 2, 3)
+    b = fit.score(1500, 10, "GREEN", 2, 3, neighborhood="ב")
+    c = fit.score(1500, 10, "GREEN", 2, 3, neighborhood="ג")
+    d = fit.score(1500, 10, "GREEN", 2, 3, neighborhood="ד")
+    assert b > c            # ב is preferred
+    assert c == d == base   # ג and ד tie, and get no bonus (== the no-neighborhood base)
+    # the bonus is only shown for ב, and it is tie-breaker sized (a few points)
+    assert dict(fit.breakdown(1500, 10, "GREEN", 2, 3, neighborhood="ב"))["שכונה ב מועדפת"] == 4
+    assert not any("שכונה" in k for k, _ in fit.breakdown(1500, 10, "GREEN", 2, 3, neighborhood="ג"))
+
+
 def test_entry_date_is_smallest_factor():
     # target month is October (config.TARGET_MOVE_IN_MONTH = 10)
     on = fit.score(1400, 10, "GREEN", 2, 3, lease_start="1.10")
