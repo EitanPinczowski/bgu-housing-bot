@@ -217,6 +217,17 @@ def test_merge_duplicate_listings(temp_db):
     assert storage.get_user_mark("phone:1234567", "u1") == "saved"   # vote migrated
 
 
+def test_saved_listings_and_contacted(temp_db):
+    storage.save_listing(_res("phone:501111111"))
+    storage.set_mark("phone:501111111", "u1", "saved")
+    assert any(r["dedup_key"] == "phone:501111111" for r in storage.saved_listings())
+    # marking contacted records it and drops it from the saved list
+    storage.set_contacted("phone:501111111")
+    assert "phone:501111111" in storage.contacted_keys()
+    assert not any(r["dedup_key"] == "phone:501111111" for r in storage.saved_listings())
+    assert storage.mark_adjustment("phone:501111111") == config.MARK_SCORE_DELTA  # contacted not a vote
+
+
 def test_fuzzy_dedup_matches_near_identical(temp_db):
     base = set("דירת שלושה שותפים בשכונה מתפנים שני חדרים ממוזגת מרוהטת כניסה מיידית להשכרה".split())
     storage.record_fingerprint("phone:9", base)

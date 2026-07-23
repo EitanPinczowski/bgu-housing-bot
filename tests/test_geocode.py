@@ -232,6 +232,16 @@ def test_geocode_detailed_reports_source(monkeypatch, tmp_path):
 
 
 # --- #11: uncache a bad pin / stale miss -----------------------------------------
+def test_add_pin_resolves(monkeypatch, tmp_path):
+    monkeypatch.setattr(geocode, "_USER_PINS_PATH", tmp_path / "pins.json")
+    monkeypatch.setattr(geocode, "_user_pins", None)
+    monkeypatch.setattr(geocode.config, "USE_OVERPASS_FALLBACK", False)
+    monkeypatch.setattr(geocode.config, "USE_NOMINATIM_FALLBACK", False)
+    geocode.add_pin("רחבת שלמה המלך", 31.255, 34.805)      # a place not in the static table
+    # it now resolves (merged into the static match, forward substring)
+    assert geocode.geocode("להשכרה ברחבת שלמה המלך") == (31.255, 34.805)
+
+
 def test_uncache_removes_matching_entries(monkeypatch, tmp_path):
     monkeypatch.setattr(geocode, "_cache", {
         "גר ברינגלבלום 5": {"c": [31.26, 34.79], "s": "overpass"},

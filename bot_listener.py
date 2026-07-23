@@ -20,18 +20,27 @@ from dotenv import load_dotenv
 # Load .env by this file's own path so it works when autostarted from any cwd.
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
+import re
 import sqlite3
 from datetime import datetime
 
 import requests
 
 import config
+import dm_digest
+import doctor
 import fit
+import geocode
 import notifier
+import pipeline
 import query
 import sheets
 import storage
 import weekly_digest
+
+# Auto-pin: /unknowns caches its Overpass suggestions here so a 📌 button can carry a
+# short id (Telegram callback_data is capped at 64 bytes — too small for a Hebrew name).
+_pending_pins: dict = {}
 
 _MARK = {"save": "saved", "dismiss": "dismissed"}
 _DONE = {"save": "⭐ נשמר", "dismiss": "🗑 הוסר"}
@@ -74,6 +83,30 @@ def _update_tally(cb: dict, key: str) -> None:
 
 def _handle(cb: dict) -> None:
     action, _, key = (cb.get("data") or "").partition("|")
+    # 📌 auto-pin from /unknowns: key is a short id into _pending_pins
+    if action == "pin":
+        sug = _pending_pins.get(key)
+        if sug:
+            name, lat, lon = sug
+            try:
+                geocode.add_pin(name, lat, lon)
+                _api("answerCallbackQuery", callback_query_id=cb["id"], show_alert=True,
+                     text=f"📌 נקבע: {name} → {lat:.4f},{lon:.4f}")
+            except Exception as exc:
+                _api("answerCallbackQuery", callback_query_id=cb["id"], text=f"שגיאה: {exc}")
+        else:
+            _api("answerCallbackQuery", callback_query_id=cb["id"], text="ההצעה פגה — הריצו /unknowns שוב")
+        return
+    # ℹ️ why / 📵 contacted on an alert
+    if action == "why":
+        _api("answerCallbackQuery", callback_query_id=cb["id"])
+        _reply((cb.get("message") or {}).get("chat", {}).get("id"), _why_text(key))
+        return
+    if action == "contacted":
+        storage.set_contacted(key)
+        _api("answerCallbackQuery", callback_query_id=cb["id"], show_alert=True,
+             text="📵 סומן כ'יצרתי קשר' — לא יופיע שוב ב-/top")
+        return
     mark = _MARK.get(action)
     user = str((cb.get("from") or {}).get("id", ""))
     if not (mark and key and user):
@@ -154,6 +187,142 @@ def _format_results(rows) -> str:
     return "\n\n".join(out)
 
 
+def _reply_kb(chat_id, text: str, kb) -> None:
+    try:
+        _api("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True,
+             reply_markup={"inline_keyboard": kb})
+    except Exception as exc:
+        print("[listener] reply_kb failed:", exc)
+
+
+def _why_text(key: str) -> str:
+    """The fit breakdown (top positive factors) for a listing — the 'ℹ️ למה' reply."""
+    with sqlite3.connect(config.DB_PATH) as c:
+        c.row_factory = sqlite3.Row
+        r = c.execute("SELECT * FROM listings WHERE dedup_key=?", (key,)).fetchone()
+    if not r:
+        return "לא נמצאה דירה."
+    parts = fit.breakdown(
+        r["price_per_room"], r["walk_minutes"], r["location_tier"], r["available_rooms"],
+        r["total_roommates"], bool(r["price_from_comment"]), None, r["lease_start"],
+        (r["furnished"] == 1) if r["furnished"] is not None else None, r["floor"],
+        (r["elevator"] == 1) if r["elevator"] is not None else None, r["balcony"], None,
+        has_photos=bool(r["images"] and r["images"] != "[]"))
+    top = fit.top_factors(parts, n=5)
+    eff = storage.effective_score(key, r["score"] or 0)
+    out = f"ℹ️ {r['address'] or 'דירה'} — ניקוד {eff}\n" + " · ".join(f"{n} +{d}" for n, d in top)
+    negs = [f"{n} {d}" for n, d in parts if d < 0]
+    if negs:
+        out += "\nנוכה: " + " · ".join(negs)
+    return out
+
+
+def _cmd_top(chat_id, arg) -> None:
+    n = int(arg) if arg.strip().isdigit() and 1 <= int(arg) <= 20 else 5
+    contacted = storage.contacted_keys()
+    rows = [r for r in query.search("", limit=n * 3) if r["dedup_key"] not in contacted][:n]
+    _reply(chat_id, "🏆 הדירות הכי טובות:\n\n" + _format_results(rows))
+
+
+def _cmd_saved(chat_id) -> None:
+    rows = storage.saved_listings()
+    if not rows:
+        _reply(chat_id, "עדיין לא שמרתם דירות (הקישו ⭐ על התראה).")
+        return
+    for r in rows:
+        r["eff_score"] = storage.effective_score(r["dedup_key"], r["score"] or 0)
+    _reply(chat_id, "⭐ דירות ששמרתם:\n\n" + _format_results(rows))
+
+
+def _cmd_doctor(chat_id) -> None:
+    lines = ["🩺 בדיקת תלויות:"]
+    for name, status, detail, _ in doctor.checks():
+        lines.append(f"{doctor._ICON.get(status, '')} {name}: {status} — {detail}")
+    _reply(chat_id, "\n".join(lines))
+
+
+def _cmd_stats(chat_id) -> None:
+    vc = storage.verdict_counts()
+    drops = storage.drop_reason_counts()[:5]
+    out = ["📊 סטטיסטיקת מאגר:", "מצב: " + " · ".join(f"{k} {v}" for k, v in vc.items())]
+    if drops:
+        out.append("סיבות סינון נפוצות: " + " · ".join(f"{r} ({c})" for r, c in drops))
+    _reply(chat_id, "\n".join(out))
+
+
+def _cmd_unknowns(chat_id) -> None:
+    rows = storage.unknown_locations(7)[:6]
+    if not rows:
+        _reply(chat_id, "אין מקומות שלא מופו 🎉")
+        return
+    _pending_pins.clear()
+    _reply(chat_id, "🗺️ מקומות שלא מופו (הקישו 📌 כדי לקבע את ההצעה):")
+    for i, (loc, cnt, _ts) in enumerate(rows):
+        sug = dm_digest._suggest(loc)                 # (osm_name, lat, lon) or None (paced)
+        if sug:
+            _pending_pins[str(i)] = (loc, sug[1], sug[2])
+            _reply_kb(chat_id, f"📍 {loc} ×{cnt}\nהצעה: {sug[0]} {sug[1]},{sug[2]}",
+                      [[{"text": "📌 קבע", "callback_data": f"pin|{i}"}]])
+        else:
+            _reply(chat_id, f"📍 {loc} ×{cnt} — אין הצעה (קבעו ידנית עם /pin)")
+
+
+def _cmd_pin(chat_id, arg) -> None:
+    m = re.search(r"(-?\d+\.\d+)\s*[, ]\s*(-?\d+\.\d+)\s*$", arg.strip())
+    name = arg[:m.start()].strip().rstrip(",").strip() if m else ""
+    if not (m and name):
+        _reply(chat_id, "שימוש: /pin <שם> <lat,lon>\nלמשל: /pin כיכר האבות 31.2618,34.7947")
+        return
+    geocode.add_pin(name, float(m.group(1)), float(m.group(2)))
+    _reply(chat_id, f"📌 נקבע: {name} → {float(m.group(1)):.5f},{float(m.group(2)):.5f}")
+
+
+def _cmd_uncache(chat_id, arg) -> None:
+    if not arg.strip():
+        _reply(chat_id, "שימוש: /uncache <שם/כתובת>")
+        return
+    removed = geocode.uncache(arg.strip())
+    _reply(chat_id, f"נוקו {len(removed)} רשומות: {removed}" if removed else "לא נמצאה התאמה במטמון.")
+
+
+def _classify_summary(res) -> str:
+    e = res.extract
+    st = {"MATCH": "✅ התאמה", "NEEDS_DATA": "⚠️ חוסר מידע", "DROP": "🗑 נפסל",
+          "NOT_AD": "לא מודעה"}.get(res.status.value, res.status.value)
+    lines = [f"{st} · {res.location_tier or ''} · ניקוד {res.score if res.score is not None else '—'}"]
+    if res.reason:
+        lines.append(f"סיבה: {res.reason}")
+    if e:
+        bits = [b for b in (e.street_address_or_neighborhood,
+                            f"{e.price_per_room_ils}₪" if e.price_per_room_ils else None,
+                            f"{e.available_rooms_count} חד׳" if e.available_rooms_count is not None else None,
+                            f"{round(res.walk_minutes)} דק׳" if res.walk_minutes is not None else None) if b]
+        if bits:
+            lines.append(" · ".join(str(b) for b in bits))
+    return "\n".join(lines)
+
+
+def _cmd_classify(chat_id, arg) -> None:
+    if not arg.strip():
+        _reply(chat_id, "הדביקו טקסט של מודעה אחרי /classify כדי לבדוק אותה.")
+        return
+    try:
+        res = pipeline.process_post(arg, commit=False)   # pure: no store, no alert
+        _reply(chat_id, _classify_summary(res))
+    except Exception as exc:
+        _reply(chat_id, f"שגיאה בסיווג: {exc}")
+
+
+_HELP = ("🤖 פקודות:\n"
+         "/top [N] — הדירות הכי טובות כרגע\n"
+         "/saved — דירות ששמרתם (⭐)\n"
+         "/search <שאילתה> — חיפוש חופשי\n"
+         "/classify <טקסט מודעה> — לבדוק מודעה שהדבקתם\n"
+         "/unknowns — מקומות שלא מופו (כפתור 📌 לקיבוע)\n"
+         "/pin <שם> <lat,lon> · /uncache <שם>\n"
+         "/stats · /status · /doctor · /sheet · /help")
+
+
 def _handle_message(msg: dict) -> None:
     """DM-only text commands. Group messages and non-owner DMs are ignored."""
     chat = msg.get("chat") or {}
@@ -166,18 +335,38 @@ def _handle_message(msg: dict) -> None:
         return
     cmd, _, arg = text.partition(" ")
     cmd = cmd.lstrip("/").lower().split("@")[0]        # tolerate /search@BotName
+    cid = chat["id"]
     if cmd == "search":
         if not arg.strip():
-            _reply(chat["id"], query.HELP)
-            return
-        try:
-            _reply(chat["id"], _format_results(query.search(arg, limit=10)))
-        except Exception as exc:
-            _reply(chat["id"], f"שגיאה בחיפוש: {exc}")
+            _reply(cid, query.HELP)
+        else:
+            try:
+                _reply(cid, _format_results(query.search(arg, limit=10)))
+            except Exception as exc:
+                _reply(cid, f"שגיאה בחיפוש: {exc}")
     elif cmd == "status":
-        _reply(chat["id"], _status_text())
+        _reply(cid, _status_text())
+    elif cmd == "top":
+        _cmd_top(cid, arg)
+    elif cmd == "saved":
+        _cmd_saved(cid)
+    elif cmd == "doctor":
+        _cmd_doctor(cid)
+    elif cmd == "stats":
+        _cmd_stats(cid)
+    elif cmd == "unknowns":
+        _cmd_unknowns(cid)
+    elif cmd == "pin":
+        _cmd_pin(cid, arg)
+    elif cmd == "uncache":
+        _cmd_uncache(cid, arg)
+    elif cmd == "classify":
+        _cmd_classify(cid, arg)
+    elif cmd == "sheet":
+        sid = os.environ.get("GOOGLE_SHEET_ID")
+        _reply(cid, f"https://docs.google.com/spreadsheets/d/{sid}" if sid else "גיליון לא מוגדר.")
     else:
-        _reply(chat["id"], "פקודות זמינות: /search <שאילתה> · /status\n\n" + query.HELP)
+        _reply(cid, _HELP)
 
 
 def main() -> None:

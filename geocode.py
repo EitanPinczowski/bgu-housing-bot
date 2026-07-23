@@ -154,6 +154,36 @@ def _save_cache() -> None:
         pass
 
 
+# --- user pins: coordinates you add by hand (or from Telegram /pin), merged into the
+# static table so a recurring unmapped place resolves for good. -------------------
+_USER_PINS_PATH = config.ROOT / "user_pins.json"
+_user_pins: Optional[dict] = None
+
+
+def _load_user_pins() -> dict:
+    global _user_pins
+    if _user_pins is None:
+        try:
+            raw = json.loads(_USER_PINS_PATH.read_text(encoding="utf-8"))
+            _user_pins = {k: (v[0], v[1]) for k, v in raw.items()}
+        except Exception:
+            _user_pins = {}
+    return _user_pins
+
+
+def add_pin(name: str, lat: float, lon: float) -> str:
+    """Add/replace a geocode pin (persisted to user_pins.json, merged into the static
+    table with the same earliest-match logic). Returns the trimmed name."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("empty pin name")
+    pins = _load_user_pins()
+    pins[name] = (float(lat), float(lon))
+    _USER_PINS_PATH.write_text(json.dumps({k: [la, lo] for k, (la, lo) in pins.items()},
+                                          ensure_ascii=False), encoding="utf-8")
+    return name
+
+
 def uncache(name: str) -> list:
     """Drop every cached entry whose key CONTAINS the given text (normalized), so a
     wrong pin (or a stale miss) can be cleared without hand-editing the JSON. The
@@ -215,7 +245,7 @@ def geocode_detailed(location_text: Optional[str]):
     #    primary location), so a trailing slang POI ("…כיכר האבות, הבלוק") can't override
     #    the real anchor. Reverse matches rank last.
     best_pos, best_coords = None, None
-    for key, coords in STATIC_TABLE.items():
+    for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
         k = _normalize(key)
         if not k:
             continue

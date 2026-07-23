@@ -275,6 +275,10 @@ def _alert_keyboard(res):
             {"text": "⭐ מעניין", "callback_data": f"save|{res.dedup_key}"},
             {"text": "🗑 הסר", "callback_data": f"dismiss|{res.dedup_key}"},
         ])
+        rows.append([
+            {"text": "ℹ️ למה", "callback_data": f"why|{res.dedup_key}"},
+            {"text": "📵 שוחחתי", "callback_data": f"contacted|{res.dedup_key}"},
+        ])
     return {"inline_keyboard": rows} if rows else None
 
 

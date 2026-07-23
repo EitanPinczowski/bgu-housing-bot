@@ -247,6 +247,39 @@ def mark_adjustment(dedup_key: str) -> int:
     return config.MARK_SCORE_DELTA * (d["saved"] - d["dismissed"])
 
 
+# "contacted" — a flat you've already messaged, so it stops resurfacing in top-N. Stored
+# as a mark under a reserved user id so it never counts as a saved/dismissed vote.
+_CONTACTED_UID = "_contacted"
+
+
+def set_contacted(dedup_key: str) -> None:
+    if not dedup_key:
+        return
+    with _conn() as c:
+        c.execute("INSERT OR IGNORE INTO marks(dedup_key, user_id, mark, ts) "
+                  "VALUES (?,?,?,CURRENT_TIMESTAMP)", (dedup_key, _CONTACTED_UID, "contacted"))
+
+
+def contacted_keys() -> set:
+    with _conn() as c:
+        return {r[0] for r in c.execute("SELECT dedup_key FROM marks WHERE mark='contacted'")}
+
+
+def saved_listings(limit: int = 15) -> list:
+    """Listings anyone ⭐-saved (excluding ones marked contacted), newest first — for
+    the Telegram /saved command. Returns dict rows."""
+    with _conn() as c:
+        cur = c.execute(
+            """SELECT DISTINCT l.dedup_key, l.address, l.price_per_room, l.available_rooms,
+                      l.walk_minutes, l.score, l.source_url, l.location_tier
+               FROM listings l JOIN marks m ON m.dedup_key = l.dedup_key
+               WHERE m.mark='saved'
+                 AND l.dedup_key NOT IN (SELECT dedup_key FROM marks WHERE mark='contacted')
+               ORDER BY l.first_seen DESC LIMIT ?""", (limit,))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
 def base_score(dedup_key: str) -> int:
     with _conn() as c:
         row = c.execute("SELECT score FROM listings WHERE dedup_key=?", (dedup_key,)).fetchone()

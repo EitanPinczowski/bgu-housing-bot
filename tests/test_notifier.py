@@ -1,7 +1,7 @@
 """notifier recipient routing — listings to the group, ops/digest to the DM.
 Telegram group ids are negative, DMs positive; routing is by sign."""
 import notifier
-from models import PipelineResult, Status
+from models import ListingExtract, PipelineResult, Status
 
 
 def test_routing_splits_dm_and_group(monkeypatch):
@@ -21,6 +21,14 @@ def test_routing_falls_back_when_role_missing(monkeypatch):
 def test_no_ids(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
     assert notifier._recipients("group") == []
+
+
+def test_alert_keyboard_has_why_and_contacted():
+    res = PipelineResult(status=Status.MATCH, dedup_key="k1",
+                         extract=ListingExtract(is_apartment_ad=True))
+    kb = notifier._alert_keyboard(res)
+    data = [b["callback_data"] for row in kb["inline_keyboard"] for b in row if "callback_data" in b]
+    assert {"save|k1", "dismiss|k1", "why|k1", "contacted|k1"} <= set(data)
 
 
 def test_send_batch_ranks_and_caps(monkeypatch):
