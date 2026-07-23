@@ -253,8 +253,9 @@ NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
 # Quality gate on ALERTS (not on storage): only ping a listing — whether MATCH
 # or NEEDS_DATA — whose fit score (fit.py, 0–100) is at least this. Everything is
 # still saved to SQLite/Sheets and shows up in the digest/top-N; low-scoring ones
-# just don't buzz your phone. Raise to be pickier, lower to see more.
-MIN_ALERT_SCORE = 70
+# just don't buzz your phone. Raise to be pickier, lower to see more. (85 on the
+# normalized 0–100 scale ≈ the old 70 before the denominator was tightened to 125.)
+MIN_ALERT_SCORE = 85
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY
@@ -291,8 +292,11 @@ SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
 SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h (early-stops keep each run light)
 SCRAPER_MIN_SCRAPES_PER_DAY = 3     # each group read at least this often per day
 
-# Each Telegram save/dismiss tap nudges a listing's score by this much, per user
-# (2 people saving in the group = +50), so the group's votes shape the ranking.
+# Each Telegram save/dismiss tap nudges a listing's score by this much, PER USER
+# (2 people saving in the group = +50), so the group's votes shape the ranking. These
+# votes STACK on top of the normalized 0–100 quality score (storage.effective_score is
+# not clamped), so a well-endorsed listing can read above 100 — a human ⭐ is never
+# swallowed by the ceiling. Keep this ≥ 10 (each vote must clearly move the needle).
 MARK_SCORE_DELTA = 25
 # Only process posts newer than this many hours. FB shows relative times
 # (minutes/hours under 24h, then days/dates), which the scraper reads from the

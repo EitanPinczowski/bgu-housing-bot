@@ -37,6 +37,13 @@ def test_effective_score_is_base_plus_votes(temp_db):
     assert storage.effective_score(k, base=10) == 10 + config.MARK_SCORE_DELTA
 
 
+def test_votes_stack_uncapped_above_100(temp_db):
+    # a human ⭐ adds its full weight on top of the 0–100 quality score — never swallowed
+    assert config.MARK_SCORE_DELTA >= 10                    # each vote adds at least ten
+    storage.set_mark("k", "u1", "saved")
+    assert storage.effective_score("k", base=100) == 100 + config.MARK_SCORE_DELTA
+
+
 def test_file_ids_roundtrip_and_no_wipe(temp_db):
     k = "phone:2"
     storage.save_listing(_res(k))

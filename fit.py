@@ -157,14 +157,18 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
 
 
 def _max_possible() -> int:
-    """Sum of every factor's best-case positive contribution — the denominator that
-    rescales the raw sum onto 0–100. Without this, the base factors alone already
-    overflow 100 and clamp, hiding balcony/furnished at the top."""
-    m = 25 + 25 + 25 + 15 + 15 + 4     # zone, walk, price, rooms, roommates, freshness
+    """The denominator that maps the raw factor sum onto 0–100. It is the score of an
+    EXCELLENT listing — a perfect CORE (green, ≤10-min walk, in-budget, whole apartment,
+    ≤2 roommates, fresh, target entry month) plus a modest feature allowance — NOT the
+    theoretical sum of every factor. The feature bonuses (furnished/balcony/photo/preferred-
+    neighborhood, ~38 pts) stay in the numerator as extra credit toward the 100 clamp, so a
+    great location/price/rooms listing reaches the 90s without needing every feature. Tuned
+    so the best real listings land ~94–100 with the top still differentiated (not all pinned
+    at 100). Votes (storage.effective_score) then stack ABOVE this on the displayed total."""
+    core = 25 + 25 + 25 + 15 + 15 + 4   # zone, walk, price, rooms, roommates, freshness = 109
     if config.TARGET_MOVE_IN_MONTH:
-        m += 4                          # entry-date nudge
-    nb = max(config.NEIGHBORHOOD_BONUS.values(), default=0)   # preferred-neighborhood tie-breaker
-    return m + config.FURNISHED_BONUS + config.BALCONY_BONUS + nb + config.PHOTO_BONUS
+        core += 4                        # entry-date -> 113 (perfect core)
+    return core + 12                     # + feature allowance -> 125
 
 
 def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
@@ -189,12 +193,14 @@ def top_factors(parts: list, n: int = 3) -> list:
 
 
 def stars(points: int) -> str:
-    if points >= 88:
+    # Cutoffs recalibrated for the normalized 0–100 scale (denominator 125): the best real
+    # listings land ~94–100, median ~75. A vote-boosted total above 100 simply reads 5★.
+    if points >= 90:
         return "⭐⭐⭐⭐⭐"
-    if points >= 70:
+    if points >= 75:
         return "⭐⭐⭐⭐"
-    if points >= 52:
+    if points >= 60:
         return "⭐⭐⭐"
-    if points >= 34:
+    if points >= 45:
         return "⭐⭐"
     return "⭐"

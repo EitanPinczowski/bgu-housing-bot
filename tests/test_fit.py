@@ -5,15 +5,27 @@ import fit
 
 
 def test_stars_thresholds():
-    assert fit.stars(88) == "⭐⭐⭐⭐⭐"
-    assert fit.stars(87) == "⭐⭐⭐⭐"
-    assert fit.stars(70) == "⭐⭐⭐⭐"
-    assert fit.stars(69) == "⭐⭐⭐"
-    assert fit.stars(52) == "⭐⭐⭐"
-    assert fit.stars(51) == "⭐⭐"
-    assert fit.stars(34) == "⭐⭐"
-    assert fit.stars(33) == "⭐"
+    assert fit.stars(90) == "⭐⭐⭐⭐⭐"
+    assert fit.stars(105) == "⭐⭐⭐⭐⭐"      # vote-boosted above 100 still 5★
+    assert fit.stars(89) == "⭐⭐⭐⭐"
+    assert fit.stars(75) == "⭐⭐⭐⭐"
+    assert fit.stars(74) == "⭐⭐⭐"
+    assert fit.stars(60) == "⭐⭐⭐"
+    assert fit.stars(59) == "⭐⭐"
+    assert fit.stars(45) == "⭐⭐"
+    assert fit.stars(44) == "⭐"
     assert fit.stars(0) == "⭐"
+
+
+def test_normalized_scale_max_100():
+    assert fit._max_possible() == 125                     # tuned denominator
+    # a strong realistic listing (great core, no feature extras) now lands high (was ~64)
+    strong = fit.score(1400, 8, "GREEN", 2, 3, age_hours=5)
+    assert strong >= 75
+    # an excellent listing still clamps at 100, never above
+    perfect = fit.score(1000, 5, "GREEN", 3, 2, age_hours=1, lease_start="1.10",
+                        furnished=True, has_balcony=True, neighborhood="ב", has_photos=True)
+    assert perfect == 100
 
 
 def test_score_stays_in_range():
