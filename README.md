@@ -360,6 +360,17 @@ your own DM):
   month, `X כוכבים`/`X stars` or `ניקוד <n>`, and free-text street. (See `query.py`.)
 - **`/status`** — last-24h run funnel (from `search_log.txt`), DB totals, and a live
   OSRM health check, replied to your DM on demand.
+- **`/top [N]`** — the best N listings right now · **`/saved`** — the flats you ⭐-saved.
+- **`/classify <post text>`** — paste any listing (from anywhere) and get the bot's
+  verdict/tier/score — `manual.py` from your phone.
+- **`/unknowns`** — places that failed to geocode, each with a 📌 one-tap pin of the
+  Overpass suggestion · **`/pin <name> <lat,lon>`** / **`/uncache <name>`** — add/remove a
+  geocode pin by hand (`user_pins.json`).
+- **`/stats`** — DB funnel & drop reasons · **`/doctor`** — the dependency health check ·
+  **`/sheet`** — link to the Google Sheet · **`/help`** — this list.
+
+Each alert also carries **ℹ️ למה** (the fit-score breakdown) and **📵 שוחחתי** (mark a flat
+contacted so it stops showing in `/top`) alongside the ⭐/🗑 vote buttons.
 
 ### Facebook safety extras
 
