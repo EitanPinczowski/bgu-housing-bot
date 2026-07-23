@@ -203,8 +203,40 @@ def report() -> int:
     return 1 if hard else 0
 
 
+def try_fix() -> list:
+    """Attempt to auto-heal what we safely can. Currently: if OSRM is down, start its
+    Docker container and re-probe. Returns [(what, ok, detail)]. Only ever touches the
+    one known container — no arbitrary commands."""
+    import subprocess
+    done = []
+    if not _osrm_ok():
+        container = getattr(config, "OSRM_DOCKER_CONTAINER", "osrm_bgu")
+        try:
+            r = subprocess.run(["docker", "start", container],
+                               capture_output=True, text=True, timeout=60)
+            ok = r.returncode == 0 and _osrm_ok_retry()
+            done.append(("start OSRM", ok,
+                         f"docker start {container}: " + (r.stderr or r.stdout or "").strip()[:80]
+                         if not ok else f"{container} up"))
+        except Exception as exc:
+            done.append(("start OSRM", False, f"{type(exc).__name__}: {exc}"))
+    return done
+
+
+def _osrm_ok_retry(tries: int = 6) -> bool:
+    import time
+    for _ in range(tries):
+        if _osrm_ok():
+            return True
+        time.sleep(3)              # OSRM needs a few seconds after the container starts
+    return False
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if "--fix" in argv:
+        for what, ok, detail in try_fix():
+            print(f"[doctor --fix] {_ICON[PASS if ok else FAIL]} {what}: {detail}")
     code = report()
     if "--alert" in argv:
         rows = checks()

@@ -14,4 +14,5 @@ from __future__ import annotations
 import doctor
 
 if __name__ == "__main__":
-    raise SystemExit(doctor.main(["--alert"]))
+    # --fix first (auto-start a down OSRM container), then --alert on whatever's still broken
+    raise SystemExit(doctor.main(["--fix", "--alert"]))

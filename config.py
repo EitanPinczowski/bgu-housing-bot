@@ -147,6 +147,9 @@ NEIGHBORHOODS_PATH = ROOT / "neighborhoods.json"
 # OSRM — local, self-hosted foot-routing server (see README).
 # ---------------------------------------------------------------------------
 OSRM_BASE_URL = "http://localhost:5000"
+# The Docker container name for OSRM, so `python doctor.py --fix` can auto-start it
+# when it's down (self-healing) instead of only alerting.
+OSRM_DOCKER_CONTAINER = "osrm_bgu"
 
 # ---------------------------------------------------------------------------
 # LLM provider.  "gemini" (free tier) is the default. Swappable to a local /

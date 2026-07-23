@@ -45,6 +45,34 @@ def test_every_failure_carries_remediation(monkeypatch):
             assert rem, f"{name} FAILed without a remediation hint"
 
 
+def test_fix_starts_osrm_when_down(monkeypatch):
+    # OSRM down -> --fix runs `docker start <container>` then re-probes
+    states = iter([False, True])          # down at check, up after start
+    monkeypatch.setattr(doctor, "_osrm_ok", lambda: next(states))
+    monkeypatch.setattr(doctor, "_osrm_ok_retry", lambda tries=6: True)
+    calls = {}
+    import subprocess
+
+    class _R:
+        returncode = 0
+        stdout = stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls["cmd"] = cmd
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    done = doctor.try_fix()
+    assert calls["cmd"][:2] == ["docker", "start"]
+    assert calls["cmd"][2] == doctor.config.OSRM_DOCKER_CONTAINER
+    assert done and done[0][1] is True     # reported as fixed
+
+
+def test_fix_noop_when_osrm_up(monkeypatch):
+    monkeypatch.setattr(doctor, "_osrm_ok", lambda: True)
+    assert doctor.try_fix() == []          # nothing to heal
+
+
 def test_chains_report_backends(monkeypatch):
     monkeypatch.setattr(doctor, "_http_ok", lambda *a, **k: True)
     monkeypatch.setattr(doctor, "_ollama_ok", lambda: True)
