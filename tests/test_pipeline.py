@@ -118,6 +118,15 @@ def test_blacklisted_named_neighborhood_drops():
         assert res.status.value == "DROP", area
 
 
+def test_seeks_female_roommates():
+    assert pipeline._seeks_female_roommates("מחפשות שותפה לדירה בשכונה ג")
+    assert pipeline._seeks_female_roommates("דרושה שותפה, בנות בלבד")
+    assert pipeline._seeks_female_roommates("מחפשים שותפה נחמדה")
+    assert not pipeline._seeks_female_roommates("מחפשים שני שותפים לדירה")   # neutral/male
+    assert not pipeline._seeks_female_roommates("דירת שותפים להשכרה")
+    assert not pipeline._seeks_female_roommates(None)
+
+
 def test_bare_neighborhood_is_needs_data():
     from models import ListingExtract
     # a bare neighborhood has no street — not a real address -> missing critical data

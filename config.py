@@ -45,6 +45,13 @@ FURNISHED_BONUS = 10
 # Bonus when the ad mentions a balcony or a garden/yard — a major, near-top-tier
 # feature (compare: zone/walk/price = 25 each).
 BALCONY_BONUS = 18
+# Small one-way bonus when the post has photo(s) — a listing with pictures is more
+# real/serious than a bare text post. Not a penalty when photos are absent.
+PHOTO_BONUS = 6
+# Penalty when the post is explicitly looking for FEMALE roommates ("מחפשות שותפה",
+# "שותפות", "בנות בלבד") — not relevant to this search. Deterministic text match
+# (see pipeline._seeks_female_roommates); does NOT fire on the neutral שותף/שותפים.
+FEMALE_ROOMMATE_PENALTY = 15
 # Penalty for a high floor with NO elevator (or elevator not mentioned): it grows
 # exponentially with the floor — -round(min(cap, base**(floor-1))) — so floor 2 ≈ -3,
 # 3 ≈ -6, 4 ≈ -16, 5 ≈ -39, 6+ = -40. No penalty for floor ≤ 1, unknown floor, or a

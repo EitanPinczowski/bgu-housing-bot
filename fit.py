@@ -50,7 +50,8 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
               price_uncertain: bool = False, age_hours: Optional[float] = None,
               lease_start: Optional[str] = None, furnished: Optional[bool] = None,
               floor: Optional[str] = None, has_elevator: Optional[bool] = None,
-              has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None) -> list:
+              has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None,
+              has_photos: bool = False, seeks_female: bool = False) -> list:
     """The score's per-factor contributions as [(hebrew_label, delta), …], in the
     order they're applied. `score()` is just the clamped sum of the deltas — this is
     the single source of truth, so the alert's "why this score" line can never drift
@@ -129,6 +130,14 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
     if nb_bonus:
         parts.append((f"שכונה {neighborhood} מועדפת", nb_bonus))
 
+    # photos — a one-way bonus: a listing with pictures is more real/serious
+    if has_photos:
+        parts.append(("תמונות", config.PHOTO_BONUS))
+
+    # explicitly seeking FEMALE roommates — not relevant to this search
+    if seeks_female:
+        parts.append(("מחפשים שותפה", -config.FEMALE_ROOMMATE_PENALTY))
+
     # high floor with NO elevator (unmentioned counts as none): penalty grows
     # exponentially with the floor. No penalty for floor ≤ 1, unknown floor, or a
     # confirmed elevator.
@@ -155,7 +164,7 @@ def _max_possible() -> int:
     if config.TARGET_MOVE_IN_MONTH:
         m += 4                          # entry-date nudge
     nb = max(config.NEIGHBORHOOD_BONUS.values(), default=0)   # preferred-neighborhood tie-breaker
-    return m + config.FURNISHED_BONUS + config.BALCONY_BONUS + nb
+    return m + config.FURNISHED_BONUS + config.BALCONY_BONUS + nb + config.PHOTO_BONUS
 
 
 def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
@@ -163,10 +172,12 @@ def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           price_uncertain: bool = False, age_hours: Optional[float] = None,
           lease_start: Optional[str] = None, furnished: Optional[bool] = None,
           floor: Optional[str] = None, has_elevator: Optional[bool] = None,
-          has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None) -> int:
+          has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None,
+          has_photos: bool = False, seeks_female: bool = False) -> int:
     raw = sum(delta for _, delta in breakdown(
         price, walk_min, tier, avail_rooms, total_mates, price_uncertain,
-        age_hours, lease_start, furnished, floor, has_elevator, has_balcony, neighborhood))
+        age_hours, lease_start, furnished, floor, has_elevator, has_balcony, neighborhood,
+        has_photos, seeks_female))
     # Rescale onto 0–100 so the top isn't compressed by the clamp — features like
     # balcony/furnished now spread the best listings into distinct scores.
     return max(0, min(100, round(100 * raw / _max_possible())))

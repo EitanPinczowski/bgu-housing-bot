@@ -147,6 +147,20 @@ def test_lease_month_parsing():
     assert fit._lease_month(None) is None
 
 
+def test_photo_bonus_one_way():
+    base = fit.score(1400, 10, "GREEN", 2, 3)
+    assert fit.score(1400, 10, "GREEN", 2, 3, has_photos=True) > base       # photos help
+    assert fit.score(1400, 10, "GREEN", 2, 3, has_photos=False) == base     # absent: no penalty
+    assert dict(fit.breakdown(1400, 10, "GREEN", has_photos=True))["תמונות"] == config.PHOTO_BONUS
+
+
+def test_female_roommate_penalty():
+    base = fit.score(1400, 10, "GREEN", 2, 3)
+    assert fit.score(1400, 10, "GREEN", 2, 3, seeks_female=True) < base
+    assert dict(fit.breakdown(1400, 10, "GREEN", seeks_female=True))["מחפשים שותפה"] \
+        == -config.FEMALE_ROOMMATE_PENALTY
+
+
 def test_neighborhood_preference_b_over_c_equals_d():
     base = fit.score(1500, 10, "GREEN", 2, 3)
     b = fit.score(1500, 10, "GREEN", 2, 3, neighborhood="ב")

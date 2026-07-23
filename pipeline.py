@@ -198,6 +198,17 @@ _NBHD_STRIP = str.maketrans("", "", "״׳'`\"")
 _NBHD_RE = re.compile(r"שכונ[הת]?\s+([א-י])(?![א-ת])")
 
 
+# Looking for FEMALE roommate(s): "מחפשות/מחפשים שותפה", "שותפה ל…", "שותפות",
+# "בנות בלבד". Deliberately NOT the neutral שותף/שותפים (male/mixed is fine).
+_FEMALE_ROOMMATE_RE = re.compile(
+    r"שותפה\b|שותפות\b|בנות בלבד|לבנות\b|שותפ' ?בלבד|בחורה\b")
+
+
+def _seeks_female_roommates(raw_text: Optional[str]) -> bool:
+    """True if the post is explicitly seeking female roommate(s) — not relevant here."""
+    return bool(raw_text and _FEMALE_ROOMMATE_RE.search(raw_text))
+
+
 def _neighborhood_letter(location: Optional[str]) -> Optional[str]:
     """The שכונה letter named in the address text ('ב'/'ג'/…), else None."""
     if not location:
@@ -439,7 +450,8 @@ def _classify(e, raw_text: str, source_url, group, images: list,
                           e.available_rooms_count, e.total_roommates_in_apt,
                           e.price_from_comment, age_hours, e.lease_start_date,
                           e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
-                          neighborhood)
+                          neighborhood, has_photos=bool(images),
+                          seeks_female=_seeks_female_roommates(raw_text))
 
     if commit:
         # Mark this flat seen under ALL its stable keys (phone/content-hash/address)
