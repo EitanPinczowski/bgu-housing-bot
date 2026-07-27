@@ -19,6 +19,7 @@ import notifier
 import osrm
 import sheets
 import storage
+import streets
 import zones
 from models import PipelineResult, Status
 
@@ -252,6 +253,16 @@ _NBHD_RE = re.compile(r"שכונ[הת]?\s+([א-י])(?![א-ת])")
 # "בנות בלבד". Deliberately NOT the neutral שותף/שותפים (male/mixed is fine).
 _FEMALE_ROOMMATE_RE = re.compile(
     r"שותפה\b|שותפות\b|בנות בלבד|לבנות\b|שותפ' ?בלבד|בחורה\b")
+
+
+def _boundary_street_name(address: Optional[str]) -> Optional[str]:
+    """The real OSM street name for an address, so its geometry can be looked up
+    (zones.street_in_range_fraction). None if we can't name the street."""
+    for cand in geocode._candidate_tokens(address)[:2]:
+        real, _how = streets.canonical(cand)
+        if real:
+            return real
+    return None
 
 
 def _seeks_female_roommates(raw_text: Optional[str]) -> bool:
@@ -532,7 +543,15 @@ def _classify(e, raw_text: str, source_url, group, images: list,
         if near_edge:
             edge_uncertain = True
         elif geocode.is_boundary_street(addr):
-            tier, boundary = "RED", True
+            # We know the street but not the house. Judge it by how much of THAT street is
+            # in range: overwhelmingly in-range -> trust it; overwhelmingly red -> drop;
+            # genuinely split -> flag for a human instead of guessing (never silently lost).
+            frac = zones.street_in_range_fraction(_boundary_street_name(addr))
+            if frac is None or config.BOUNDARY_STREET_REJECT < frac < config.BOUNDARY_STREET_ACCEPT:
+                edge_uncertain = True
+            elif frac <= config.BOUNDARY_STREET_REJECT:
+                tier, boundary = "RED", True
+            # frac >= ACCEPT -> keep the tier as computed (accepted)
         elif tier == "GREEN" and geocode.is_bare_street(addr):
             tier = "AMBER"
     # ב/ג/ד-ONLY: only the three imported neighborhoods are acceptable. Any in-range

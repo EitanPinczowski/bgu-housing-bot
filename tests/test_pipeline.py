@@ -240,12 +240,50 @@ def test_neighborhood_conflict_flags_needs_data(monkeypatch):
     assert res.status.value == "NEEDS_DATA" and "שכונה" in res.reason
 
 
-def test_boundary_street_imprecise_is_red(monkeypatch):
-    from models import ListingExtract
-    # geocode returns an imprecise (street-name) GREEN point on a boundary street
+def _boundary_setup(monkeypatch, frac):
+    """An imprecise (street-level) GREEN point on a boundary street whose geometry is
+    `frac` in-range."""
     monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
                         lambda a: ((31.262, 34.795), "overpass"))
     monkeypatch.setattr(pipeline.geocode, "is_boundary_street", lambda a: True)
+    monkeypatch.setattr(pipeline, "_boundary_street_name", lambda a: "X")
+    monkeypatch.setattr(pipeline.zones, "street_in_range_fraction", lambda s: frac)
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (6.0, "gate"))
+    monkeypatch.setattr(pipeline.zones, "classify_location", lambda lat, lon, walk_min=None: "GREEN")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.zones, "in_allowed_neighborhood", lambda lat, lon: True)
+    monkeypatch.setattr(pipeline.zones, "neighborhood_of", lambda lat, lon: None)
+    monkeypatch.setattr(pipeline.zones, "_dist_point_to_polygon_m", lambda lat, lon: 500.0)
+    from models import ListingExtract
+    return ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רחוב כלשהו 5",
+                          available_rooms_count=2, total_roommates_in_apt=3)
+
+
+def test_boundary_street_judged_by_in_range_fraction(monkeypatch):
+    # a street that is overwhelmingly IN RANGE (e.g. השלום, 98%) must NOT be dropped just
+    # because the house can't be pinned — that was throwing away good apartments
+    e = _boundary_setup(monkeypatch, 0.98)
+    assert pipeline._classify(e, "", None, None, [], None, commit=False).status.value == "MATCH"
+    # overwhelmingly RED (e.g. יהודה הלוי, 9%) -> confidently dropped
+    e = _boundary_setup(monkeypatch, 0.09)
+    assert pipeline._classify(e, "", None, None, [], None, commit=False).status.value == "DROP"
+    # genuinely split (e.g. אברהם אבינו, 24%) -> NEEDS_DATA, surfaced not silently lost
+    e = _boundary_setup(monkeypatch, 0.24)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value == "NEEDS_DATA"
+    # unknown geometry is treated as ambiguous too (never a confident drop)
+    e = _boundary_setup(monkeypatch, None)
+    assert pipeline._classify(e, "", None, None, [], None, commit=False).status.value == "NEEDS_DATA"
+
+
+def test_boundary_street_imprecise_is_red(monkeypatch):
+    from models import ListingExtract
+    # an imprecise (street-name) point on a MOSTLY-RED boundary street is dropped
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.262, 34.795), "overpass"))
+    monkeypatch.setattr(pipeline.geocode, "is_boundary_street", lambda a: True)
+    monkeypatch.setattr(pipeline, "_boundary_street_name", lambda a: "X")
+    monkeypatch.setattr(pipeline.zones, "street_in_range_fraction", lambda s: 0.05)
     monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (5.0, "gate"))
     monkeypatch.setattr(pipeline.zones, "classify_location", lambda lat, lon, walk_min=None: "GREEN")
     monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)

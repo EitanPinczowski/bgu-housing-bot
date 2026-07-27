@@ -13,10 +13,13 @@ CASES = [
      dict(street_address_or_neighborhood="הבלוק", available_rooms_count=2,
           total_roommates_in_apt=3, price_per_room_ils=1500),
      (31.259386, 34.796130, "static"), 8.0, "MATCH", "GREEN"),
+    # אברהם אבינו crosses the boundary and is only 24% in range — with a name-only
+    # placement we genuinely can't tell the side, so it's surfaced as NEEDS_DATA rather
+    # than silently dropped (a street that is ~9% in range is still a confident DROP).
     ("אברהם אבינו 38 — boundary street, name-only placement",
      dict(street_address_or_neighborhood="אברהם אבינו 38", available_rooms_count=2,
           total_roommates_in_apt=3, price_per_room_ils=1500),
-     (31.262, 34.795, "overpass"), 6.0, "DROP", "RED"),
+     (31.262, 34.795, "overpass"), 6.0, "NEEDS_DATA", None),
     ("נאות לון — blacklisted neighborhood (pre-geocode drop)",
      dict(street_address_or_neighborhood="נאות לון", available_rooms_count=2,
           total_roommates_in_apt=3, price_per_room_ils=1500),

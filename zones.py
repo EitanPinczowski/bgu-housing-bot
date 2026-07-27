@@ -174,6 +174,20 @@ def classify_location(lat: Optional[float], lon: Optional[float],
     return "AMBER" if wmin <= config.MAX_WALK_MINUTES else "RED"
 
 
+@lru_cache(maxsize=512)
+def street_in_range_fraction(street: Optional[str]) -> Optional[float]:
+    """What fraction of this street's geometry is IN RANGE (not RED), 0..1 — or None if
+    we don't have its shape. Lets an imprecisely-placed listing on a boundary-crossing
+    street still be judged: a street that is 98% in-range (השלום) should not be dropped
+    just because we can't pin the house, and one that is 91% red (יהודה הלוי) should."""
+    import streets as _streets
+    pts = [p for seg in _streets.geometry(street) for p in seg]
+    if len(pts) < 3:
+        return None
+    in_range = sum(1 for la, lo in pts if classify_effective(la, lo) != "RED")
+    return in_range / len(pts)
+
+
 def classify_effective(lat: Optional[float], lon: Optional[float],
                        walk_min: Optional[float] = None) -> str:
     """classify_location, plus two red rules: an AMBER point inside a no-amber

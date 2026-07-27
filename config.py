@@ -63,6 +63,15 @@ FLOOR_PENALTY_CAP = 40
 # the house) can't tell green from red, so the listing is flagged NEEDS_DATA instead of
 # being confidently accepted or dropped. An exact/interpolated point keeps its real tier.
 EDGE_UNCERTAIN_METERS = 150
+# For a listing we can only place at STREET level on a boundary-crossing street, judge it
+# by how much of that street is actually in range (zones.street_in_range_fraction):
+#   >= BOUNDARY_STREET_ACCEPT  -> trust the tier (e.g. השלום is 98% in-range — dropping
+#                                 those was throwing away good apartments)
+#   <= BOUNDARY_STREET_REJECT  -> RED (e.g. יהודה הלוי is 91% red)
+#   in between                 -> genuinely ambiguous, so NEEDS_DATA: surfaced for a human
+#                                 rather than silently dropped.
+BOUNDARY_STREET_ACCEPT = 0.80
+BOUNDARY_STREET_REJECT = 0.20
 MAX_WALK_MINUTES = 20             # AMBER = a walk of at most this many minutes to
                                   # the nearest campus gate (GREEN still = inside
                                   # the hand-drawn polygon). Beyond it = RED.
