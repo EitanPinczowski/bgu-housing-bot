@@ -522,8 +522,11 @@ def _debug_shot(page, url: str, tag: str) -> None:
         pass
 
 
-def scrape_group(page: Page, url: str, already_seen=None):
+def scrape_group(page: Page, url: str, already_seen=None, min_posts=None):
     """Open one group and return (posts, stats) — its FRESH visible posts, newest-first.
+
+    `min_posts` overrides SCRAPER_MIN_POSTS_PER_GROUP for THIS group, so a low-yield
+    group can be read shallowly and a productive one fully (see main._group_depth).
 
     Each post: {"text", "permalink", "images", "comments", "age_hours"}. Deduplicated
     by text (falling back to permalink) WITHIN this group. Reads incrementally across
@@ -649,7 +652,8 @@ def scrape_group(page: Page, url: str, already_seen=None):
             stale, prev_fresh = 0, fresh
         else:
             stale += 1
-        enough = fresh >= config.SCRAPER_MIN_POSTS_PER_GROUP
+        want = min_posts if min_posts is not None else config.SCRAPER_MIN_POSTS_PER_GROUP
+        enough = fresh >= want
         stalled = (passes >= config.SCRAPER_MIN_SCROLLS_BEFORE_STOP
                    and stale >= config.SCRAPER_STOP_AFTER_STALE_PASSES)
         if (passes >= config.SCRAPER_SCROLL_CAP

@@ -114,6 +114,20 @@ the scraper MUST be conservative and the user must stay in control:
   comparable in total work to the old 4×/day deep scans. The real protections (real
   logged-in profile, home IP, read-only, human-like pacing, checkpoint-abort) are
   unchanged. Do not raise volume/cadence further without an explicit, informed request.
+- **2026-07-27 — yield-scaled depth + a `--hot` pass (net volume DOWN ~21%).** Requested
+  explicitly by the user (to be first to contact a new listing), knowing it touches this
+  constraint. Two paired changes, deliberately budget-neutral:
+  1. `GROUP_YIELD_SCALING`: every group is still visited, but depth now follows its
+     measured MATCH-per-post rate (`main._group_depths`) — productive groups keep
+     `MIN_POSTS_PER_GROUP=20`, ~1% groups drop to `GROUP_MIN_POSTS_FLOOR=8`.
+     **300 → 220 post-reads per run** (2100 → 1540/day).
+  2. `main.py --hot`: a shallow pass over only the `HOT_GROUP_COUNT=3` best groups
+     (`HOT_MIN_POSTS=10`), cutting detection lag from ~2h25m to ~30–40 min.
+     4 hot runs/day ≈ **120 reads/day**.
+  **Net: ~1660 reads/day vs 2100 before — about 21% BELOW the previous volume.** Keep it
+  that way: if hot runs are added, take the budget out of the low-yield groups, and
+  re-check with `python group_report.py`. All other safety rules are untouched (dry-run
+  default, jitter, daytime only, read-only, checkpoint-abort).
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.

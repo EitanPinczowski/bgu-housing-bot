@@ -246,11 +246,38 @@ FB_GROUPS = [
     "https://www.facebook.com/groups/279135451973",
     "https://www.facebook.com/groups/501446271648548",
     "https://www.facebook.com/groups/712487315492862",
+    # Re-added 2026-07-27: it was pruned as "0 matches ever", but the archive now shows
+    # the BEST match rate of any group (2 MATCH / 13 posts). Prune only on real yield —
+    # see group_report.py.
+    "https://www.facebook.com/groups/989159401625656",
     # dropped — 0 matches ever as of 2026-07-20 (group_yield); re-add if desired:
     # "https://www.facebook.com/groups/708432163853635",
-    # "https://www.facebook.com/groups/989159401625656",
     # "https://www.facebook.com/groups/2835281153355520",
 ]
+
+# Yield-scaled scan depth. Every group is still visited each run (coverage), but a group
+# that historically produces almost nothing is read SHALLOWLY and a productive one gets
+# full depth — so matches per run rise without increasing total reads on the account.
+# Depth is derived from the measured MATCH-per-post rate (storage.group_yield):
+#   rate >= GROUP_RICH_RATE      -> full SCRAPER_MIN_POSTS_PER_GROUP
+#   rate <= GROUP_POOR_RATE      -> GROUP_MIN_POSTS_FLOOR (never zero: a quiet group can
+#                                   still post a gem, and a new group has no history yet)
+# Set GROUP_YIELD_SCALING = False to go back to a uniform depth everywhere.
+GROUP_YIELD_SCALING = True
+GROUP_RICH_RATE = 0.05             # >=5% of posts became MATCHes -> full depth
+GROUP_POOR_RATE = 0.015            # <=1.5% -> floor depth
+GROUP_MIN_POSTS_FLOOR = 8          # never read fewer than this per group
+GROUP_MIN_HISTORY = 25             # below this many archived posts, assume full depth
+
+# --- "hot path" (python main.py --hot): a fast, SHALLOW check of only the best groups,
+# so a great listing is seen in ~30-40 min instead of up to ~2h25m. Speed matters in this
+# market — the first person to message often gets the flat.
+# VOLUME IS NOT INCREASED: yield-scaling above cuts the normal runs from 2100 to ~1540
+# post-reads/day, and 4 hot runs cost ~120/day -> ~1660 total, still ~21% BELOW the old
+# 2100. Every safety rule is unchanged (real logged-in profile, randomized delays +
+# jitter, daytime only, read-only, dry-run default, checkpoint-abort).
+HOT_GROUP_COUNT = 3                # how many top-yield groups the hot path visits
+HOT_MIN_POSTS = 10                 # shallow: just the newest posts in each
 
 # ---------------------------------------------------------------------------
 # Notifications

@@ -111,7 +111,52 @@ def _select_groups() -> list[str]:
     return order[:n]
 
 
-def run(dry_run: bool) -> None:
+def _group_depths() -> dict:
+    """{group_url: min_posts} — how deeply to read each group this run, from its measured
+    MATCH-per-post rate. A group that produces almost nothing is read shallowly (down to
+    GROUP_MIN_POSTS_FLOOR) and a productive one gets full depth, so matches per run rise
+    without increasing total reads. A group with little history keeps full depth so it's
+    never starved before it has had a fair chance."""
+    full = config.SCRAPER_MIN_POSTS_PER_GROUP
+    if not getattr(config, "GROUP_YIELD_SCALING", False):
+        return {}
+    try:
+        yields = {g: (tot, m) for g, tot, m, _n, _d, _na in storage.group_yield()}
+    except Exception:
+        return {}
+    floor, rich, poor = (config.GROUP_MIN_POSTS_FLOOR, config.GROUP_RICH_RATE,
+                         config.GROUP_POOR_RATE)
+    depths = {}
+    for g in config.FB_GROUPS:
+        tot, matches = yields.get(g, (0, 0))
+        if tot < config.GROUP_MIN_HISTORY:
+            continue                                    # too little history -> full depth
+        rate = matches / tot
+        if rate >= rich:
+            continue                                    # productive -> full depth
+        if rate <= poor:
+            depths[g] = floor
+        else:                                           # scale linearly between the two
+            f = (rate - poor) / (rich - poor)
+            depths[g] = int(round(floor + f * (full - floor)))
+    return depths
+
+
+def _hot_groups() -> list:
+    """The few highest-yield groups, for the fast shallow --hot pass. Ranked by measured
+    MATCH-per-post (needs some history); falls back to the configured order."""
+    configured = list(config.FB_GROUPS)
+    try:
+        rows = [(m / tot, g) for g, tot, m, *_ in storage.group_yield()
+                if tot >= config.GROUP_MIN_HISTORY and g in configured]
+    except Exception:
+        rows = []
+    rows.sort(reverse=True)
+    hot = [g for _rate, g in rows[:config.HOT_GROUP_COUNT]]
+    return hot or configured[:config.HOT_GROUP_COUNT]
+
+
+def run(dry_run: bool, hot: bool = False) -> None:
     config.validate()                 # fail fast on a broken config, before opening a browser
     mode = "DRY RUN" if dry_run else "LIVE"
     # Occasionally skip a live run so the cadence isn't clockwork (see config).
@@ -126,7 +171,19 @@ def run(dry_run: bool) -> None:
         _log_search("SKIP", "another scraper session is running (lock held)")
         print("[main] another scraper/browser session is already running — skipping this run")
         return
-    selected = _select_groups()
+    if hot:
+        # Fast shallow pass over only the best groups — see config.HOT_* (net volume is
+        # LOWER than before, because yield-scaling trimmed the normal runs).
+        selected = _hot_groups()
+        depths = {g: config.HOT_MIN_POSTS for g in selected}
+        print(f"[main] HOT pass: {len(selected)} top-yield group(s), "
+              f"{config.HOT_MIN_POSTS} posts each")
+    else:
+        selected = _select_groups()
+        depths = _group_depths()      # read low-yield groups shallowly (see _group_depths)
+        if depths:
+            print(f"[main] yield-scaled depth for {len(depths)} low-yield group(s): "
+                  + ", ".join(f"{u.rstrip('/').split('/')[-1]}={d}" for u, d in depths.items()))
     _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
     print(f"=== BGU housing scraper — {mode} ===")
     print(f"groups this run ({len(selected)}/{len(config.FB_GROUPS)}): {selected}\n")
@@ -164,7 +221,8 @@ def run(dry_run: bool) -> None:
         for i, url in enumerate(selected):
             print(f"--- group {i + 1}/{len(selected)}: {url}")
             try:
-                posts, gstats = scraper.scrape_group(page, url, already_seen=seen_pred)
+                posts, gstats = scraper.scrape_group(page, url, already_seen=seen_pred,
+                                                     min_posts=depths.get(url))
             except scraper.FacebookBlock as exc:
                 # A checkpoint/login wall — stop the ENTIRE run, do not retry.
                 blocked_reason = str(exc)
@@ -280,6 +338,8 @@ def run(dry_run: bool) -> None:
             print(f"[main] archive prune: lightened {pruned} old posts")
 
     end_tag = "BLOCKED" if blocked_reason else ("LIVE" if not dry_run else "DRY")
+    if hot and not blocked_reason:
+        end_tag += "-HOT"             # so run-freshness checks can tell the passes apart
 
     _log_search("END", f"{end_tag}  {time.monotonic() - started:.0f}s  "
                        f"posts={total_posts} match={matches} needs={needs} "
@@ -292,8 +352,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BGU housing Facebook scraper")
     parser.add_argument("--live", action="store_true",
                         help="commit results (store + notify). Default is a dry run.")
+    parser.add_argument("--hot", action="store_true",
+                        help="fast SHALLOW pass over only the top-yield groups, to see a "
+                             "great listing sooner. Costs far less than a normal run.")
     args = parser.parse_args()
-    run(dry_run=not args.live)
+    run(dry_run=not args.live, hot=args.hot)
 
 
 if __name__ == "__main__":
