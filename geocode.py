@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import config
+import streets
 
 # An address is "precise" if it names a specific street or house number — as
 # opposed to a bare neighborhood ("שכונה ג"), which covers a whole area and so
@@ -132,6 +133,10 @@ def _normalize(text: str) -> str:
 # a bare [lat, lon] list (legacy successes written before this change).
 _CACHE_PATH = config.DATA_DIR / "geocode_cache.json"
 _MISS_TTL_DAYS = 7
+# Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
+# MISS from an older version is ignored, so an improvement takes effect immediately
+# instead of waiting out the 7-day TTL on names it can now resolve.
+GEOCODE_LOGIC_VERSION = 2
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -212,6 +217,9 @@ def _cache_lookup(norm: str):
         if "c" in v:
             return "hit", (v["c"][0], v["c"][1]), v.get("s", "cache")
         if "m" in v:
+            # A miss recorded by OLDER resolution logic is not trustworthy — retry it.
+            if v.get("v", 1) < GEOCODE_LOGIC_VERSION:
+                return "none", None, None
             try:
                 fresh = datetime.now() - datetime.fromisoformat(v["m"]) < timedelta(days=_MISS_TTL_DAYS)
             except Exception:
@@ -295,7 +303,8 @@ def geocode_detailed(location_text: Optional[str]):
     global misses
     misses += 1                   # a real location string we couldn't map (for run metrics)
     if authoritative:             # a real not-found (a geocoder answered) — remember it
-        cache[norm] = {"m": datetime.now().isoformat(timespec="seconds")}
+        cache[norm] = {"m": datetime.now().isoformat(timespec="seconds"),
+                       "v": GEOCODE_LOGIC_VERSION}
         _save_cache()
     return None, None
 
@@ -385,9 +394,44 @@ _OVERPASS_STRIP = re.compile(
 
 
 def _overpass_name(location_text: str) -> str:
-    s = _OVERPASS_STRIP.sub(" ", location_text)
+    s = _CITY_RE.sub(" ", location_text)                    # "…, באר שבע" pollutes the query
+    s = _OVERPASS_STRIP.sub(" ", s)
     s = s.translate(str.maketrans("", "", '"\\/,'))         # keep the QL string safe; drop commas
     return re.sub(r"\s+", " ", s).strip()
+
+
+# The city name in the address breaks the OSM name~ match: "רגר 179" resolves but
+# "רחוב רגר 179, באר שבע" did not. Strip it (and the ב"ש abbreviations).
+_CITY_RE = re.compile(r"באר\s*שבע|ב['\"׳״]ש\b|beer\s*sheva", re.IGNORECASE)
+# An address often names several places: "שיפר, רינגבלום", "יוחנן הורקנוס/יטבתה",
+# "ברגר פינת רינגלבלום". Split and try each part rather than gluing them into one token.
+_SPLIT_RE = re.compile(r"[,/|]|\bפינת\b|\bפינה\b|\bמול\b|\bליד\b|\bבין\b(?=.*\bל)")
+
+
+def _candidate_tokens(location_text: Optional[str]) -> list:
+    """Ordered street-name candidates to try against OSM, best first. Splits a multi-part
+    address, strips the city/house-number/street-words, and canonicalizes each part against
+    the local street index (fixing ה/ב prefixes and misspellings). De-duped, order-stable."""
+    if not location_text:
+        return []
+    base = _CITY_RE.sub(" ", location_text)
+    out: list = []
+
+    def add(tok):
+        tok = (tok or "").strip()
+        if tok and len(tok) >= 2 and tok not in out:
+            out.append(tok)
+
+    parts = [p for p in _SPLIT_RE.split(base) if p and p.strip()]
+    cleaned = [_overpass_name(p) for p in parts] or [_overpass_name(base)]
+    # canonical (real OSM) names first — they query exactly and fix typos/prefixes
+    for c in cleaned:
+        real, _how = streets.canonical(c)
+        if real:
+            add(real)
+    for c in cleaned:                                       # then the cleaned raw tokens
+        add(c)
+    return out
 
 
 def _house_number(location_text: Optional[str]) -> Optional[str]:
@@ -396,17 +440,13 @@ def _house_number(location_text: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
-    """Resolve a Be'er Sheva street/place name via the free public Overpass API.
-    OSM's `name` index resolves many Hebrew street names Nominatim returns nothing
-    for (see the geocode memory note). Bounded to the BS box; first hit wins. Paced
-    ~1 req/s to be polite to the shared instance; failures return None (→ Nominatim)."""
+MAX_OVERPASS_CANDIDATES = 3        # bound the paced queries per address
+
+
+def _overpass_query(name: str, hn: Optional[str]):
+    """(coords, source, responded) for ONE candidate street name."""
     import requests
 
-    name = _overpass_name(location_text)
-    if len(name) < _MIN_REVERSE_MATCH:
-        return None, None, True                            # nothing to look up = a real miss
-    hn = _house_number(location_text)
     la0, lo0, la1, lo1 = _bs_bounds()
     bbox = f"{la0},{lo0},{la1},{lo1}"                       # Overpass: S,W,N,E
     # For a numbered address, ALSO ask for the exact OSM address node (street+number) —
@@ -433,7 +473,26 @@ def _overpass(location_text: str) -> Optional[Tuple[float, float]]:
         # take the best-ranked in-box hit, or None — never keep hammering other mirrors.
         coords, source = _overpass_pick(data.get("elements", []), name, hn)
         return coords, source, True
-    return None, None, False                               # every mirror failed — transient, not a real miss
+    return None, None, False                               # every mirror failed — transient
+
+
+def _overpass(location_text: str):
+    """Resolve a Be'er Sheva street/place via the free public Overpass API, trying the
+    ordered candidate names from _candidate_tokens (canonical street names first, so a
+    ה/ב prefix or a misspelling still resolves). First hit wins; bounded to the BS box.
+    Returns (coords, source, responded) — responded=False means every mirror failed
+    (transient), so the caller must not cache it as a real 'not found'."""
+    cands = [c for c in _candidate_tokens(location_text) if len(c) >= _MIN_REVERSE_MATCH]
+    if not cands:
+        return None, None, True                            # nothing to look up = a real miss
+    hn = _house_number(location_text)
+    any_response = False
+    for name in cands[:MAX_OVERPASS_CANDIDATES]:
+        coords, source, responded = _overpass_query(name, hn)
+        any_response = any_response or responded
+        if coords:
+            return coords, source, True
+    return None, None, any_response
 
 
 def _overpass_pick(elements: list, name: str, housenumber: Optional[str] = None):

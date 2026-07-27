@@ -188,6 +188,33 @@ def test_overpass_name_hardening():
     assert geocode._house_number("רחוב קדש") is None
 
 
+def test_candidate_tokens_strips_city_and_splits(monkeypatch):
+    # the PROVEN failure: 'רגר 179' resolved but 'רחוב רגר 179, באר שבע' did not
+    cands = geocode._candidate_tokens("רחוב רגר 179, באר שבע")
+    assert "שדרות יצחק רגר" in cands            # canonical street, city stripped
+    assert not any("באר" in c for c in cands)
+    # an intersection is split into its parts, not glued into one token
+    assert geocode._candidate_tokens("יוחנן הורקנוס/יטבתה")[:1] == ["יוחנן הורקנוס"]
+    # a comma-joined pair yields both streets
+    c2 = geocode._candidate_tokens("שיפר, רינגבלום")
+    assert "יצחק שיפר" in c2 and "רינגלבלום" in c2
+    # a ב prefix resolves to the right street (never the look-alike ברנר)
+    assert geocode._candidate_tokens("ברגר 155")[0] == "שדרות יצחק רגר"
+
+
+def test_cache_version_invalidates_stale_miss(monkeypatch, tmp_path):
+    monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geo.json")
+    # a miss recorded by OLDER logic must be retried, not honoured
+    monkeypatch.setattr(geocode, "_cache", {"x": {"m": "2099-01-01T00:00:00", "v": 1}})
+    monkeypatch.setattr(geocode, "GEOCODE_LOGIC_VERSION", 2)
+    assert geocode._cache_lookup("x")[0] == "none"          # retry
+    # a miss from the CURRENT version, still fresh, is honoured
+    from datetime import datetime
+    monkeypatch.setattr(geocode, "_cache",
+                        {"x": {"m": datetime.now().isoformat(), "v": 2}})
+    assert geocode._cache_lookup("x")[0] == "miss"
+
+
 def test_precise_street_skips_neighborhood_centroid(monkeypatch, tmp_path):
     # a real street that ALSO names a שכונה must geocode the STREET (overpass), not the
     # neighborhood's static centroid — else every ד/ג/ב street reads the green centroid.
