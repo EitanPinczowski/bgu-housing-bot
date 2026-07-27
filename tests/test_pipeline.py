@@ -148,6 +148,28 @@ def test_recover_house_number():
     assert pipeline._recover_house_number("שכונה ג", "שכונה ג 12 משהו") == "שכונה ג"
 
 
+def test_explain_traces_the_funnel(monkeypatch, temp_db):
+    from models import ListingExtract
+    # a post with no housing keyword is dropped before the LLM — and explain says so
+    monkeypatch.setattr(pipeline.llm, "extract",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("LLM!")))
+    steps = pipeline.explain("חתול אבוד ברחוב")
+    assert steps[0][0] == "keyword pre-filter" and steps[0][1] is False
+
+    # a real ad walks the whole funnel and ends with the alert-bar comparison
+    monkeypatch.setattr(pipeline.llm, "extract", lambda *a, **k: ListingExtract(
+        is_apartment_ad=True, street_address_or_neighborhood="הבלוק",
+        available_rooms_count=2, total_roommates_in_apt=3, price_per_room_ils=1500))
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.259386, 34.796130), "static"))
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (8.0, "gate"))
+    steps = pipeline.explain("דירה להשכרה בהבלוק, 2 חדרים פנויים")
+    names = [s[0] for s in steps]
+    assert "geocode" in names and "zone tier" in names and "alert bar" in names
+    assert any(n.startswith("verdict") for n in names)
+    assert all(len(s) == 3 for s in steps)          # (step, ok, detail)
+
+
 def test_recover_rooms():
     from models import ListingExtract
 

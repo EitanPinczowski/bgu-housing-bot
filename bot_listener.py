@@ -313,11 +313,28 @@ def _cmd_classify(chat_id, arg) -> None:
         _reply(chat_id, f"שגיאה בסיווג: {exc}")
 
 
+def _cmd_why_post(chat_id, arg) -> None:
+    """/why <post text> — where did this apartment fall out of the funnel?"""
+    if not arg.strip():
+        _reply(chat_id, "הדביקו טקסט של מודעה אחרי /why כדי לראות היכן היא נפסלה.")
+        return
+    try:
+        steps = pipeline.explain(arg)
+    except Exception as exc:
+        _reply(chat_id, f"שגיאה בבדיקה: {exc}")
+        return
+    lines = ["🔍 מסלול המודעה במסנן:"]
+    for step, ok, detail in steps:
+        lines.append(f"{'✅' if ok else '❌'} {step}: {detail}")
+    _reply(chat_id, "\n".join(lines))
+
+
 _HELP = ("🤖 פקודות:\n"
          "/top [N] — הדירות הכי טובות כרגע\n"
          "/saved — דירות ששמרתם (⭐)\n"
          "/search <שאילתה> — חיפוש חופשי\n"
          "/classify <טקסט מודעה> — לבדוק מודעה שהדבקתם\n"
+         "/why <טקסט מודעה> — למה מודעה לא נשלחה (כל שלבי הסינון)\n"
          "/unknowns — מקומות שלא מופו (כפתור 📌 לקיבוע)\n"
          "/pin <שם> <lat,lon> · /uncache <שם>\n"
          "/stats · /status · /doctor · /sheet · /help")
@@ -362,6 +379,8 @@ def _handle_message(msg: dict) -> None:
         _cmd_uncache(cid, arg)
     elif cmd == "classify":
         _cmd_classify(cid, arg)
+    elif cmd == "why":
+        _cmd_why_post(cid, arg)
     elif cmd == "sheet":
         sid = os.environ.get("GOOGLE_SHEET_ID")
         _reply(cid, f"https://docs.google.com/spreadsheets/d/{sid}" if sid else "גיליון לא מוגדר.")

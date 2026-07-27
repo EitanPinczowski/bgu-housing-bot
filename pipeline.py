@@ -388,6 +388,56 @@ def process_post(raw_text: str,
     return res
 
 
+def explain(raw_text: str, images=None, comments=None) -> list:
+    """Walk a post through the funnel and report EVERY gate it passed or failed, as
+    [(step, ok, detail), …]. Answers "why wasn't this apartment alerted?" definitively
+    instead of guessing. Pure: no DB writes, no Telegram, no dedup side effects — but it
+    does report whether this post was already seen.
+
+    Reuses the real gates (config.PREFILTER_KEYWORDS, llm.extract, _classify) rather than
+    re-implementing the rules, so the trace can't drift from what the bot actually does."""
+    out: list = []
+    raw_text = _strip_bidi(raw_text or "")
+    images = images or []
+
+    kw = [k for k in config.PREFILTER_KEYWORDS if k in raw_text]
+    out.append(("keyword pre-filter", bool(kw) or not config.PREFILTER_KEYWORDS,
+                f"matched {kw[:4]}" if kw else "no housing keyword — dropped before the LLM"))
+    sig = _text_sig(raw_text)
+    seen = storage.is_seen(sig)
+    out.append(("already seen?", True, "yes — a re-read would be skipped" if seen else "no"))
+    if not (kw or not config.PREFILTER_KEYWORDS):
+        return out
+
+    try:
+        e = _postprocess_extract(llm.extract(raw_text, comments=comments), raw_text, comments)
+    except Exception as exc:
+        out.append(("LLM extraction", False, f"failed: {exc}"))
+        return out
+    out.append(("is an apartment ad", bool(e.is_apartment_ad),
+                e.summary_hebrew or "—"))
+    out.append(("address extracted", bool(e.street_address_or_neighborhood),
+                e.street_address_or_neighborhood or "none — can't geocode"))
+    out.append(("rooms / price", e.available_rooms_count is not None,
+                f"available={e.available_rooms_count} price={e.price_per_room_ils} "
+                f"mates={e.total_roommates_in_apt}"))
+
+    res = _classify(e, raw_text, None, None, images, None, commit=False)
+    coords, src = geocode.geocode_detailed(e.street_address_or_neighborhood)
+    out.append(("geocode", bool(coords),
+                f"{coords} via {src} ({geocode.confidence(src)} confidence)" if coords
+                else "could not map the address"))
+    out.append(("zone tier", res.location_tier in ("GREEN", "AMBER"),
+                f"{res.location_tier} · walk {round(res.walk_minutes) if res.walk_minutes else '?'} min"))
+    out.append((f"verdict {res.status.value}", res.status.value in ("MATCH", "NEEDS_DATA"),
+                res.reason or "—"))
+    score = res.score if res.score is not None else 0
+    out.append(("alert bar", score >= config.MIN_ALERT_SCORE,
+                f"score {score} vs MIN_ALERT_SCORE {config.MIN_ALERT_SCORE}"
+                + ("" if score >= config.MIN_ALERT_SCORE else " — stored but no ping")))
+    return out
+
+
 def _classify(e, raw_text: str, source_url, group, images: list,
               age_hours, commit: bool, alert: bool = True) -> PipelineResult:
     """Steps 1-6: grade an already-extracted listing into a PipelineResult,
