@@ -58,6 +58,11 @@ FEMALE_ROOMMATE_PENALTY = 15
 # confirmed elevator.
 FLOOR_PENALTY_BASE = 2.5
 FLOOR_PENALTY_CAP = 40
+# How close to the zone boundary a point must be before we stop trusting a LOW-precision
+# geocode. Within this many metres, a street-level/area point (we know the street but not
+# the house) can't tell green from red, so the listing is flagged NEEDS_DATA instead of
+# being confidently accepted or dropped. An exact/interpolated point keeps its real tier.
+EDGE_UNCERTAIN_METERS = 150
 MAX_WALK_MINUTES = 20             # AMBER = a walk of at most this many minutes to
                                   # the nearest campus gate (GREEN still = inside
                                   # the hand-drawn polygon). Beyond it = RED.

@@ -148,6 +148,54 @@ def test_recover_house_number():
     assert pipeline._recover_house_number("שכונה ג", "שכונה ג 12 משהו") == "שכונה ג"
 
 
+def test_walk_claim_conflict():
+    # the post claims a short walk but routing says far -> suspect address match
+    assert pipeline._walk_claim_conflict("כ 10-12 דקות הליכה לאוניברסיטה", 30.0)
+    assert pipeline._walk_claim_conflict("5 דקות הליכה", 25.0)
+    # agreement, small gaps, and missing data are all fine
+    assert pipeline._walk_claim_conflict("10 דקות הליכה", 12.0) is None
+    assert pipeline._walk_claim_conflict("10 דקות הליכה", None) is None
+    assert pipeline._walk_claim_conflict("דירה נחמדה", 30.0) is None
+
+
+def test_edge_uncertain_flags_needs_data(monkeypatch):
+    from models import ListingExtract
+    # a street-level (imprecise) point right at the zone boundary can't tell green from
+    # red -> NEEDS_DATA rather than a confident verdict
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.262, 34.795), "overpass"))
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (6.0, "gate"))
+    monkeypatch.setattr(pipeline.zones, "classify_location", lambda lat, lon, walk_min=None: "GREEN")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.zones, "in_allowed_neighborhood", lambda lat, lon: True)
+    monkeypatch.setattr(pipeline.zones, "neighborhood_of", lambda lat, lon: None)
+    monkeypatch.setattr(pipeline.zones, "_dist_point_to_polygon_m", lambda lat, lon: 20.0)
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רחוב כלשהו 5",
+                       available_rooms_count=2, total_roommates_in_apt=3)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value == "NEEDS_DATA" and "גבול" in res.reason
+    # an EXACT point at the same spot keeps its real tier (MATCH)
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.262, 34.795), "interpolated"))
+    assert pipeline._classify(e, "", None, None, [], None, commit=False).status.value == "MATCH"
+
+
+def test_neighborhood_conflict_flags_needs_data(monkeypatch):
+    from models import ListingExtract
+    # post says שכונה ג but the point lands in ד -> suspect, flag it
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed",
+                        lambda a: ((31.262, 34.795), "interpolated"))
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (6.0, "gate"))
+    monkeypatch.setattr(pipeline.zones, "classify_location", lambda lat, lon, walk_min=None: "GREEN")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.zones, "in_allowed_neighborhood", lambda lat, lon: True)
+    monkeypatch.setattr(pipeline.zones, "neighborhood_of", lambda lat, lon: "ד")
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רחוב כלשהו 5, שכונה ג",
+                       available_rooms_count=2, total_roommates_in_apt=3)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value == "NEEDS_DATA" and "שכונה" in res.reason
+
+
 def test_boundary_street_imprecise_is_red(monkeypatch):
     from models import ListingExtract
     # geocode returns an imprecise (street-name) GREEN point on a boundary street

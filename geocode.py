@@ -54,7 +54,22 @@ def is_bare_street(s: Optional[str]) -> bool:
 # Which geocoders give a PRECISE point (a specific place / house number) vs a
 # street-LEVEL point that only says "somewhere on this street". A street-level point
 # can't be trusted as GREEN on a boundary-crossing street (see pipeline).
-_PRECISE_SOURCES = {"static", "google", "osm_addr"}
+_PRECISE_SOURCES = {"static", "google", "osm_addr", "interpolated"}
+
+# How much to trust a point, by the tier that produced it:
+#   exact  — a specific pinned place or an OSM house node
+#   high   — interpolated between known house numbers on the street
+#   street — somewhere on the right street (a line, not a point)
+#   area   — a whole neighborhood centroid
+_CONFIDENCE = {"static": "exact", "google": "exact", "osm_addr": "exact",
+               "interpolated": "high", "overpass": "street", "nominatim": "street"}
+
+
+def confidence(source: Optional[str]) -> str:
+    """'exact' | 'high' | 'street' | 'area' | 'none' for a geocode source."""
+    if not source:
+        return "none"
+    return _CONFIDENCE.get(source, "street")
 
 
 def is_precise_source(source: Optional[str]) -> bool:
@@ -272,6 +287,17 @@ def geocode_detailed(location_text: Optional[str]):
     if best_coords is not None:
         return best_coords, "static"
 
+    # 1b) house-number interpolation — local, free and more precise than any street-level
+    #     hit: place the number between the known OSM address nodes on that street. Only
+    #     fires for a numbered address on an anchored street, and never extrapolates.
+    hn = _house_number(location_text)
+    if hn:
+        for cand in _candidate_tokens(location_text)[:2]:
+            real, _how = streets.canonical(cand)
+            pt = interpolate_house(real or cand, hn)
+            if pt:
+                return pt, "interpolated"
+
     # 2) cache of earlier lookups (success or a still-fresh miss)
     kind, coords, source = _cache_lookup(norm)
     if kind == "hit":
@@ -438,6 +464,87 @@ def _house_number(location_text: Optional[str]) -> Optional[str]:
     """The house number in an address ('אברהם אבינו 38' -> '38', '13/6' -> '13'), else None."""
     m = re.search(r"\b(\d{1,4})\b", location_text or "")
     return m.group(1) if m else None
+
+
+# --- house-number interpolation -------------------------------------------------
+# A street is a LINE, so "אברהם אבינו 38" can't be answered by the street's midpoint —
+# that's how a red-end address read as green. Using the OSM addr:housenumber nodes we
+# do have (house_anchors.json, written by load_house_numbers.py), we place the number
+# by its position ALONG the street: project the anchors onto the polyline, then read
+# off where N falls between the two nearest known numbers.
+_ANCHORS_PATH = config.ROOT / "house_anchors.json"
+_anchors: Optional[dict] = None
+
+
+def _load_anchors() -> dict:
+    global _anchors
+    if _anchors is None:
+        try:
+            _anchors = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            _anchors = {}
+    return _anchors
+
+
+def _street_axis(street: str):
+    """(points, axis_index) — every point of the street from ALL its OSM segments, plus
+    which coordinate (0=lat, 1=lon) runs along the street's length. House numbers increase
+    monotonically along a street, so that coordinate is a natural, robust parametrization
+    (a street is many disjoint ways, so walking a stitched polyline isn't reliable)."""
+    pts = [tuple(p) for seg in streets.geometry(street) for p in seg]
+    if len(pts) < 2:
+        return [], 0
+    import math
+    lats = [p[0] for p in pts]
+    lons = [p[1] for p in pts]
+    span_lat = (max(lats) - min(lats)) * 111000
+    span_lon = (max(lons) - min(lons)) * 111000 * math.cos(math.radians(lats[0]))
+    idx = 0 if span_lat >= span_lon else 1               # the longer extent = along the street
+    return sorted(set(pts), key=lambda p: p[idx]), idx
+
+
+def _haversine_m(lat1, lon1, lat2, lon2) -> float:
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlmb = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * 6371000.0 * math.asin(math.sqrt(a))
+
+
+def interpolate_house(street: Optional[str], number: Optional[str]):
+    """(lat, lon) for house `number` on `street`, interpolated between the nearest KNOWN
+    OSM address nodes, or None.
+
+    Deliberately conservative — returns None unless we can place the number credibly:
+      • the street needs geometry and ≥2 address anchors, and
+      • the number must lie WITHIN the anchored range (we never extrapolate — OSM often
+        knows only 1..19 of a street that runs to 60, and guessing past the last anchor
+        is exactly the false precision this is meant to remove).
+    A None simply means "street-level only", which the caller treats as lower confidence.
+    """
+    if not street or not number:
+        return None
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return None
+    known = _load_anchors().get(street) or {}
+    pts, idx = _street_axis(street)
+    if len(known) < 2 or len(pts) < 2:
+        return None
+    # (house number -> its own coordinate along the street axis)
+    anchors = sorted((int(k), v[idx]) for k, v in known.items() if str(k).isdigit())
+    if len(anchors) < 2 or not (anchors[0][0] <= n <= anchors[-1][0]):
+        return None                                        # outside known range -> no guess
+    lo_pt = max((p for p in anchors if p[0] <= n), key=lambda p: p[0])
+    hi_pt = min((p for p in anchors if p[0] >= n), key=lambda p: p[0])
+    if hi_pt[0] == lo_pt[0]:
+        target = lo_pt[1]
+    else:
+        f = (n - lo_pt[0]) / (hi_pt[0] - lo_pt[0])         # linear in house number
+        target = lo_pt[1] + f * (hi_pt[1] - lo_pt[1])
+    # the street point sitting at that position along the axis
+    return min(pts, key=lambda p: abs(p[idx] - target))
 
 
 MAX_OVERPASS_CANDIDATES = 3        # bound the paced queries per address

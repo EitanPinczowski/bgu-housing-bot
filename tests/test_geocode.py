@@ -202,6 +202,33 @@ def test_candidate_tokens_strips_city_and_splits(monkeypatch):
     assert geocode._candidate_tokens("ברגר 155")[0] == "שדרות יצחק רגר"
 
 
+def test_interpolate_house_between_anchors(monkeypatch):
+    # a synthetic N-S street with known houses 1 and 11 -> #6 lands in the middle
+    line = [[31.260 + i * 0.0002, 34.800] for i in range(11)]
+    monkeypatch.setattr(geocode.streets, "geometry", lambda s: [line])
+    monkeypatch.setattr(geocode, "_anchors",
+                        {"X": {"1": [31.260, 34.800], "11": [31.262, 34.800]}})
+    mid = geocode.interpolate_house("X", "6")
+    assert mid is not None and 31.2605 <= mid[0] <= 31.2615      # between the anchors
+    # monotonic: a lower number sits nearer the low anchor
+    assert geocode.interpolate_house("X", "3")[0] < mid[0]
+    # NEVER extrapolate past the known range, and refuse with <2 anchors
+    assert geocode.interpolate_house("X", "99") is None
+    monkeypatch.setattr(geocode, "_anchors", {"X": {"1": [31.260, 34.800]}})
+    assert geocode.interpolate_house("X", "2") is None
+
+
+def test_confidence_tiers():
+    assert geocode.confidence("static") == "exact"
+    assert geocode.confidence("osm_addr") == "exact"
+    assert geocode.confidence("interpolated") == "high"
+    assert geocode.confidence("overpass") == "street"
+    assert geocode.confidence(None) == "none"
+    # an interpolated point is precise enough to keep its real tier
+    assert geocode.is_precise_source("interpolated")
+    assert not geocode.is_precise_source("overpass")
+
+
 def test_cache_version_invalidates_stale_miss(monkeypatch, tmp_path):
     monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geo.json")
     # a miss recorded by OLDER logic must be retried, not honoured

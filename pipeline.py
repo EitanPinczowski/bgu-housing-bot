@@ -209,6 +209,27 @@ def _seeks_female_roommates(raw_text: Optional[str]) -> bool:
     return bool(raw_text and _FEMALE_ROOMMATE_RE.search(raw_text))
 
 
+# "10 דקות הליכה לאוניברסיטה" / "כ 10-12 דקות הליכה" — the post's own walk claim.
+_WALK_CLAIM_RE = re.compile(r"(\d{1,2})\s*(?:-\s*(\d{1,2}))?\s*דק(?:ות|׳|')?\s*הליכה")
+
+
+def _walk_claim_conflict(raw_text: Optional[str], walk_min) -> Optional[str]:
+    """A reason string when the post's claimed walk time badly contradicts OSRM's — a
+    sign the address was matched to the wrong place. None when they agree (or either is
+    unknown). Deliberately lenient: only flags a >2× gap that is also >8 min off."""
+    if not raw_text or walk_min is None:
+        return None
+    m = _WALK_CLAIM_RE.search(raw_text)
+    if not m:
+        return None
+    claim = int(m.group(2) or m.group(1))            # use the upper end of "10-12"
+    if claim <= 0:
+        return None
+    if walk_min > claim * 2 and walk_min - claim > 8:
+        return f"הפוסט טוען {claim} דק׳ הליכה אך החישוב {round(walk_min)} דק׳"
+    return None
+
+
 def _neighborhood_letter(location: Optional[str]) -> Optional[str]:
     """The שכונה letter named in the address text ('ב'/'ג'/…), else None."""
     if not location:
@@ -400,9 +421,16 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     # (green on one end, red on the other) a name-only point could be the wrong side →
     # RED; a numberless street elsewhere → cap GREEN to AMBER. A precise hit keeps its tier.
     addr = e.street_address_or_neighborhood
-    boundary = False
+    boundary = edge_uncertain = False
     if tier in ("GREEN", "AMBER") and not geocode.is_precise_source(geo_source):
-        if geocode.is_boundary_street(addr):
+        # Near the zone boundary a street-level point genuinely can't tell green from
+        # red — flag it for a human instead of guessing either way. Further inside, a
+        # boundary-crossing street is still untrustworthy (could be the wrong end).
+        near_edge = (lat is not None
+                     and zones._dist_point_to_polygon_m(lat, lon) <= config.EDGE_UNCERTAIN_METERS)
+        if near_edge:
+            edge_uncertain = True
+        elif geocode.is_boundary_street(addr):
             tier, boundary = "RED", True
         elif tier == "GREEN" and geocode.is_bare_street(addr):
             tier = "AMBER"
@@ -426,8 +454,13 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     #    preferred). Missing fields or ungeocodable -> NEEDS_DATA, kept not lost.
     missing = _missing_critical(e)
     preferred = (tier == "GREEN")
+    # Cross-checks: when the post's own claims contradict the geocoded point, the match
+    # is suspect — surface it for a human rather than trusting the coordinate silently.
+    point_nbhd = zones.neighborhood_of(lat, lon)
+    nbhd_conflict = bool(nbhd_letter and point_nbhd and nbhd_letter != point_nbhd)
+    walk_conflict = _walk_claim_conflict(raw_text, walk)
 
-    if missing or tier == "UNKNOWN":
+    if missing or tier == "UNKNOWN" or edge_uncertain or nbhd_conflict or walk_conflict:
         reasons = []
         if missing:
             reasons.append("missing rooms/street")
@@ -435,6 +468,12 @@ def _classify(e, raw_text: str, source_url, group, images: list,
             reasons.append("location not geocoded")
         elif tier == "AMBER":
             reasons.append("within a 20-min walk of a gate (acceptable, not preferred)")
+        if edge_uncertain:
+            reasons.append("קרוב לגבול האזור — המיקום לא מדויק מספיק")
+        if nbhd_conflict:
+            reasons.append(f"הפוסט אומר שכונה {nbhd_letter} אך המיקום בשכונה {point_nbhd}")
+        if walk_conflict:
+            reasons.append(walk_conflict)
         res = result(Status.NEEDS_DATA, "; ".join(reasons), geo_source=geo_source,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
     else:
