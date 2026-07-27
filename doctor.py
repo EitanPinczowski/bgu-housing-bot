@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -111,6 +112,59 @@ def _ollama_ok() -> bool:
         return False
 
 
+def _check_last_run():
+    """Are scheduled scrapes actually HAPPENING? The watchdog checked dependencies but
+    never this — so a sleeping PC or a disabled Task Scheduler job was silent."""
+    log = config.DATA_DIR / "search_log.txt"
+    try:
+        ends = [ln for ln in log.read_text(encoding="utf-8").splitlines() if "  END  " in ln]
+    except Exception:
+        return ("last run", WARN, "no search log yet", "run: python main.py --live")
+    if not ends:
+        return ("last run", WARN, "no completed run logged", "run: python main.py --live")
+    try:
+        last = datetime.strptime(ends[-1][:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ("last run", WARN, "could not parse the log", "")
+    hours = (datetime.now() - last).total_seconds() / 3600
+    # only complain during active hours — overnight silence is by design (daytime only)
+    quiet_ok = not (8 <= datetime.now().hour <= 20)
+    limit = getattr(config, "MAX_HOURS_BETWEEN_RUNS", 5)
+    if hours > limit and not quiet_ok:
+        return ("last run", FAIL, f"none for {hours:.1f}h (limit {limit}h)",
+                "PC asleep or the Task Scheduler job is off/failing — check "
+                "'BGU Housing Scraper' in Task Scheduler and the power/sleep settings")
+    return ("last run", PASS, f"{hours:.1f}h ago", "")
+
+
+def _listener_running() -> bool:
+    """True if a bot_listener.py process is alive (Windows: ask the task list)."""
+    import subprocess
+    try:
+        out = subprocess.run(["wmic", "process", "get", "commandline"],
+                             capture_output=True, text=True, timeout=20).stdout
+        if out:
+            return "bot_listener" in out
+    except Exception:
+        pass
+    try:      # PowerShell fallback (wmic is absent on newer Windows)
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }"],
+            capture_output=True, text=True, timeout=25).stdout
+        return "bot_listener" in (out or "")
+    except Exception:
+        return True                  # can't tell -> don't cry wolf
+
+
+def _check_listener():
+    if _listener_running():
+        return ("listener", PASS, "bot_listener is running", "")
+    return ("listener", FAIL, "bot_listener is NOT running — votes and /commands are dead",
+            "start it: run_listener.cmd (or pythonw bot_listener.py). NOTE: it does not "
+            "reload code — restart it after any change")
+
+
 def _check_telegram():
     tok, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not tok or not chat:
@@ -175,7 +229,8 @@ def chains() -> list:
 def checks() -> list:
     out = [_check_config()]
     out += _check_data_files()
-    out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets()]
+    out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
+            _check_last_run(), _check_listener()]
     return out
 
 

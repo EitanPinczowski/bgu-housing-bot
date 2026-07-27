@@ -295,6 +295,10 @@ MIN_ALERT_SCORE = 75
 # A listing older than this is almost certainly gone — stop surfacing it in /top and the
 # scheduled top-N so you don't chase dead flats. It stays in the DB/Sheet and in /search.
 LISTING_STALE_DAYS = 21
+# doctor/watchdog: complain if no scrape has COMPLETED in this many hours during active
+# hours (08–20). Catches a sleeping PC or a disabled Task Scheduler job — previously the
+# bot could go quiet for hours with nothing to show for it.
+MAX_HOURS_BETWEEN_RUNS = 5
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY

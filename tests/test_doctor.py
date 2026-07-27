@@ -45,6 +45,34 @@ def test_every_failure_carries_remediation(monkeypatch):
             assert rem, f"{name} FAILed without a remediation hint"
 
 
+def test_last_run_check(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+    log = tmp_path / "search_log.txt"
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+
+    def write(when):
+        log.write_text(f"{when:%Y-%m-%d %H:%M:%S}  END    LIVE  10s posts=5\n", encoding="utf-8")
+
+    write(datetime.now() - timedelta(hours=1))
+    assert doctor._check_last_run()[1] == doctor.PASS
+    # a long silence during active hours is a FAIL that names the likely cause
+    write(datetime.now() - timedelta(hours=12))
+    name, status, detail, rem = doctor._check_last_run()
+    if 8 <= datetime.now().hour <= 20:            # the check is quiet outside those hours
+        assert status == doctor.FAIL and ("asleep" in rem or "Task Scheduler" in rem)
+    # no log at all -> a warning with a starting point, never a crash
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path / "empty")
+    assert doctor._check_last_run()[1] == doctor.WARN
+
+
+def test_listener_check(monkeypatch):
+    monkeypatch.setattr(doctor, "_listener_running", lambda: True)
+    assert doctor._check_listener()[1] == doctor.PASS
+    monkeypatch.setattr(doctor, "_listener_running", lambda: False)
+    name, status, detail, rem = doctor._check_listener()
+    assert status == doctor.FAIL and "run_listener" in rem
+
+
 def test_fix_starts_osrm_when_down(monkeypatch):
     # OSRM down -> --fix runs `docker start <container>` then re-probes
     states = iter([False, True])          # down at check, up after start
