@@ -218,6 +218,31 @@ def test_interpolate_house_between_anchors(monkeypatch):
     assert geocode.interpolate_house("X", "2") is None
 
 
+def test_dead_mirror_is_skipped_after_first_failure(monkeypatch, tmp_path):
+    """A dead Overpass mirror must cost its timeout ONCE, not on every lookup — that
+    stall was making a single address take minutes."""
+    _overpass_on(monkeypatch, tmp_path)
+    monkeypatch.setattr(geocode, "_dead_mirrors", set())
+    monkeypatch.setattr(geocode.config, "OVERPASS_URLS",
+                        ["https://dead.example/api", "https://live.example/api"])
+    tried = []
+    import requests
+
+    def fake_post(url, **kw):
+        tried.append(url)
+        if "dead" in url:
+            raise requests.exceptions.ReadTimeout("down")
+        return _Resp({"elements": [{"type": "node", "lat": 31.26, "lon": 34.80}]})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert geocode._overpass_query("רגר", None)[0] == (31.26, 34.80)
+    assert tried == ["https://dead.example/api", "https://live.example/api"]
+    # second lookup skips the known-dead mirror entirely
+    tried.clear()
+    assert geocode._overpass_query("רגר", None)[0] == (31.26, 34.80)
+    assert tried == ["https://live.example/api"]
+
+
 def test_confidence_tiers():
     assert geocode.confidence("static") == "exact"
     assert geocode.confidence("osm_addr") == "exact"

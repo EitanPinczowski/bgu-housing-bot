@@ -216,7 +216,9 @@ OVERPASS_URLS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
-OVERPASS_TIMEOUT_SEC = 15          # per-mirror; short so a dead mirror fails fast
+OVERPASS_TIMEOUT_SEC = 8           # per-mirror; short so a dead mirror fails fast (a
+                                   # mirror that fails is then skipped for the rest of
+                                   # the process — see geocode._dead_mirrors)
 
 USE_NOMINATIM_FALLBACK = True
 NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"

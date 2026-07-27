@@ -550,6 +550,13 @@ def interpolate_house(street: Optional[str], number: Optional[str]):
 MAX_OVERPASS_CANDIDATES = 3        # bound the paced queries per address
 
 
+# Per-mirror circuit breaker. Most public Overpass mirrors are usually down; without
+# this every lookup pays 15s × each dead mirror (measured: a single address could stall
+# ~3 minutes, and the live scraper pays it too). Once a mirror fails in this process we
+# stop calling it, so the cost of a dead mirror is paid once, not per address.
+_dead_mirrors: set = set()
+
+
 def _overpass_query(name: str, hn: Optional[str]):
     """(coords, source, responded) for ONE candidate street name."""
     import requests
@@ -567,7 +574,11 @@ def _overpass_query(name: str, hn: Optional[str]):
          f'node["name"~"{name}"]({bbox}););'
          f'out center tags 25;')
     timeout = getattr(config, "OVERPASS_TIMEOUT_SEC", 15)
-    for url in config.OVERPASS_URLS:                        # first mirror that responds wins
+    live = [u for u in config.OVERPASS_URLS if u not in _dead_mirrors]
+    if not live:                                           # all known-dead: retry them once
+        _dead_mirrors.clear()
+        live = list(config.OVERPASS_URLS)
+    for url in live:                                        # first mirror that responds wins
         try:
             time.sleep(1.0)                                # be polite to the shared instance
             r = requests.post(url, data={"data": q},
@@ -575,6 +586,7 @@ def _overpass_query(name: str, hn: Optional[str]):
             r.raise_for_status()
             data = r.json()
         except Exception:
+            _dead_mirrors.add(url)                         # don't pay this timeout again
             continue                                       # this mirror timed out — try the next
         # A valid response is authoritative (OSM data is identical across mirrors):
         # take the best-ranked in-box hit, or None — never keep hammering other mirrors.
