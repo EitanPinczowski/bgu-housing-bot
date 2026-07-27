@@ -181,9 +181,24 @@ def test_bare_street_and_precise_source():
 
 def test_overpass_name_hardening():
     assert geocode._overpass_name("רחבת רד״ק 13/6, באר שבע").startswith("רד")
+    assert geocode._overpass_name("רחוב האיסיים 5, שכונה ד") == "האיסיים"   # nbhd+num+comma stripped
+    assert geocode._overpass_name("שכונה ג', רחוב זאב זבוטינסקי 48") == "זאב זבוטינסקי"
     assert geocode._house_number("אברהם אבינו 38") == "38"
     assert geocode._house_number("רחבת רד״ק 13/6") == "13"     # compound -> first
     assert geocode._house_number("רחוב קדש") is None
+
+
+def test_precise_street_skips_neighborhood_centroid(monkeypatch, tmp_path):
+    # a real street that ALSO names a שכונה must geocode the STREET (overpass), not the
+    # neighborhood's static centroid — else every ד/ג/ב street reads the green centroid.
+    _overpass_on(monkeypatch, tmp_path)
+    import requests
+    monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp(
+        {"elements": [{"type": "node", "lat": 31.268, "lon": 34.792}]}))
+    coords, src = geocode.geocode_detailed("רחוב האיסיים 5, שכונה ד")
+    assert src == "overpass" and coords == (31.268, 34.792)     # the street, not the ד centroid
+    # a BARE neighborhood still uses the static centroid (bare path unchanged)
+    assert geocode.geocode_detailed("שכונה ד")[1] == "static"
 
 
 # --- #1: negative-result cache with a TTL ---------------------------------------

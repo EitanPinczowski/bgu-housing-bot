@@ -244,11 +244,17 @@ def geocode_detailed(location_text: Optional[str]):
     #    When several keys match, prefer the one mentioned EARLIEST in the address (the
     #    primary location), so a trailing slang POI ("…כיכר האבות, הבלוק") can't override
     #    the real anchor. Reverse matches rank last.
+    #    A whole-neighborhood centroid key ("שכונה ד") is SKIPPED when the address is a
+    #    specific street ("רחוב האיסיים 5, שכונה ד") — the street must be geocoded to its
+    #    real spot (Overpass), not to the neighborhood's green-zone centroid.
+    precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
     best_pos, best_coords = None, None
     for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
         k = _normalize(key)
         if not k:
             continue
+        if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
+            continue                                        # don't let a nbhd centroid hijack a street
         pos = norm.find(k)
         if pos != -1:                                       # forward: key inside the address
             if best_pos is None or pos < best_pos:
@@ -371,16 +377,16 @@ def _google_places(location_text: str) -> Optional[Tuple[float, float]]:
     return None
 
 
-# Strip house numbers (incl. a compound "13/6") and street-type words so the query
-# matches the OSM `name` tag of the street itself ("רחוב רינגלבלום 5" -> "רינגלבלום",
-# "רחבת רד״ק 13/6" -> "רד ק"). Covers רחבת/כיכר/שדרה that earlier misses left in.
+# Strip house numbers (incl. a compound "13/6"), street-type words, and a trailing
+# neighborhood ("…, שכונה ד") so the query matches the OSM `name` tag of the street itself
+# ("רחוב רינגלבלום 5" -> "רינגלבלום", "רחוב האיסיים 5, שכונה ד" -> "האיסיים").
 _OVERPASS_STRIP = re.compile(
-    r"\d+(?:/\d+)?|רחוב|רח['׳]|שדרות|שדרה|שד['׳]|דרך|סמטת|סמטה|שביל|רחבת|רחבה|כיכר")
+    r"\d+(?:/\d+)?|שכונ[הת]\s*[א-י]?['׳]?|רחוב|רח['׳]|שדרות|שדרה|שד['׳]|דרך|סמטת|סמטה|שביל|רחבת|רחבה|כיכר")
 
 
 def _overpass_name(location_text: str) -> str:
     s = _OVERPASS_STRIP.sub(" ", location_text)
-    s = s.translate(str.maketrans("", "", '"\\/'))          # keep the QL string safe
+    s = s.translate(str.maketrans("", "", '"\\/,'))         # keep the QL string safe; drop commas
     return re.sub(r"\s+", " ", s).strip()
 
 
