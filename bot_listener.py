@@ -219,8 +219,8 @@ def _why_text(key: str) -> str:
 
 def _cmd_top(chat_id, arg) -> None:
     n = int(arg) if arg.strip().isdigit() and 1 <= int(arg) <= 20 else 5
-    contacted = storage.contacted_keys()
-    rows = [r for r in query.search("", limit=n * 3) if r["dedup_key"] not in contacted][:n]
+    skip = storage.contacted_keys() | storage.stale_keys()   # already-messaged / long gone
+    rows = [r for r in query.search("", limit=n * 5) if r["dedup_key"] not in skip][:n]
     _reply(chat_id, "🏆 הדירות הכי טובות:\n\n" + _format_results(rows))
 
 

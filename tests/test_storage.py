@@ -224,6 +224,35 @@ def test_merge_duplicate_listings(temp_db):
     assert storage.get_user_mark("phone:1234567", "u1") == "saved"   # vote migrated
 
 
+def test_stale_keys(temp_db):
+    import sqlite3
+    storage.save_listing(_res("phone:fresh"))
+    storage.save_listing(_res("phone:old"))
+    con = sqlite3.connect(temp_db)
+    con.execute("UPDATE listings SET first_seen='2020-01-01 00:00:00' WHERE dedup_key='phone:old'")
+    con.commit()
+    con.close()
+    stale = storage.stale_keys()
+    assert "phone:old" in stale and "phone:fresh" not in stale
+
+
+def test_posted_at_recorded(temp_db):
+    import sqlite3
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 1")
+    res = PipelineResult(status=Status.MATCH, score=80, extract=e)
+    storage.record_post("s1", "raw", "", [], "g", "u", e, res, age_hours=5)
+    got = sqlite3.connect(temp_db).execute(
+        "SELECT posted_at FROM posts WHERE sig='s1'").fetchone()[0]
+    assert got                                    # ~5h before now
+    # unknown age is harmless, and a later re-record doesn't wipe a known posted_at
+    storage.record_post("s2", "raw", "", [], "g", "u", e, res, age_hours=None)
+    assert sqlite3.connect(temp_db).execute(
+        "SELECT posted_at FROM posts WHERE sig='s2'").fetchone()[0] is None
+    storage.record_post("s1", "raw", "", [], "g", "u", e, res, age_hours=None)
+    assert sqlite3.connect(temp_db).execute(
+        "SELECT posted_at FROM posts WHERE sig='s1'").fetchone()[0] == got
+
+
 def test_saved_listings_and_contacted(temp_db):
     storage.save_listing(_res("phone:501111111"))
     storage.set_mark("phone:501111111", "u1", "saved")

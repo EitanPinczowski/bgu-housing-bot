@@ -383,7 +383,8 @@ def process_post(raw_text: str,
 
     res = _classify(e, raw_text, source_url, group, images, age_hours, commit, alert)
     if commit:
-        storage.record_post(sig, raw_text, comments, images, group, source_url, e, res)
+        storage.record_post(sig, raw_text, comments, images, group, source_url, e, res,
+                            age_hours=age_hours)     # -> posted_at, for peak-hour analysis
     return res
 
 

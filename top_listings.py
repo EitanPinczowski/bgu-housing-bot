@@ -41,6 +41,9 @@ def _top(n: int, hours: int):
     since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute(_SQL, (since,)).fetchall()
+    # never re-broadcast a flat you've already messaged, or one that's long gone
+    skip = storage.contacted_keys() | storage.stale_keys()
+    rows = [r for r in rows if r[0] not in skip]
     rows.sort(key=lambda r: storage.effective_score(r[0], r[14] or 0), reverse=True)
     return rows[:n]
 

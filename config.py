@@ -292,6 +292,9 @@ NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
 # ~68% of genuine matches never reached the phone. 75 sits just under the median and lets
 # a clear majority through. Re-check against the score distribution if scoring changes.
 MIN_ALERT_SCORE = 75
+# A listing older than this is almost certainly gone — stop surfacing it in /top and the
+# scheduled top-N so you don't chase dead flats. It stays in the DB/Sheet and in /search.
+LISTING_STALE_DAYS = 21
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY

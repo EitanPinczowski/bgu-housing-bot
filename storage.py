@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS posts (
     reason TEXT,
     tier TEXT,
     score INTEGER,
+    posted_at TEXT,
     first_seen TEXT
 );
 """
@@ -105,6 +106,9 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE listings ADD COLUMN elevator INTEGER")
     if "geocode_source" not in cols:
         c.execute("ALTER TABLE listings ADD COLUMN geocode_source TEXT")
+    pcols = {r[1] for r in c.execute("PRAGMA table_info(posts)").fetchall()}
+    if pcols and "posted_at" not in pcols:
+        c.execute("ALTER TABLE posts ADD COLUMN posted_at TEXT")
     # marks became per-user (dedup_key,user_id); recreate the old single-mark table
     mcols = {r[1] for r in c.execute("PRAGMA table_info(marks)").fetchall()}
     if "user_id" not in mcols:
@@ -260,6 +264,16 @@ def set_contacted(dedup_key: str) -> None:
                   "VALUES (?,?,?,CURRENT_TIMESTAMP)", (dedup_key, _CONTACTED_UID, "contacted"))
 
 
+def stale_keys(days: Optional[int] = None) -> set:
+    """dedup_keys of listings first seen more than `days` ago — almost certainly gone, so
+    /top and the scheduled top-N skip them (they stay in the DB, Sheet and /search)."""
+    days = days if days is not None else getattr(config, "LISTING_STALE_DAYS", 21)
+    cutoff = (datetime.now() - timedelta(days=days)).strftime(_NOW)
+    with _conn() as c:
+        return {r[0] for r in c.execute(
+            "SELECT dedup_key FROM listings WHERE first_seen < ?", (cutoff,))}
+
+
 def contacted_keys() -> set:
     with _conn() as c:
         return {r[0] for r in c.execute("SELECT dedup_key FROM marks WHERE mark='contacted'")}
@@ -393,21 +407,31 @@ def find_similar(tokens, days: int = 4, threshold: float = 0.72,
 # and final verdict. Lets us re-run classification/scoring against history WITHOUT
 # re-scraping Facebook (replay.py), and powers the --stats funnel (stats.py). ---
 def record_post(sig: str, raw_text: str, comments, images, group, source_url,
-                extract, res: PipelineResult) -> None:
+                extract, res: PipelineResult, age_hours=None) -> None:
+    """Archive one post. `age_hours` (how old the post was when scraped) is stored as an
+    absolute `posted_at`, so we can later see WHEN good listings actually get posted and
+    weight the scrape schedule toward those hours. Harmless when unknown (None)."""
+    posted_at = None
+    if age_hours is not None:
+        try:
+            posted_at = (datetime.now() - timedelta(hours=float(age_hours))).strftime(_NOW)
+        except (TypeError, ValueError):
+            posted_at = None
     with _conn() as c:
         c.execute(
             """INSERT INTO posts
                (sig, raw_text, comments, images, "group", source_url, parsed_json,
-                verdict, reason, tier, score, first_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                verdict, reason, tier, score, posted_at, first_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
                ON CONFLICT(sig) DO UPDATE SET
                  raw_text=excluded.raw_text, comments=excluded.comments, images=excluded.images,
                  "group"=excluded."group", source_url=excluded.source_url,
                  parsed_json=excluded.parsed_json, verdict=excluded.verdict,
-                 reason=excluded.reason, tier=excluded.tier, score=excluded.score""",
+                 reason=excluded.reason, tier=excluded.tier, score=excluded.score,
+                 posted_at=COALESCE(excluded.posted_at, posts.posted_at)""",
             (sig, raw_text, comments or "", json.dumps(images or []), group, source_url,
              extract.model_dump_json() if extract else None,
-             res.status.value, res.reason, res.location_tier, res.score))
+             res.status.value, res.reason, res.location_tier, res.score, posted_at))
 
 
 def all_posts() -> list:
