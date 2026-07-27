@@ -260,9 +260,11 @@ NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
 # Quality gate on ALERTS (not on storage): only ping a listing — whether MATCH
 # or NEEDS_DATA — whose fit score (fit.py, 0–100) is at least this. Everything is
 # still saved to SQLite/Sheets and shows up in the digest/top-N; low-scoring ones
-# just don't buzz your phone. Raise to be pickier, lower to see more. (85 on the
-# normalized 0–100 scale ≈ the old 70 before the denominator was tightened to 125.)
-MIN_ALERT_SCORE = 85
+# just don't buzz your phone. Raise to be pickier, lower to see more.
+# Measured 2026-07: at 85 only 14 of 44 MATCH listings alerted (median MATCH = 78), so
+# ~68% of genuine matches never reached the phone. 75 sits just under the median and lets
+# a clear majority through. Re-check against the score distribution if scoring changes.
+MIN_ALERT_SCORE = 75
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY

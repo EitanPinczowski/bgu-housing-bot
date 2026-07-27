@@ -148,6 +148,28 @@ def test_recover_house_number():
     assert pipeline._recover_house_number("שכונה ג", "שכונה ג 12 משהו") == "שכונה ג"
 
 
+def test_recover_rooms():
+    from models import ListingExtract
+
+    def rooms(text, existing=None):
+        e = ListingExtract(is_apartment_ad=True, available_rooms_count=existing)
+        return pipeline._recover_rooms(e, text).available_rooms_count
+
+    # whole apartment: Israeli "דירת N חדרים" = N-1 bedrooms + salon
+    assert rooms("להשכרה דירת 3 חדרים ברחוב גמל 1") == 2
+    assert rooms("להשכרה דירת 5 חדרים באכלוס ראשון") == 4
+    assert rooms("להשכרה דירת 2.5 חדרים ברחוב משחררים") == 1
+    # roommate-share phrasings are more specific and win
+    assert rooms("מחפשים שותפה לדירה שלנו, דירת 4 חדרים") == 1
+    assert rooms("מחפשים שני שותפים לדירת 4 חדרים") == 2
+    assert rooms("מתפנים 2 חדרים בדירת 4 חדרים") == 2
+    assert rooms("מפנה חדר בדירת 2 שותפים") == 1
+    assert rooms("להשכרה יחידת דיור, חדר שינה וסלון") == 1
+    # never overwrite what the LLM already extracted, and no text -> unchanged
+    assert rooms("להשכרה דירת 3 חדרים", existing=1) == 1
+    assert rooms("") is None
+
+
 def test_walk_claim_conflict():
     # the post claims a short walk but routing says far -> suspect address match
     assert pipeline._walk_claim_conflict("כ 10-12 דקות הליכה לאוניברסיטה", 30.0)

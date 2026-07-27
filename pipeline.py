@@ -154,11 +154,61 @@ def _postprocess_extract(e, raw_text, comments):
         if p is not None:
             e.price_per_room_ils = p
             e.price_from_comment = True                  # recovered -> treat as uncertain
+    e = _recover_rooms(e, raw_text)                      # whole-flat / share room counts
     e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
     e.street_address_or_neighborhood = _recover_house_number(
         e.street_address_or_neighborhood, raw_text)
     e.lease_start_date = _normalize_entry_date(e.lease_start_date)
     e.contact_phone_or_link = _normalize_phone(e.contact_phone_or_link)
+    return e
+
+
+# --- room-count recovery ---------------------------------------------------------
+# The LLM leaves available_rooms_count empty on most WHOLE-apartment ads ("להשכרה דירת
+# 3 חדרים") because nobody is offering "N rooms in a shared flat" — which left hundreds
+# of perfectly good listings stuck in NEEDS_DATA. Recover it deterministically (free, so
+# it also applies on replay). Israeli usage: "דירת 3 חדרים" = 2 bedrooms + a salon, so a
+# whole flat of N rooms offers N-1 bedrooms.
+_HE_NUM = {"שני": 2, "שתי": 2, "שניים": 2, "שתיים": 2, "שלושה": 3, "שלוש": 3,
+           "ארבעה": 4, "ארבע": 4}
+_NUM_ALT = "|".join(_HE_NUM)
+_ROOMS_FREEING_RE = re.compile(rf"מתפנ(?:ים|ות)\s*(\d+|{_NUM_ALT})?\s*חדרים")
+_SEEK_MATES_RE = re.compile(rf"מחפש(?:ים|ות|ת)?\s*(\d+|{_NUM_ALT})?\s*שותפ")
+_ONE_ROOM_RE = re.compile(r"מפנה חדר|חדר פנוי|מתפנה חדר|יחידת דיור")
+_WHOLE_APT_RE = re.compile(r"דיר[הת]\s*(?:בת\s*)?(\d+(?:\.\d+)?)\s*חדרים")
+
+
+def _num(tok) -> Optional[int]:
+    if not tok:
+        return None
+    return _HE_NUM.get(tok) if tok in _HE_NUM else (int(tok) if tok.isdigit() else None)
+
+
+def _recover_rooms(e, raw_text):
+    """Fill available_rooms_count from the post text when the LLM left it empty. An
+    LLM-provided value is never overwritten. Share phrasings win over the whole-apartment
+    reading, since they're the more specific statement."""
+    if e.available_rooms_count is not None or not raw_text:
+        return e
+    m = _ROOMS_FREEING_RE.search(raw_text)          # "מתפנים 2 חדרים"
+    if m:
+        e.available_rooms_count = _num(m.group(1)) or 1
+        return e
+    m = _SEEK_MATES_RE.search(raw_text)             # "מחפשים שותפה" / "מחפשים 2 שותפים"
+    if m:
+        e.available_rooms_count = _num(m.group(1)) or 1
+        return e
+    if _ONE_ROOM_RE.search(raw_text):               # "מפנה חדר", "יחידת דיור"
+        e.available_rooms_count = 1
+        return e
+    m = _WHOLE_APT_RE.search(raw_text)              # "דירת 3 חדרים" -> 2 bedrooms
+    if m:
+        try:
+            rooms = int(float(m.group(1)))
+        except ValueError:
+            return e
+        if 1 <= rooms <= 10:
+            e.available_rooms_count = max(0, rooms - 1)
     return e
 
 
