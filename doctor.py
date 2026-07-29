@@ -137,6 +137,23 @@ def _check_last_run():
     return ("last run", PASS, f"{hours:.1f}h ago", "")
 
 
+def _check_wedged_scraper():
+    """Is a scrape running but STUCK? Judged by progress (the heartbeat), never by how
+    long it has been running — a local-LLM fallback run legitimately takes hours, and
+    killing those would throw away real work."""
+    import scraper
+    age = scraper.heartbeat_age()
+    if age is None:
+        return ("scraper progress", SKIP, "no run has reported progress yet", "")
+    mins = age / 60
+    if mins > config.STALL_MINUTES:
+        return ("scraper progress", FAIL,
+                f"no progress for {mins:.0f} min (limit {config.STALL_MINUTES})",
+                "a run is wedged — the next run clears it automatically, or kill the pid "
+                "in data/scraper.heartbeat")
+    return ("scraper progress", PASS, f"last progress {mins:.0f} min ago", "")
+
+
 def _listener_running() -> bool:
     """True if a bot_listener.py process is alive (Windows: ask the task list)."""
     import subprocess
@@ -230,7 +247,7 @@ def checks() -> list:
     out = [_check_config()]
     out += _check_data_files()
     out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
-            _check_last_run(), _check_listener()]
+            _check_last_run(), _check_listener(), _check_wedged_scraper()]
     return out
 
 

@@ -240,6 +240,10 @@ def run(dry_run: bool, hot: bool = False) -> None:
                 groups_with_posts += 1
             for post in posts:
                 total_posts += 1
+                # progress heartbeat: a slow LLM (local fallback can take ~200s/post) is
+                # fine, a run that stops beating for STALL_MINUTES is wedged and gets
+                # cleared by the next run / flagged by doctor.
+                scraper.beat(f"post {total_posts}")
                 if post.get("permalink"):
                     posts_with_link += 1
                 try:

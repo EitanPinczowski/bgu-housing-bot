@@ -308,6 +308,17 @@ LISTING_STALE_DAYS = 21
 # hours (08–20). Catches a sleeping PC or a disabled Task Scheduler job — previously the
 # bot could go quiet for hours with nothing to show for it.
 MAX_HOURS_BETWEEN_RUNS = 5
+# A run is judged by PROGRESS, not elapsed time. Measured over 40 real runs: median 27
+# min, but legitimate runs reached 99/195/268 minutes — those are the local-Ollama
+# fallback runs (~199 s per post vs ~20 s on Gemini), so any wall-clock deadline short
+# enough to catch a hang would kill real work whenever Gemini's quota runs out.
+# The scraper touches data/scraper.heartbeat as it finishes posts/groups; if that stops
+# for this many minutes the run is wedged and gets killed so the next one can proceed.
+# Well above the slowest single post (~3.3 min) so a slow local-LLM run is never touched.
+STALL_MINUTES = 30
+# Per-navigation cap inside a group. The 2026-07-27 hang produced ZERO output — it stuck
+# on the very first page load and sat there for 37h; a page timeout raises instead.
+PAGE_TIMEOUT_MS = 90_000
 
 # ---------------------------------------------------------------------------
 # Auto-scraper (increment 2). Conservative by design — see the SAFETY

@@ -30,6 +30,7 @@ How the extraction works (learned from the live DOM):
 from __future__ import annotations
 
 import datetime as dt
+import os
 import random
 import re
 import time
@@ -45,37 +46,114 @@ except ImportError:        # non-Windows: lock is a no-op (dev only)
     msvcrt = None
 
 
+# --- heartbeat: proof the run is still doing WORK ------------------------------
+# A run's health is PROGRESS, not elapsed time. Measured over 40 real runs the median
+# is 27 min, but legitimate runs reached 99/195/268 minutes — those are the local-Ollama
+# fallback runs (up to ~199 s per post vs ~20 s on Gemini). So any wall-clock deadline
+# short enough to catch a hang would kill real work whenever Gemini's quota runs out.
+# Instead the run touches this file as it completes posts/groups; a run that stops
+# touching it is wedged (2026-07-27: one hung on its first navigation and sat there for
+# 37 hours, silently blocking every later run).
+_HEARTBEAT_PATH = config.DATA_DIR / "scraper.heartbeat"
+
+
+def beat(note: str = "") -> None:
+    """Record that the run just made progress. Best-effort — never breaks a scrape."""
+    try:
+        _HEARTBEAT_PATH.write_text(f"{os.getpid()} {time.time():.0f} {note}", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def heartbeat_age() -> Optional[float]:
+    """Seconds since the last recorded progress, or None if there's no heartbeat."""
+    try:
+        parts = _HEARTBEAT_PATH.read_text(encoding="utf-8").split()
+        return time.time() - float(parts[1])
+    except Exception:
+        return None
+
+
+def heartbeat_pid() -> Optional[int]:
+    try:
+        return int(_HEARTBEAT_PATH.read_text(encoding="utf-8").split()[0])
+    except Exception:
+        return None
+
+
+def is_wedged() -> bool:
+    """True if a run is holding the lock but has made no progress for STALL_MINUTES."""
+    age = heartbeat_age()
+    return age is not None and age > config.STALL_MINUTES * 60
+
+
 # --- single-instance lock -----------------------------------------------------
 # TWO scraper/browser sessions on the SAME persistent Chrome profile deadlock
 # (Chromium's profile lock) — this once hung a manual dry run against a scheduled
 # --live run. Any process that opens the browser (main.py, link_backfill.py,
 # login.py) must hold this exclusive lock first; a second one refuses to start.
-# The OS releases the lock when the holder exits (even if killed), so it never
-# goes stale.
+# The OS releases the lock when the holder exits (even if killed), so a DEAD holder
+# never blocks anyone. The dangerous case is a holder that is alive but WEDGED — see
+# _clear_wedged_holder.
 _LOCK_PATH = config.DATA_DIR / "scraper.lock"
 _lock_fh = None
 
 
+def _clear_wedged_holder() -> bool:
+    """The lock is held by a live process. If it has made no progress for
+    STALL_MINUTES, it's hung — kill it so scraping can resume, and say so loudly.
+    Returns True if something was killed.
+
+    Deliberately conservative: a long run that is still heartbeating (the slow local-LLM
+    case, legitimately hours long) is LEFT ALONE — only a stalled one is killed."""
+    if not is_wedged():
+        return False
+    pid = heartbeat_pid()
+    if not pid or pid == os.getpid():
+        return False
+    try:
+        import subprocess
+        # /T kills its Chromium children too, which are what actually wedge the profile
+        subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
+                       capture_output=True, timeout=30)
+        age = heartbeat_age()
+        print(f"[scraper] previous run (pid {pid}) made no progress for "
+              f"{(age or 0) / 60:.0f} min — killed it as wedged")
+        return True
+    except Exception as exc:
+        print(f"[scraper] could not clear wedged pid {pid}: {exc}")
+        return False
+
+
 def acquire_lock() -> bool:
-    """True if we got the exclusive scraper lock; False if another session holds it
-    (the caller should then exit WITHOUT opening a browser)."""
+    """True if we got the exclusive scraper lock; False if another LIVE, healthy session
+    holds it (the caller should then exit WITHOUT opening a browser). If the holder is
+    wedged (no progress for STALL_MINUTES) it is killed first, so one hang can't disable
+    the bot indefinitely."""
     global _lock_fh
     if _lock_fh is not None:
         return True
     if msvcrt is None:
         return True
-    try:
-        fh = open(_LOCK_PATH, "a+")
-        fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)   # exclusive on byte 0
-    except OSError:
+    for attempt in (1, 2):
         try:
-            fh.close()
-        except Exception:
-            pass
-        return False
-    _lock_fh = fh
-    return True
+            fh = open(_LOCK_PATH, "a+")
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)   # exclusive on byte 0
+        except OSError:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            # held by a live process: clear it only if it's wedged, then retry once
+            if attempt == 1 and _clear_wedged_holder():
+                time.sleep(2)
+                continue
+            return False
+        _lock_fh = fh
+        beat("lock acquired")
+        return True
+    return False
 
 
 def release_lock() -> None:
@@ -542,7 +620,9 @@ def scrape_group(page: Page, url: str, already_seen=None, min_posts=None):
     if _SORT_CHRONOLOGICAL and "sorting_setting" not in url:
         url = url + ("&" if "?" in url else "?") + _SORT_PARAM
 
-    page.goto(url, wait_until="domcontentloaded")
+    # Explicit cap: a navigation that never settles must raise, not block forever.
+    page.goto(url, wait_until="domcontentloaded", timeout=config.PAGE_TIMEOUT_MS)
+    beat(f"opened {url.rstrip('/').split('/')[-1]}")   # progress: this group loaded
     # Bail immediately if FB bounced us to a checkpoint/login wall — never retry.
     blocked = _blocked_reason(page)
     if blocked:
@@ -652,6 +732,7 @@ def scrape_group(page: Page, url: str, already_seen=None, min_posts=None):
             stale, prev_fresh = 0, fresh
         else:
             stale += 1
+        beat(f"scroll pass {passes}, {fresh} fresh")     # still working
         want = min_posts if min_posts is not None else config.SCRAPER_MIN_POSTS_PER_GROUP
         enough = fresh >= want
         stalled = (passes >= config.SCRAPER_MIN_SCROLLS_BEFORE_STOP

@@ -73,6 +73,21 @@ def test_listener_check(monkeypatch):
     assert status == doctor.FAIL and "run_listener" in rem
 
 
+def test_wedged_scraper_check(monkeypatch):
+    import scraper
+    # a run that reported progress recently is healthy even if it started hours ago
+    monkeypatch.setattr(scraper, "heartbeat_age", lambda: 45.0)
+    assert doctor._check_wedged_scraper()[1] == doctor.PASS
+    # silence beyond the stall threshold is a wedged run
+    monkeypatch.setattr(scraper, "heartbeat_age",
+                        lambda: (doctor.config.STALL_MINUTES + 10) * 60)
+    name, status, detail, rem = doctor._check_wedged_scraper()
+    assert status == doctor.FAIL and "wedged" in rem
+    # never run -> SKIP, not a false alarm
+    monkeypatch.setattr(scraper, "heartbeat_age", lambda: None)
+    assert doctor._check_wedged_scraper()[1] == doctor.SKIP
+
+
 def test_fix_starts_osrm_when_down(monkeypatch):
     # OSRM down -> --fix runs `docker start <container>` then re-probes
     states = iter([False, True])          # down at check, up after start
