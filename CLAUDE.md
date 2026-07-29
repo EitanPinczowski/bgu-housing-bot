@@ -56,8 +56,28 @@ SQLite + optional Google Sheets + Telegram alert`
   so the bot still classifies without OSRM running. (`BUFFER_METERS` is deprecated.)
 - **Blacklist** (`config.BLACKLIST_NEIGHBORHOODS`: Ramot, Neve Zeev, Nahal
   Ashan, Pelach 7) is a separate hard instant-drop applied before geocoding.
-- **Dedup** prefers the contact phone (survives reposts/cross-posting), else a
-  hash of address+price+rooms. Written incrementally.
+- **Dedup identity = phone + NUMBERED ADDRESS**, not the phone alone
+  (`storage.make_dedup_key` / `is_duplicate`). The phone survives reposts, but a phone
+  is not a flat: measured 2026-07-29, **42 numbers advertise more than one numbered
+  address (one posts 32)**, and the old phone-only key collapsed **101 distinct flats**
+  into single rows — every flat after a landlord's first was dropped as "already seen"
+  and never alerted. Fixing it took 288→309 listings and 79→91 MATCH. Do not "simplify"
+  this back to the phone. The asymmetry is deliberate: a read with **no** house number
+  still collapses on the phone alone, because a vague re-read can't be told from a new
+  flat and a wrong duplicate alert is the worse failure. No phone → content hash.
+- **Facebook is the ONLY source** (user decision, 2026-07-29). Yad2 was evaluated and
+  rejected: every endpoint sits behind Radware Bot Manager, so the only ways in are
+  CAPTCHA-solving or detection evasion — forbidden below, and here it would also risk
+  the **home IP the FB scraper depends on**, for Yad2's whole-flat/broker inventory
+  rather than the שותפים market this bot targets. If a second source is ever revisited,
+  the legitimate route is Yad2's own saved-search **emails**, parsed from an inbox.
+- **Broker detection is data-driven, from the POST ARCHIVE** — a contact with ≥
+  `config.BROKER_MIN_LISTINGS` (4) distinct numbered addresses is an agency
+  (`storage.phone_listing_count`): labelled in the alert and −`BROKER_PENALTY`, never
+  dropped. Never match on "תיווך" (many brokers never write it; many posts mention it
+  about someone else). Count from the archive, NOT the listings table: an agency whose
+  flats are mostly out of zone otherwise looks like a private landlord — that one
+  choice moved it from 1 contact flagged to 7 of 136.
 - **Filters** (`config.py`): ≤2000 ILS/room, ≥2 rooms free, ≤4 total roommates.
 - Missing critical fields → kept as **NEEDS_DATA**, never silently dropped.
 
@@ -84,6 +104,12 @@ SQLite + optional Google Sheets + Telegram alert`
   (`query.py`) and `/status` commands; dependency health check.
 - `query.py` — parse a free Hebrew/English search into filters; ranked SQLite search.
 - `replay.py` / `stats.py` — offline re-classify (+`--apply`) and funnel stats.
+- `dashboard.py` — one self-contained `data/dashboard.html`: the zone map plus a
+  sortable/filterable table of every listing. Offline, no CDN, read-only.
+- `setup_always_on.cmd` — run ONCE as Administrator. The `BGU *` tasks ship with
+  "wake the computer" OFF, so a run due while the PC sleeps is silently skipped —
+  the real cause of "why didn't it run". Also fixes battery wake timers/sleep.
+  `doctor`'s `wake timers` row makes the failure visible.
 - `load_zone_from_kmz.py` — regenerate `green_zone.json` from a new My Maps export.
 - `green_zone.json` / `no_amber_zones.json` — the walkable polygon + no-amber (ד') areas.
 - `README.md` — full Windows setup (Python, Docker OSRM Israel extract, Telegram bot, .env).
@@ -147,6 +173,12 @@ the scraper MUST be conservative and the user must stay in control:
   or a threshold, run `python replay.py` to preview which stored listings flip,
   then `python replay.py --apply` to write it (updates the DB + rebuilds the
   Sheet, no Telegram). `stats.py` shows the funnel.
+- **`save_listing` ENRICHES, never replaces:** every nullable column is written as
+  `COALESCE(new, old)`, so a thinner later read (the LLM missed the price this time)
+  can only add detail, never blank a field. The recomputed verdict
+  (status/tier/score/walk) still overwrites — that part is meant to be fresh. It also
+  no longer resets `first_seen`, which `INSERT OR REPLACE` silently did on every
+  `replay --apply`, resetting the staleness clock on the whole table.
 - **Geocoding gaps:** listings whose location the LLM extracted but geocoding
   couldn't map are logged (`unknown_locations`) and surfaced by the daily DM
   digest — pin the frequent ones into `geocode.STATIC_TABLE`. The zone can be
