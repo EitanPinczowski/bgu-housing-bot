@@ -124,3 +124,20 @@ def test_chains_report_backends(monkeypatch):
     assert set(ch) >= {"geocode", "llm", "overpass mirrors"}
     assert any(b[0] == "overpass" for b in ch["geocode"])   # geocode chain lists overpass
     assert ch["llm"][0][0] == "gemini"                       # gemini is the primary LLM
+
+
+def test_wake_timer_check(monkeypatch):
+    """The silent failure behind "why didn't it run": a task that can't wake the PC is
+    skipped entirely when the machine is asleep, with no error anywhere."""
+    monkeypatch.setattr(doctor, "_task_wake_flags",
+                        lambda: {"BGU Housing Scraper": True, "BGU Morning": True})
+    assert doctor._check_wake_timers()[1] == doctor.PASS
+    monkeypatch.setattr(doctor, "_task_wake_flags",
+                        lambda: {"BGU Housing Scraper": False, "BGU Morning": True})
+    name, status, detail, rem = doctor._check_wake_timers()
+    assert status == doctor.WARN
+    assert "BGU Housing Scraper" in detail
+    assert "setup_always_on" in rem
+    # not Windows / no Task Scheduler -> SKIP, never a false alarm
+    monkeypatch.setattr(doctor, "_task_wake_flags", lambda: None)
+    assert doctor._check_wake_timers()[1] == doctor.SKIP

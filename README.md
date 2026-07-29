@@ -311,6 +311,35 @@ OSRM Docker container isn't running — you just won't get walk minutes. The
 `osrm_bgu` container is set to restart with Docker Desktop; make sure Docker
 Desktop is set to start on login if you want walk times on scheduled runs.
 
+### Keeping it always-on (run `setup_always_on.cmd` once, as Administrator)
+
+Scheduled runs are only as reliable as the machine being awake. Every `BGU *` task
+was created with **"Wake the computer to run this task" OFF**, so a run scheduled
+while the PC is asleep is *silently skipped* — Task Scheduler reports success and
+the only symptom is a quiet Telegram. That is the real answer to "why didn't the
+last run run?".
+
+Measured on this machine: `WakeToRun=False` on all six tasks, wake timers disabled
+on battery, and a 3-minute battery sleep timeout that would cut a run short.
+
+**`setup_always_on.cmd`** (right-click → Run as administrator) fixes all three:
+sets `WakeToRun` on every BGU task, enables wake timers on battery as well as
+mains, and raises the battery sleep timeout to 30 minutes. It prints an UNDO block
+and changes nothing about the scraper's volume or any safety rule. It's a script
+you run rather than something the bot does for you, because these are Windows
+power settings, not project settings.
+
+`python doctor.py` now reports a **`wake timers`** row, so this can't go back to
+being invisible.
+
+**Why there is no Docker/VPS setup here.** Splitting the non-Facebook services
+(listener, digests) into containers or onto a cheap VPS sounds tidy but is a trap
+with this design: the Facebook scraper *must* stay on your machine (real logged-in
+profile, home IP), and everything shares one SQLite file. SQLite locking over a
+Windows→Linux bind mount is unreliable, and a VPS split needs a real DB-sync story
+first. Until that exists, the honest setup is: everything local, the machine awake
+when it needs to be, and `run_listener.cmd` supervising the listener.
+
 ### Helper tasks (also scheduled)
 
 - **`BGU Watchdog`** (`watchdog.py`) — runs 07:30/11:30/15:30/19:30, 30 min before

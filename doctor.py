@@ -116,6 +116,45 @@ def _ollama_ok() -> bool:
         return False
 
 
+def _task_wake_flags():
+    """{task name: WakeToRun} for the project's scheduled tasks, or None if we can't
+    ask (not Windows / no Task Scheduler). Read-only."""
+    import subprocess
+    ps = ("Get-ScheduledTask | Where-Object {$_.TaskName -like 'BGU*'} | "
+          "ForEach-Object { $_.TaskName + '=' + $_.Settings.WakeToRun }")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=25)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    out = {}
+    for line in r.stdout.splitlines():
+        if "=" in line:
+            name, _, val = line.strip().rpartition("=")
+            out[name] = val.strip().lower() == "true"
+    return out or None
+
+
+def _check_wake_timers():
+    """Can a scheduled run actually wake this machine?
+
+    The silent failure mode behind "why didn't it run": with WakeToRun off, a run
+    scheduled while the PC is asleep is simply skipped — Task Scheduler reports no
+    error, and the only symptom is a quiet Telegram. Measured here rather than
+    inferred, because it's invisible otherwise."""
+    flags = _task_wake_flags()
+    if flags is None:
+        return ("wake timers", SKIP, "can't query Task Scheduler", "")
+    asleep = [n for n, ok in flags.items() if not ok]
+    if not asleep:
+        return ("wake timers", PASS, f"all {len(flags)} tasks can wake the PC", "")
+    return ("wake timers", WARN,
+            f"{len(asleep)}/{len(flags)} task(s) can't wake the PC: " + ", ".join(asleep[:3]),
+            "run setup_always_on.cmd as Administrator (missed runs otherwise)")
+
+
 def _check_last_run():
     """Are scheduled scrapes actually HAPPENING? The watchdog checked dependencies but
     never this — so a sleeping PC or a disabled Task Scheduler job was silent."""
@@ -251,7 +290,8 @@ def checks() -> list:
     out = [_check_config()]
     out += _check_data_files()
     out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
-            _check_last_run(), _check_listener(), _check_wedged_scraper()]
+            _check_last_run(), _check_listener(), _check_wedged_scraper(),
+            _check_wake_timers()]
     return out
 
 
