@@ -62,7 +62,10 @@ def _poly_points(xy, poly) -> str:
     return " ".join(f"{x:.1f},{y:.1f}" for x, y in (xy(la, lo) for la, lo in poly))
 
 
-def build() -> str:
+def build_svg():
+    """(svg_markup, placed_rows, unplaced_count) — the map on its own, so callers that
+    want it inside a bigger page (dashboard.py) don't have to scrape it out of the
+    standalone HTML."""
     placed, unplaced = _load_listings()
     zone = zones._polygon()
     gates = [(g["lat"], g["lon"], g.get("name", k)) for k, g in config.GATES.items()]
@@ -107,7 +110,11 @@ def build() -> str:
                    f'fill-opacity="0.85" stroke="#fff" stroke-width="1">'
                    f'<title>{html.escape(tip)}</title></circle>')
     svg.append("</svg>")
+    return "".join(svg), placed, unplaced
 
+
+def build() -> str:
+    svg_markup, placed, unplaced = build_svg()
     counts: dict = {}
     for _, _, tier, *_ in placed:
         counts[tier] = counts.get(tier, 0) + 1
@@ -122,7 +129,7 @@ def build() -> str:
         "<span style='color:#2e7d32'>▨</span> green zone &nbsp; "
         "<span style='color:#3367d6'>▭</span> ב/ג/ד &nbsp; ★ gate &nbsp;"
         "<em>(hover a dot for details)</em></p>"
-        + "".join(svg) +
+        + svg_markup +
         "</div>")
     OUT.write_text(page, encoding="utf-8")
     print(f"wrote {OUT}  ({len(placed)} placed, {unplaced} unmapped)")
