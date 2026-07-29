@@ -60,4 +60,6 @@ class PipelineResult(BaseModel):
     # Walk times to the bus/gym the user actually cares about (amenities.py).
     # DISPLAY ONLY — deliberately not an input to `score`.
     amenities: dict = {}
+    # Distinct flats this contact advertises — >= config.BROKER_MIN_LISTINGS = agency.
+    broker_listings: int = 0
     extract: Optional[ListingExtract] = None

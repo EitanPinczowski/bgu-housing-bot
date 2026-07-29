@@ -51,7 +51,8 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
               lease_start: Optional[str] = None, furnished: Optional[bool] = None,
               floor: Optional[str] = None, has_elevator: Optional[bool] = None,
               has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None,
-              has_photos: bool = False, seeks_female: bool = False) -> list:
+              has_photos: bool = False, seeks_female: bool = False,
+              broker_listings: int = 0) -> list:
     """The score's per-factor contributions as [(hebrew_label, delta), …], in the
     order they're applied. `score()` is just the clamped sum of the deltas — this is
     the single source of truth, so the alert's "why this score" line can never drift
@@ -138,6 +139,11 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
     if seeks_female:
         parts.append(("מחפשים שותפה", -config.FEMALE_ROOMMATE_PENALTY))
 
+    # agency rather than a private landlord — inferred from how many distinct flats
+    # this contact advertises, not from the word תיווך. Usually means a fee.
+    if broker_listings >= config.BROKER_MIN_LISTINGS:
+        parts.append((f"מתווך ({broker_listings} דירות)", -config.BROKER_PENALTY))
+
     # high floor with NO elevator (unmentioned counts as none): penalty grows
     # exponentially with the floor. No penalty for floor ≤ 1, unknown floor, or a
     # confirmed elevator.
@@ -177,11 +183,12 @@ def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           lease_start: Optional[str] = None, furnished: Optional[bool] = None,
           floor: Optional[str] = None, has_elevator: Optional[bool] = None,
           has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None,
-          has_photos: bool = False, seeks_female: bool = False) -> int:
+          has_photos: bool = False, seeks_female: bool = False,
+          broker_listings: int = 0) -> int:
     raw = sum(delta for _, delta in breakdown(
         price, walk_min, tier, avail_rooms, total_mates, price_uncertain,
         age_hours, lease_start, furnished, floor, has_elevator, has_balcony, neighborhood,
-        has_photos, seeks_female))
+        has_photos, seeks_female, broker_listings))
     # Rescale onto 0–100 so the top isn't compressed by the clamp — features like
     # balcony/furnished now spread the best listings into distinct scores.
     return max(0, min(100, round(100 * raw / _max_possible())))

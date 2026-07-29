@@ -48,6 +48,13 @@ BALCONY_BONUS = 18
 # Small one-way bonus when the post has photo(s) — a listing with pictures is more
 # real/serious than a bare text post. Not a penalty when photos are absent.
 PHOTO_BONUS = 6
+# A contact advertising at least this many DISTINCT numbered flats is an agency, not
+# a private landlord (storage.phone_listing_count). Detected from the data rather than
+# by matching "תיווך" in the text — many brokers never write it and many posts mention
+# it about someone else. Brokers usually mean a fee, so they're labelled in the alert
+# and take a fit penalty; they are NOT dropped, since some list good flats.
+BROKER_MIN_LISTINGS = 4
+BROKER_PENALTY = 12
 # Penalty when the post is explicitly looking for FEMALE roommates ("מחפשות שותפה",
 # "שותפות", "בנות בלבד") — not relevant to this search. Deterministic text match
 # (see pipeline._seeks_female_roommates); does NOT fire on the neutral שותף/שותפים.

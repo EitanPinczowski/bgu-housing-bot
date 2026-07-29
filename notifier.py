@@ -94,7 +94,10 @@ def format_alert(res: PipelineResult) -> str:
     if e.lease_start_date:
         lines.append(f"📅 כניסה: {_esc(e.lease_start_date)}")
     if e.contact_phone_or_link:
-        lines.append(f"📞 {_esc(e.contact_phone_or_link)}")
+        broker = getattr(res, "broker_listings", 0) or 0
+        tag = (f"  ⚠️ מתווך \\({broker} דירות\\)"
+               if broker >= config.BROKER_MIN_LISTINGS else "")
+        lines.append(f"📞 {_esc(e.contact_phone_or_link)}{tag}")
     # Map / WhatsApp / post links are rendered as BUTTONS (see _alert_keyboard).
 
     # "why this score" — the top few positive factors plus any notable penalty (e.g.
@@ -104,7 +107,8 @@ def format_alert(res: PipelineResult) -> str:
         e.available_rooms_count, e.total_roommates_in_apt, e.price_from_comment,
         furnished=getattr(e, "furnished", None), lease_start=e.lease_start_date,
         floor=getattr(e, "floor", None), has_elevator=getattr(e, "has_elevator", None),
-        has_balcony=getattr(e, "balcony_or_garden", None))
+        has_balcony=getattr(e, "balcony_or_garden", None),
+        broker_listings=getattr(res, "broker_listings", 0) or 0)
     factors = fit.top_factors(_bd)
     factors += sorted((p for p in _bd if p[1] < 0), key=lambda p: p[1])[:2]   # notable penalties
     if factors:

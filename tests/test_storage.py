@@ -55,6 +55,68 @@ def test_file_ids_roundtrip_and_no_wipe(temp_db):
     assert storage.get_file_ids(k) == ["AAA", "BBB"]
 
 
+def _ex(addr=None, phone=None, **kw):
+    from models import ListingExtract
+    return ListingExtract(is_apartment_ad=True, street_address_or_neighborhood=addr,
+                          contact_phone_or_link=phone, **kw)
+
+
+def test_one_landlord_two_numbered_flats_are_two_listings(temp_db):
+    """The archive showed 42 phones advertising more than one numbered address (one
+    posts 32), and phone-only keys collapsed 101 distinct flats into single rows —
+    every flat after the first was dropped as 'already seen'."""
+    a = _ex("אברהם אבינו 38", "050-1234567")
+    b = _ex("אברהם אבינו 57", "050-1234567")
+    assert storage.make_dedup_key(a) != storage.make_dedup_key(b)
+    storage.mark_seen_all(storage.dedup_keys(a))
+    assert storage.is_duplicate(a) is True             # the same flat again
+    assert storage.is_duplicate(b) is False            # a different flat, same landlord
+
+
+def test_the_same_flat_still_collapses_across_reposts(temp_db):
+    """Why the phone key exists in the first place — a repost with the address written
+    slightly differently must NOT alert twice."""
+    a = _ex("רגר 164", "050-1234567", price_per_room_ils=1500)
+    b = _ex("רגר 164 ", "0501234567", price_per_room_ils=1600)   # spacing + format differ
+    storage.mark_seen_all(storage.dedup_keys(a))
+    assert storage.is_duplicate(b) is True
+
+
+def test_a_vague_read_never_becomes_a_second_row(temp_db):
+    """A read with no house number can't be told apart from a vaguer re-read of the
+    flat we stored, so it stays collapsed — a wrong duplicate alert is the worse bug."""
+    precise = _ex("רגר 164", "050-1234567")
+    storage.mark_seen_all(storage.dedup_keys(precise))
+    assert storage.is_duplicate(_ex("רגר, אצל דני", "050-1234567")) is True
+    assert storage.is_duplicate(_ex(None, "050-1234567")) is True
+    # …but a different phone with no address is genuinely a different listing
+    assert storage.is_duplicate(_ex("רגר", "052-7654321")) is False
+
+
+def test_phone_listing_count_identifies_an_agency(temp_db):
+    """Counted from the ARCHIVE, not the listings table: an agency whose flats are
+    mostly out of the search zone would otherwise look like a private landlord."""
+    from models import PipelineResult, Status
+    for n in (3, 8, 21, 21):                      # 21 twice — distinct addresses only
+        e = _ex(f"אברהם אבינו {n}", "050-1234567")
+        storage.record_post(f"sig{n}-{len(str(n))}", "טקסט", "", [], "g", None, e,
+                            PipelineResult(status=Status.DROP, dedup_key="x"))
+    # a second contact, and a post with no house number (can't count as a distinct flat)
+    storage.record_post("sig-other", "טקסט", "", [], "g", None,
+                        _ex("קדש 5", "052-7654321"),
+                        PipelineResult(status=Status.DROP, dedup_key="y"))
+    storage.record_post("sig-bare", "טקסט", "", [], "g", None,
+                        _ex("שכונה ב", "050-1234567"),
+                        PipelineResult(status=Status.DROP, dedup_key="z"))
+    storage.invalidate_broker_counts()
+    assert storage.phone_listing_count("050-1234567") == 3     # not 4, not 5
+    assert storage.phone_listing_count("0501234567") == 3      # formatting-independent
+    assert storage.phone_listing_count("052-7654321") == 1
+    assert storage.phone_listing_count("052-0000000") == 0
+    assert storage.phone_listing_count(None) == 0
+    assert storage.phone_listing_count("123") == 0     # too short to be a phone
+
+
 def test_amenities_roundtrip(temp_db):
     from models import ListingExtract, PipelineResult, Status
     am = {"bus669": {"label": "669 מרגר", "icon": "🚌", "kind": "bus_route",
@@ -87,12 +149,55 @@ def test_furnished_floor_persisted(temp_db):
                          location_tier="GREEN", score=80, extract=e))
     assert sqlite3.connect(temp_db).execute(
         "SELECT floor, furnished FROM listings WHERE dedup_key='kf'").fetchone() == ("3", 1)
-    # False -> 0, None -> None (the null/false distinction survives)
-    for val, exp in ((False, 0), (None, None)):
-        storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="kf2",
+    # False -> 0, None -> None (the null/false distinction survives). Separate rows:
+    # writing None OVER a stored 0 no longer blanks it — see the enrichment tests.
+    for key, val, exp in (("kf2", False, 0), ("kf3", None, None)):
+        storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key=key,
                              score=80, extract=ListingExtract(is_apartment_ad=True, furnished=val)))
         assert sqlite3.connect(temp_db).execute(
-            "SELECT furnished FROM listings WHERE dedup_key='kf2'").fetchone()[0] == exp
+            "SELECT furnished FROM listings WHERE dedup_key=?", (key,)).fetchone()[0] == exp
+
+
+def test_resave_enriches_and_never_blanks(temp_db):
+    """A thinner later read must only ever ADD detail. Before this, re-saving a flat
+    whose price the LLM missed that time wiped the price we already had."""
+    import sqlite3
+    rich = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 5",
+                          price_per_room_ils=1400, available_rooms_count=2, floor="3",
+                          furnished=True, contact_phone_or_link="050-1234567")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k", score=80,
+                                        location_tier="GREEN", walk_minutes=7.0,
+                                        images=["http://a"], extract=rich))
+    thin = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 5")
+    storage.save_listing(PipelineResult(status=Status.NEEDS_DATA, dedup_key="k", score=55,
+                                        location_tier="AMBER", walk_minutes=9.0,
+                                        extract=thin))
+    row = sqlite3.connect(temp_db).execute(
+        """SELECT price_per_room, available_rooms, floor, furnished, contact, images,
+                  status, score, location_tier, walk_minutes
+           FROM listings WHERE dedup_key='k'""").fetchone()
+    # detail kept…
+    assert row[:5] == (1400, 2, "3", 1, "050-1234567")
+    assert row[5] == '["http://a"]'                    # photos aren't dropped either
+    # …while the freshly computed verdict does replace the old one
+    assert row[6:] == ("NEEDS_DATA", 55, "AMBER", 9.0)
+
+
+def test_enrichment_fills_a_gap_rather_than_duplicating(temp_db):
+    """The cross-source case: a second read knows the price the first one lacked."""
+    import sqlite3
+    first = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="קדש 3",
+                           available_rooms_count=2)
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k2", score=70,
+                                        extract=first))
+    second = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="קדש 3",
+                            price_per_room_ils=1550, balcony_or_garden="מרפסת")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k2", score=75,
+                                        extract=second))
+    c = sqlite3.connect(temp_db)
+    assert c.execute("SELECT COUNT(*) FROM listings WHERE dedup_key='k2'").fetchone()[0] == 1
+    assert c.execute("SELECT available_rooms, price_per_room, balcony FROM listings "
+                     "WHERE dedup_key='k2'").fetchone() == (2, 1550, "מרפסת")
 
 
 def test_set_source_url_backfill(temp_db):
@@ -293,3 +398,31 @@ def test_fuzzy_dedup_matches_near_identical(temp_db):
     assert storage.find_similar(other) is None
     # too-short text is never fuzzy-matched
     assert storage.find_similar({"דירה", "להשכרה"}) is None
+
+
+def test_rekey_migration_carries_votes(temp_db):
+    """Old rows are keyed on the bare phone; without the migration a re-read would add
+    a second row and the ⭐ votes would be stranded on the orphan."""
+    import sqlite3
+    e = _ex("רגר 164", "050-1234567")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="phone:501234567",
+                                        score=80, extract=e))
+    storage.set_mark("phone:501234567", "u1", "saved")
+    assert storage.rekey_phone_listings() == 1
+    new = "phone:501234567|רגר 164"
+    assert new == storage.make_dedup_key(e)                    # matches what code computes
+    c = sqlite3.connect(temp_db)
+    assert c.execute("SELECT COUNT(*) FROM listings WHERE dedup_key=?", (new,)).fetchone()[0] == 1
+    assert c.execute("SELECT COUNT(*) FROM listings WHERE dedup_key='phone:501234567'"
+                     ).fetchone()[0] == 0
+    assert storage.effective_score(new, base=80) > 80          # the ⭐ came along
+    assert storage.rekey_phone_listings() == 0                 # idempotent
+
+
+def test_rekey_leaves_bare_address_rows_alone(temp_db):
+    """No house number means we still can't tell two flats apart, so those rows keep
+    the phone-only key."""
+    e = _ex("שכונה ב", "050-1234567")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="phone:501234567",
+                                        score=70, extract=e))
+    assert storage.rekey_phone_listings() == 0

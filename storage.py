@@ -150,14 +150,30 @@ def _addr_key(e: ListingExtract) -> Optional[str]:
     return "addr:" + norm if norm else None
 
 
-def make_dedup_key(e: ListingExtract) -> str:
-    """The single primary key written to the listings row: the phone when present
-    (survives cross-posting), else the content hash."""
+def _phone_key(e: ListingExtract) -> Optional[str]:
     if e.contact_phone_or_link:
         digits = re.sub(r"\D", "", e.contact_phone_or_link)
         if len(digits) >= 7:
             return "phone:" + digits[-9:]
-    return _content_hash_key(e)
+    return None
+
+
+def make_dedup_key(e: ListingExtract) -> str:
+    """The single primary key written to the listings row.
+
+    The phone survives cross-posting, so it is the backbone — but a phone alone
+    is NOT a flat. Measured on the archive: 42 numbers advertise more than one
+    numbered address (one posts 32), and keying on the bare phone silently
+    collapsed 101 genuinely different flats into a single row, dropping every one
+    after the first as "already seen". So when we know BOTH the phone and a
+    numbered address, the identity is the pair; the flats separate while reposts of
+    the same flat still collapse. Without a house number we can't tell two flats
+    apart, so a bare address keeps the old conservative phone-only behaviour."""
+    phone = _phone_key(e)
+    addr = _norm_addr(e.street_address_or_neighborhood)
+    if phone and addr:
+        return f"{phone}|{addr}"
+    return phone or _content_hash_key(e)
 
 
 def dedup_keys(e: ListingExtract) -> list:
@@ -176,6 +192,108 @@ def dedup_keys(e: ListingExtract) -> list:
     if ak and ak not in keys:
         keys.append(ak)
     return keys
+
+
+def is_duplicate(e: ListingExtract) -> bool:
+    """Have we already handled THIS flat? The dedup entry point — use it instead of
+    is_seen_any(dedup_keys(e)) so the phone/address rules live in one place.
+
+    Two checks:
+      1. any of the listing's stable keys is already seen (primary + address), and
+      2. a listing with NO house number, from a phone we already have under some
+         address, is treated as the same flat. We genuinely cannot tell whether
+         "רגר, אצל דני" is a new flat or a vaguer re-read of the one we stored, and
+         a wrong duplicate alert is worse than a missed vague one."""
+    if is_seen_any(dedup_keys(e)):
+        return True
+    phone = _phone_key(e)
+    if phone and not _norm_addr(e.street_address_or_neighborhood):
+        with _conn() as c:
+            return c.execute(
+                "SELECT 1 FROM seen WHERE dedup_key = ? OR dedup_key LIKE ? LIMIT 1",
+                (phone, phone + "|%")).fetchone() is not None
+    return False
+
+
+_broker_counts: Optional[dict] = None
+
+
+def _build_broker_counts() -> dict:
+    """{phone_key: distinct numbered addresses advertised} from the POST ARCHIVE.
+
+    The archive, not the listings table: listings only holds what survived the zone
+    and price gates, so an agency with 32 flats city-wide and two near campus would
+    look like a private landlord. Built once per process (a few thousand rows) and
+    cached — process_post calls this per post."""
+    counts: dict = {}
+    with _conn() as c:
+        rows = c.execute("SELECT parsed_json FROM posts "
+                         "WHERE parsed_json IS NOT NULL").fetchall()
+    seen_pairs = set()
+    for (pj,) in rows:
+        try:
+            d = json.loads(pj)
+        except Exception:
+            continue
+        phone, addr = d.get("contact_phone_or_link"), d.get("street_address_or_neighborhood")
+        if not phone or not addr:
+            continue
+        digits = re.sub(r"\D", "", phone)
+        norm = _norm_addr(addr)
+        if len(digits) < 7 or not norm:
+            continue
+        pair = ("phone:" + digits[-9:], norm)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        counts[pair[0]] = counts.get(pair[0], 0) + 1
+    return counts
+
+
+def phone_listing_count(phone: Optional[str]) -> int:
+    """How many DISTINCT numbered flats this contact has advertised. A private
+    landlord has one or two; an agency has many, which is a far more reliable
+    signal than matching "תיווך" in the text (plenty of brokers never say it, and
+    plenty of posts mention it about someone else)."""
+    global _broker_counts
+    if not phone:
+        return 0
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) < 7:
+        return 0
+    if _broker_counts is None:
+        _broker_counts = _build_broker_counts()
+    return _broker_counts.get("phone:" + digits[-9:], 0)
+
+
+def invalidate_broker_counts() -> None:
+    """Drop the cached agency tallies — call after archiving new posts so a long-lived
+    process (the listener) doesn't keep a stale picture."""
+    global _broker_counts
+    _broker_counts = None
+
+
+_broker_pairs: set = set()
+
+
+def _note_broker_pair(extract) -> None:
+    """Fold one freshly archived post into the cached tallies, so a run that discovers
+    a landlord's 4th flat flags them immediately. Updating in place beats invalidating:
+    rebuilding scans the whole archive, and record_post runs once per post."""
+    if _broker_counts is None or extract is None:
+        return
+    phone = getattr(extract, "contact_phone_or_link", None)
+    norm = _norm_addr(getattr(extract, "street_address_or_neighborhood", None))
+    if not phone or not norm:
+        return
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) < 7:
+        return
+    pair = ("phone:" + digits[-9:], norm)
+    if pair in _broker_pairs:
+        return
+    _broker_pairs.add(pair)
+    _broker_counts[pair[0]] = _broker_counts.get(pair[0], 0) + 1
 
 
 def is_seen(dedup_key: str) -> bool:
@@ -437,6 +555,7 @@ def record_post(sig: str, raw_text: str, comments, images, group, source_url,
             (sig, raw_text, comments or "", json.dumps(images or []), group, source_url,
              extract.model_dump_json() if extract else None,
              res.status.value, res.reason, res.location_tier, res.score, posted_at))
+    _note_broker_pair(extract)     # keep the agency tallies current within this run
 
 
 def all_posts() -> list:
@@ -534,6 +653,39 @@ def _group_key(dedup_key, address) -> str:
     return "addr:" + norm if norm else str(dedup_key)
 
 
+def rekey_phone_listings() -> int:
+    """One-time migration for the phone|address dedup key (see make_dedup_key).
+
+    Rows written before that change are keyed on the bare phone. Left alone they'd be
+    orphaned — a re-read now computes "phone:X|רגר 5" and would add a SECOND row, and
+    replay's delete-by-key would miss the old one. So rename each such row to the key
+    it would get today, carrying its ⭐/🗑 votes and fingerprint across. Idempotent:
+    rows already scoped, or without a numbered address, are skipped. Returns rows moved.
+    """
+    moved = 0
+    with _conn() as c:
+        rows = c.execute("SELECT dedup_key, address FROM listings "
+                         "WHERE dedup_key LIKE 'phone:%'").fetchall()
+        for old, address in rows:
+            if "|" in old:
+                continue                              # already scoped
+            norm = _norm_addr(address)
+            if not norm:
+                continue                              # no house number -> phone-only key
+            new = f"{old}|{norm}"
+            if c.execute("SELECT 1 FROM listings WHERE dedup_key=?", (new,)).fetchone():
+                continue                              # target exists; leave the merge to
+                                                      # merge_duplicate_listings
+            c.execute("UPDATE listings SET dedup_key=? WHERE dedup_key=?", (new, old))
+            c.execute("UPDATE OR IGNORE marks SET dedup_key=? WHERE dedup_key=?", (new, old))
+            c.execute("DELETE FROM marks WHERE dedup_key=?", (old,))
+            c.execute("UPDATE OR IGNORE post_fingerprints SET dedup_key=? WHERE dedup_key=?",
+                      (new, old))
+            c.execute("INSERT OR IGNORE INTO seen(dedup_key) VALUES (?)", (new,))
+            moved += 1
+    return moved
+
+
 def merge_duplicate_listings() -> int:
     """One-time cleanup: the SAME numbered flat stored under several keys (phone vs
     hash vs a field-flip) — e.g. רינגלבלום 1 as two hashes, רגר 164 as phone+hash.
@@ -593,22 +745,58 @@ def _tri(v):
 
 
 def save_listing(res: PipelineResult) -> None:
+    """Write (or ENRICH) a listing row.
+
+    Enrichment, not replacement: a later, thinner read of the same flat — the LLM
+    missed the price this time, or a second source knows only the address — must
+    never blank out a field we already had. Every nullable column is written as
+    COALESCE(new, old), so a row only ever gains detail. Non-nullable status fields
+    (status/tier/score/walk) DO overwrite: those are recomputed every time and the
+    fresh verdict is the right one."""
     e = res.extract
+    imgs = json.dumps(res.images or [])
+    am = json.dumps(res.amenities or {}, ensure_ascii=False)
     with _conn() as c:
         c.execute(
-            """INSERT OR REPLACE INTO listings
+            """INSERT INTO listings
                (dedup_key,status,location_tier,price_per_room,available_rooms,total_roommates,
                 address,walk_minutes,lease_start,contact,summary,source_url,"group",
                 price_from_comment,score,images,floor,furnished,balcony,elevator,geocode_source,
                 amenities)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(dedup_key) DO UPDATE SET
+                 status=excluded.status,
+                 location_tier=excluded.location_tier,
+                 score=excluded.score,
+                 walk_minutes=excluded.walk_minutes,
+                 geocode_source=excluded.geocode_source,
+                 price_from_comment=excluded.price_from_comment,
+                 -- everything below only ever GAINS detail (see the docstring)
+                 price_per_room=COALESCE(excluded.price_per_room, price_per_room),
+                 available_rooms=COALESCE(excluded.available_rooms, available_rooms),
+                 total_roommates=COALESCE(excluded.total_roommates, total_roommates),
+                 address=COALESCE(excluded.address, address),
+                 lease_start=COALESCE(excluded.lease_start, lease_start),
+                 contact=COALESCE(excluded.contact, contact),
+                 summary=COALESCE(excluded.summary, summary),
+                 source_url=COALESCE(excluded.source_url, source_url),
+                 "group"=COALESCE(excluded."group", "group"),
+                 floor=COALESCE(excluded.floor, floor),
+                 furnished=COALESCE(excluded.furnished, furnished),
+                 balcony=COALESCE(excluded.balcony, balcony),
+                 elevator=COALESCE(excluded.elevator, elevator),
+                 -- a JSON blob is "empty" as '[]'/'{}', which COALESCE can't see
+                 images=CASE WHEN excluded.images IN ('[]','') THEN images
+                             ELSE excluded.images END,
+                 amenities=CASE WHEN excluded.amenities IN ('{}','') THEN amenities
+                                ELSE excluded.amenities END""",
             (res.dedup_key, res.status.value, res.location_tier,
              e.price_per_room_ils, e.available_rooms_count, e.total_roommates_in_apt,
              e.street_address_or_neighborhood, res.walk_minutes, e.lease_start_date,
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
-             1 if e.price_from_comment else 0, res.score, json.dumps(res.images or []),
+             1 if e.price_from_comment else 0, res.score, imgs,
              e.floor, _tri(e.furnished), e.balcony_or_garden, _tri(e.has_elevator),
-             res.geo_source, json.dumps(res.amenities or {}, ensure_ascii=False)),
+             res.geo_source, am),
         )
 
 

@@ -192,3 +192,31 @@ def test_entry_date_is_smallest_factor():
     off = fit.score(1400, 10, "GREEN", 2, 3, lease_start="1.3")   # March, far
     assert on > adj > off                     # closer to target scores higher
     assert on - off <= 4                       # ...but by at most 4 points (tiny)
+
+
+def test_broker_penalty_applies_only_past_the_threshold():
+    """Agency detection is by COUNT of distinct flats, not the word תיווך — many
+    brokers never write it and many posts mention it about someone else."""
+    import config
+    import fit
+
+    def penalty(n):
+        parts = fit.breakdown(1500, 8.0, "GREEN", broker_listings=n)
+        return sum(d for lbl, d in parts if "מתווך" in lbl)
+
+    assert penalty(0) == 0
+    assert penalty(config.BROKER_MIN_LISTINGS - 1) == 0        # a private landlord
+    assert penalty(config.BROKER_MIN_LISTINGS) == -config.BROKER_PENALTY
+    assert penalty(30) == -config.BROKER_PENALTY               # capped, not cumulative
+    # a broker listing is penalised, never dropped — some list good flats
+    assert fit.score(1400, 6.0, "GREEN", 2, 2, broker_listings=30) > 0
+
+
+def test_broker_penalty_lowers_but_does_not_dominate_the_score():
+    import config
+    import fit
+    args = (1400, 6.0, "GREEN", 2, 2)
+    clean = fit.score(*args)
+    brokered = fit.score(*args, broker_listings=config.BROKER_MIN_LISTINGS)
+    assert brokered < clean
+    assert clean - brokered <= 15          # a nudge, not a veto: location/price still rule

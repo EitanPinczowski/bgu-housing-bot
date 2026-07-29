@@ -487,7 +487,7 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     #    what stops רינגלבלום 1 / רגר 164 being alerted twice. Skipped on a dry run
     #    so already-stored posts still surface instead of short-circuiting to DROP.
     key = storage.make_dedup_key(e)
-    if commit and storage.is_seen_any(storage.dedup_keys(e)):
+    if commit and storage.is_duplicate(e):
         return result(Status.DROP, "already seen", key=key)
 
     def mark_seen(k: str) -> None:
@@ -606,12 +606,16 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     # Preferred-neighborhood tie-breaker (ב > ג = ד): the letter the post NAMES wins
     # (the user's rule is about what the post says); else infer from the coordinate.
     neighborhood = nbhd_letter or zones.neighborhood_of(lat, lon)
+    # How many distinct flats this contact advertises — an agency, inferred from the
+    # data. Counted from what's already stored, so it grows as the picture fills in.
+    res.broker_listings = storage.phone_listing_count(e.contact_phone_or_link)
     res.score = fit.score(e.price_per_room_ils, walk, tier,
                           e.available_rooms_count, e.total_roommates_in_apt,
                           e.price_from_comment, age_hours, e.lease_start_date,
                           e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
                           neighborhood, has_photos=bool(images),
-                          seeks_female=_seeks_female_roommates(raw_text))
+                          seeks_female=_seeks_female_roommates(raw_text),
+                          broker_listings=res.broker_listings)
 
     # Amenity/transit context for the alert — computed AFTER the score, on kept
     # listings only, so it can neither influence the score nor cost routing on a
