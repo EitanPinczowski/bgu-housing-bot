@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import requests
 
+import amenities
 import config
 import fit
 from models import PipelineResult, Status
@@ -77,6 +78,12 @@ def format_alert(res: PipelineResult) -> str:
     if res.walk_minutes is not None:
         gate = f" מ{res.walk_gate}" if res.walk_gate else ""
         lines.append(f"🚶 {_esc(f'{res.walk_minutes:.0f} דק׳ הליכה' + gate)}")
+
+    # What daily life is like here: the bus you'd actually take, and the gym. Purely
+    # informational — these never touch the score. Nothing resolved -> nothing printed
+    # (an "unknown" line every time would just be noise).
+    for frag in amenities.describe(getattr(res, "amenities", None)):
+        lines.append(_esc(frag))
 
     if getattr(e, "floor", None):
         lines.append(f"🏢 קומה {_esc(e.floor)}")

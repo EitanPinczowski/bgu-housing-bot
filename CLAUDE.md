@@ -45,6 +45,12 @@ SQLite + optional Google Sheets + Telegram alert`
   - `RED` beyond that (or inside a `no_amber_zones.json` area like שכונה ד' but
     outside green) → dropped
   - `UNKNOWN` couldn't geocode → NEEDS_DATA
+- **Amenity/transit proximity is DISPLAY-ONLY** (explicit user decision, 2026-07-29):
+  alerts show the walk to line 669 on רגר (both directions), to a bus heading for
+  רכבת באר שבע מרכז with its frequency, and to the gym at קניון עזריאלי הנגב — but
+  none of it enters `fit.score`. Frequency requires the MOT **GTFS** feed (OSM knows
+  where stops are, not how often buses run). Rebuild with `python load_amenities.py`.
+  Do not quietly turn these into scoring factors.
 - **OSRM gives the amber walk time** for real listings (min over gates); when it's
   down, and for the whole-area map, a calibrated straight-line estimate is used —
   so the bot still classifies without OSRM running. (`BUFFER_METERS` is deprecated.)
@@ -64,6 +70,8 @@ SQLite + optional Google Sheets + Telegram alert`
 - `geocode.py` — static name table (primary) → cache → optional Google → Nominatim.
 - `osrm.py` — local foot routing; min over gates (drives the 20-min amber boundary).
 - `zones.py` — green polygon + no-amber (ד') polygons; walk-time tier classification.
+- `amenities.py` / `load_amenities.py` — walk times to the bus/gym that matter
+  (`config.AMENITY_TARGETS`), from MOT GTFS + Overpass. **Display only, never scored.**
 - `fit.py` — 0–100 fit score → ⭐1–5 (zone, walk, price, rooms, freshness, entry date).
 - `storage.py` — SQLite: dedup, listings, votes/marks, unknown-locations, fingerprints, post archive.
 - `sheets.py` — optional Google Sheets sink (append, batch reconcile, sort, rebuild).

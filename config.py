@@ -238,6 +238,66 @@ NOMINATIM_USER_AGENT = "bgu-housing-bot/1.0 (personal apartment search)"
 BEER_SHEVA_VIEWBOX = "34.74,31.30,34.86,31.19"
 
 # ---------------------------------------------------------------------------
+# Amenity & transit proximity (DISPLAY ONLY — deliberately NOT part of the fit
+# score, which stays exactly as calibrated). Answers "what's daily life like at
+# this address": the bus you actually use, and the gym.
+#
+# The data is precomputed into amenities.json by load_amenities.py so a run needs
+# no network; amenities.py then routes from a listing to the nearest option with
+# ONE OSRM /table call. Every piece is optional — a missing file, a dead OSRM, or
+# nothing in range simply prints no amenity line.
+# ---------------------------------------------------------------------------
+AMENITIES_PATH = ROOT / "amenities.json"
+# Only consider stops/POIs within this straight-line distance before routing —
+# keeps the OSRM table small and stops us reporting a "nearby" stop that isn't.
+# A target may override it with "max_meters" (the gym is a single destination 2-3 km
+# from the search area, so the default would silently hide it from every listing).
+AMENITY_MAX_METERS = 1500
+# When two stops are about equally close, the more FREQUENT one is the better answer.
+# Among stops within this many extra walking minutes of the nearest, pick the best
+# headway. Without it we once reported a bus every 36 min while a 10-min line was
+# 6 metres further away.
+AMENITY_DETOUR_MINUTES = 2
+# Daytime window used to turn a stop's weekday departure count into a headway
+# ("a bus every ~N minutes"). (start_hour, end_hour), 24h.
+AMENITY_HEADWAY_WINDOW = (7, 22)
+# Israel Ministry of Transport GTFS — official open data, free, no key. Big
+# (~100 MB zipped, stop_times.txt ~1 GB raw), so load_amenities.py streams it
+# straight out of the zip and caches the download in data/.
+GTFS_URL = "https://gtfs.mot.gov.il/gtfsfiles/israel-public-transportation.zip"
+GTFS_CACHE_PATH = DATA_DIR / "israel-gtfs.zip"
+# Which weekday's service to measure frequency on (0=Mon … 6=Sun). Tuesday is an
+# ordinary Israeli working day (Fri/Sat service is very different).
+GTFS_WEEKDAY = 1
+# "The train station" = באר שבע מרכז, beside the central bus station — NOT
+# באר שבע צפון/אוניברסיטה, which is already at campus. load_amenities.py locates it
+# in the GTFS feed itself by name (`name_match`, which resolves to exactly one rail
+# stop); the coordinate here is only the fallback if that lookup finds nothing.
+TRAIN_STATION = {"lat": 31.2430, "lon": 34.7981, "name": "רכבת באר שבע מרכז",
+                 "name_match": "באר שבע מרכז"}
+# Stops within this far of the station count as being AT it — buses serve the
+# adjacent central bus station, not the railway platform, so some slack is required.
+# 250 m covers the terminal but stops short of the mall's stop (~300 m away), which
+# a wider radius would wrongly credit as "a bus to the train".
+TRAIN_STATION_RADIUS_M = 250
+# What to report on each listing. Data-driven: a fourth amenity is a config edit
+# plus (for a new "kind") a branch in load_amenities.py.
+#   kind "bus_route"  — nearest stop served by `route`, reported PER DIRECTION
+#   kind "bus_toward" — nearest stop with a bus heading to the train station
+#   kind "poi"        — nearest of a set of named places resolved via Overpass
+AMENITY_TARGETS = [
+    {"key": "bus669", "kind": "bus_route", "route": "669", "street": "רגר",
+     "label": "669 מרגר", "icon": "🚌"},
+    {"key": "train", "kind": "bus_toward", "label": "לרכבת מרכז", "icon": "🚆"},
+    # OSM still carries this mall's PRE-REBRAND name (קניון הנגב) — nothing in
+    # Be'er Sheva is tagged עזריאלי at all. match_names is tried in order, so the
+    # current name wins if/when OSM catches up, and the old one keeps it working.
+    {"key": "gym", "kind": "poi", "query": "קניון עזריאלי הנגב",
+     "match_names": ["עזריאלי הנגב", "קניון הנגב"], "max_meters": 4000,
+     "label": "חדר כושר עזריאלי", "icon": "🏋️"},
+]
+
+# ---------------------------------------------------------------------------
 # Facebook groups to scan (used by the auto-scraper — next increment).
 # ---------------------------------------------------------------------------
 FB_GROUPS = [

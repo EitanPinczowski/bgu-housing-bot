@@ -106,6 +106,11 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE listings ADD COLUMN elevator INTEGER")
     if "geocode_source" not in cols:
         c.execute("ALTER TABLE listings ADD COLUMN geocode_source TEXT")
+    if "amenities" not in cols:
+        # One JSON blob rather than a column per amenity: the list is display-only
+        # config (config.AMENITY_TARGETS) and will grow, and a schema migration per
+        # bus stop would be absurd.
+        c.execute("ALTER TABLE listings ADD COLUMN amenities TEXT")
     pcols = {r[1] for r in c.execute("PRAGMA table_info(posts)").fetchall()}
     if pcols and "posted_at" not in pcols:
         c.execute("ALTER TABLE posts ADD COLUMN posted_at TEXT")
@@ -594,13 +599,26 @@ def save_listing(res: PipelineResult) -> None:
             """INSERT OR REPLACE INTO listings
                (dedup_key,status,location_tier,price_per_room,available_rooms,total_roommates,
                 address,walk_minutes,lease_start,contact,summary,source_url,"group",
-                price_from_comment,score,images,floor,furnished,balcony,elevator,geocode_source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                price_from_comment,score,images,floor,furnished,balcony,elevator,geocode_source,
+                amenities)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (res.dedup_key, res.status.value, res.location_tier,
              e.price_per_room_ils, e.available_rooms_count, e.total_roommates_in_apt,
              e.street_address_or_neighborhood, res.walk_minutes, e.lease_start_date,
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
              1 if e.price_from_comment else 0, res.score, json.dumps(res.images or []),
              e.floor, _tri(e.furnished), e.balcony_or_garden, _tri(e.has_elevator),
-             res.geo_source),
+             res.geo_source, json.dumps(res.amenities or {}, ensure_ascii=False)),
         )
+
+
+def listing_amenities(dedup_key: str) -> dict:
+    """The stored amenity walk-times for a listing — {} for a row saved before the
+    column existed, or for one where nothing resolved."""
+    with _conn() as c:
+        row = c.execute("SELECT amenities FROM listings WHERE dedup_key=?",
+                        (dedup_key,)).fetchone()
+    try:
+        return json.loads(row[0]) if row and row[0] else {}
+    except Exception:
+        return {}

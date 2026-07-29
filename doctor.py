@@ -49,8 +49,11 @@ def _check_config():
 
 
 def _check_data_files():
-    # (path, remediation-loader) for each artifact the classifier needs
+    # (path, remediation-loader, required) for each artifact the classifier needs.
+    # required=False -> a missing file is a WARN, not a FAIL: the feature is simply
+    # off (amenities are display-only and never affect a listing's fate).
     files = [
+        (config.AMENITIES_PATH, "run: python load_amenities.py", False),
         (config.GREEN_ZONE_PATH, "regenerate with load_zone_from_kmz.py"),
         (config.NEIGHBORHOODS_PATH, "run: python load_neighborhoods.py"),
         (config.NO_AMBER_ZONES_PATH, "regenerate the no-amber polygons"),
@@ -58,16 +61,17 @@ def _check_data_files():
         (config.ROOT / "area_features.json", "run: python load_area_features.py"),
     ]
     out = []
-    for path, fix in files:
+    for path, fix, *rest in files:
+        bad = FAIL if (rest[0] if rest else True) else WARN
         name = f"data:{path.name}"
         if not path.exists():
-            out.append((name, FAIL, "missing", fix))
+            out.append((name, bad, "missing", fix))
             continue
         try:
             json.loads(path.read_text(encoding="utf-8"))
             out.append((name, PASS, "present + parses", ""))
         except Exception as exc:
-            out.append((name, FAIL, f"unparseable: {exc}", fix))
+            out.append((name, bad, f"unparseable: {exc}", fix))
     return out
 
 

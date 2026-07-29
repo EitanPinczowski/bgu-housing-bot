@@ -10,6 +10,7 @@ import hashlib
 import re
 from typing import Optional
 
+import amenities
 import config
 import dates
 import fit
@@ -611,6 +612,11 @@ def _classify(e, raw_text: str, source_url, group, images: list,
                           e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
                           neighborhood, has_photos=bool(images),
                           seeks_female=_seeks_female_roommates(raw_text))
+
+    # Amenity/transit context for the alert — computed AFTER the score, on kept
+    # listings only, so it can neither influence the score nor cost routing on a
+    # listing we're dropping. Returns {} on any failure (see amenities.nearby).
+    res.amenities = amenities.nearby(lat, lon)
 
     if commit:
         # Mark this flat seen under ALL its stable keys (phone/content-hash/address)

@@ -57,4 +57,7 @@ class PipelineResult(BaseModel):
     source_url: Optional[str] = None
     group: Optional[str] = None
     images: list[str] = []                 # apartment photos, for the alert album
+    # Walk times to the bus/gym the user actually cares about (amenities.py).
+    # DISPLAY ONLY — deliberately not an input to `score`.
+    amenities: dict = {}
     extract: Optional[ListingExtract] = None

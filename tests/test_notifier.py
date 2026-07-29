@@ -31,6 +31,27 @@ def test_alert_keyboard_has_why_and_contacted():
     assert {"save|k1", "dismiss|k1", "why|k1", "contacted|k1"} <= set(data)
 
 
+def _match(**kw):
+    return PipelineResult(status=Status.MATCH, dedup_key="k1", location_tier="GREEN",
+                          extract=ListingExtract(is_apartment_ad=True), **kw)
+
+
+def test_amenity_line_is_rendered_and_escaped():
+    res = _match(amenities={"bus669": {
+        "label": "669 מרגר", "icon": "🚌", "kind": "bus_route",
+        "options": [{"minutes": 6.0, "headway_min": 20, "direction_id": "0"},
+                    {"minutes": 8.0, "headway_min": 30, "direction_id": "1"}]}})
+    body = notifier.format_alert(res)
+    assert "🚌 669 מרגר" in body
+    assert "↔" in body                                # both directions on one line
+    assert "\\(כל \\~20 דק׳\\)" in body                # MarkdownV2-escaped, not raw
+
+
+def test_no_amenities_prints_no_line():
+    body = notifier.format_alert(_match())
+    assert "🚌" not in body and "🏋️" not in body       # silence, not "unknown"
+
+
 def test_send_batch_ranks_and_caps(monkeypatch):
     sent = []
     monkeypatch.setattr(notifier, "_send_alert",

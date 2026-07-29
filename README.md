@@ -131,6 +131,21 @@ store, and alert. Try a couple of real posts to sanity-check the extraction.
   a point inside that area to `STATIC_TABLE` in `geocode.py` for more reliable
   placement (a few seeds are already there).
 
+- **Optional — amenity & transit proximity.** `python load_amenities.py` builds
+  `amenities.json`, and every alert then carries a line like
+  `🚌 669 מרגר · 6 דק׳ (כל ~20 דק׳) ↔ 8 דק׳` — walking minutes to the bus and
+  places listed in `config.AMENITY_TARGETS` (line 669 on רגר in both directions,
+  a bus heading to רכבת באר שבע מרכז with its frequency, and the gym at
+  קניון עזריאלי הנגב). **Display only** — it never changes the fit score.
+  - Frequency comes from Israel's Ministry of Transport **GTFS** feed (official
+    open data, free, no key). It's ~100 MB zipped, cached in `data/`, streamed
+    straight out of the zip; `--skip-download` reuses it and `--poi-only`
+    refreshes just the Overpass places.
+  - Re-run it every few months (timetables change). Everything degrades quietly:
+    no `amenities.json`, or a stopped OSRM, and alerts simply omit the line.
+  - Note OSM lags rebrands — the Azrieli mall is still tagged `קניון הנגב`, which
+    is why each place carries a `match_names` list tried in order.
+
 Also worth verifying once: the `GATES` coordinates in `config.py` (main gate is
 from your spec; Soroka/north are approximate — drop pins and correct them). They
 only affect the displayed walk time, not the in/out decision.

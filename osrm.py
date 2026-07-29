@@ -37,6 +37,13 @@ def _alive_check() -> bool:
     return _alive
 
 
+def alive() -> bool:
+    """Public view of the once-per-process OSRM probe, so other modules (amenities.py)
+    can skip routing entirely when the server is down instead of paying a timeout per
+    listing."""
+    return _alive_check()
+
+
 def _foot_minutes(lat: float, lon: float, gate: dict, tries: int = 3) -> Optional[float]:
     # OSRM wants lon,lat  ->  {src_lon},{src_lat};{dst_lon},{dst_lat}
     coords = f"{lon},{lat};{gate['lon']},{gate['lat']}"
@@ -84,12 +91,18 @@ def _save_walk_cache() -> None:
         pass
 
 
-def _table_walk(lat: float, lon: float, tries: int = 3):
-    """(minutes, gate name) via ONE OSRM /table call — source × all gates in a single
-    request instead of a /route per gate — taking the nearest. (None, None) on failure."""
-    gates = list(config.GATES.items())
-    # OSRM wants lon,lat; point 0 = the listing, points 1..N = the gates
-    coords = f"{lon},{lat}" + "".join(f";{g['lon']},{g['lat']}" for _, g in gates)
+def table_minutes(lat: float, lon: float, destinations, tries: int = 3):
+    """Walking minutes from (lat, lon) to EACH destination, via ONE OSRM /table call
+    instead of a /route per destination. `destinations` is a sequence of (lat, lon).
+    Returns a list aligned with `destinations` (None where there's no route), or None
+    if OSRM couldn't answer at all — callers must distinguish "no route" from "no
+    server". Shared by gate routing and amenity lookups so there is exactly one
+    place that flips to OSRM's (lon, lat) order."""
+    dests = list(destinations)
+    if not dests:
+        return []
+    # OSRM wants lon,lat; point 0 = the source, points 1..N = the destinations
+    coords = f"{lon},{lat}" + "".join(f";{d[1]},{d[0]}" for d in dests)
     url = f"{config.OSRM_BASE_URL}/table/v1/foot/{coords}"
     for i in range(tries):
         try:
@@ -97,18 +110,27 @@ def _table_walk(lat: float, lon: float, tries: int = 3):
             r.raise_for_status()
             data = r.json()
             if data.get("code") != "Ok" or not data.get("durations"):
-                return None, None                      # answered, no table — don't retry
-            durs = data["durations"][0][1:]            # source 0 -> each gate (skip self at 0)
-            best = min((d for d in durs if d is not None), default=None)
-            if best is None:
-                return None, None
-            gk, gv = gates[durs.index(best)]
-            return best / 60.0, gv.get("name", gk)
+                return None                            # answered, no table — don't retry
+            durs = data["durations"][0][1:]            # source 0 -> each dest (skip self at 0)
+            return [None if d is None else d / 60.0 for d in durs]
         except Exception:
             if i == tries - 1:
-                return None, None
+                return None
             time.sleep(0.5 * (2 ** i))
-    return None, None
+    return None
+
+
+def _table_walk(lat: float, lon: float, tries: int = 3):
+    """(minutes, gate name) for the nearest campus gate. (None, None) on failure."""
+    gates = list(config.GATES.items())
+    mins = table_minutes(lat, lon, [(g["lat"], g["lon"]) for _, g in gates], tries=tries)
+    if not mins:
+        return None, None
+    best = min((m for m in mins if m is not None), default=None)
+    if best is None:
+        return None, None
+    gk, gv = gates[mins.index(best)]
+    return best, gv.get("name", gk)
 
 
 def walk_to_nearest(lat: Optional[float], lon: Optional[float]

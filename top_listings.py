@@ -30,11 +30,13 @@ from models import ListingExtract, PipelineResult, Status
 
 _SQL = """SELECT dedup_key, status, location_tier, price_per_room, available_rooms,
                  total_roommates, address, walk_minutes, lease_start, contact,
-                 summary, source_url, "group", price_from_comment, score, images
+                 summary, source_url, "group", price_from_comment, score, images,
+                 amenities
           FROM listings WHERE first_seen >= ? AND status = 'MATCH'"""
 _COLS = ("dedup_key", "status", "location_tier", "price_per_room", "available_rooms",
          "total_roommates", "address", "walk_minutes", "lease_start", "contact",
-         "summary", "source_url", "group", "price_from_comment", "score", "images")
+         "summary", "source_url", "group", "price_from_comment", "score", "images",
+         "amenities")
 
 
 def _top(n: int, hours: int):
@@ -64,12 +66,16 @@ def _to_result(r) -> PipelineResult:
             imgs = json.loads(d["images"]) if d["images"] else []
         except Exception:
             imgs = []
+    try:
+        am = json.loads(d["amenities"]) if d["amenities"] else {}
+    except Exception:
+        am = {}
     return PipelineResult(
         status=Status.MATCH, preferred=(d["location_tier"] == "GREEN"),
         location_tier=d["location_tier"], walk_minutes=d["walk_minutes"],
         dedup_key=d["dedup_key"], source_url=d["source_url"], group=d["group"],
         images=imgs, score=storage.effective_score(d["dedup_key"], d["score"] or 0),
-        extract=e)
+        amenities=am, extract=e)
 
 
 def main() -> None:

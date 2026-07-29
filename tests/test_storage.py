@@ -55,6 +55,24 @@ def test_file_ids_roundtrip_and_no_wipe(temp_db):
     assert storage.get_file_ids(k) == ["AAA", "BBB"]
 
 
+def test_amenities_roundtrip(temp_db):
+    from models import ListingExtract, PipelineResult, Status
+    am = {"bus669": {"label": "669 מרגר", "icon": "🚌", "kind": "bus_route",
+                     "options": [{"minutes": 6.0, "headway_min": 20}]}}
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="am:1",
+                                        amenities=am,
+                                        extract=ListingExtract(is_apartment_ad=True)))
+    assert storage.listing_amenities("am:1") == am          # Hebrew survives the JSON
+
+
+def test_amenities_absent_reads_as_empty(temp_db):
+    # a row written before the column existed, and one with nothing resolved, both
+    # read back as {} rather than blowing up a digest
+    storage.save_listing(_res("am:2"))
+    assert storage.listing_amenities("am:2") == {}
+    assert storage.listing_amenities("no-such-key") == {}
+
+
 def test_save_listing_persists_score(temp_db):
     k = "phone:3"
     storage.save_listing(_res(k))

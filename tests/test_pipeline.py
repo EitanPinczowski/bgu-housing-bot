@@ -224,6 +224,66 @@ def test_edge_uncertain_flags_needs_data(monkeypatch):
     assert pipeline._classify(e, "", None, None, [], None, commit=False).status.value == "MATCH"
 
 
+def _green_world(monkeypatch, coords=(31.262, 34.800), source="interpolated"):
+    """Stub everything spatial so a listing lands as a clean GREEN MATCH."""
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed", lambda a: (coords, source))
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (6.0, "gate"))
+    monkeypatch.setattr(pipeline.zones, "classify_location",
+                        lambda lat, lon, walk_min=None: "GREEN")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.zones, "in_allowed_neighborhood", lambda lat, lon: True)
+    monkeypatch.setattr(pipeline.zones, "neighborhood_of", lambda lat, lon: None)
+
+
+def test_amenities_are_attached_but_never_change_the_score(monkeypatch):
+    """The whole contract of this feature: it decorates a result and nothing more.
+    Same listing, same verdict, same score — with and without amenity data."""
+    from models import ListingExtract
+    _green_world(monkeypatch)
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 100",
+                       available_rooms_count=2, total_roommates_in_apt=3,
+                       price_per_room_ils=1400)
+
+    monkeypatch.setattr(pipeline.amenities, "nearby", lambda lat, lon: {})
+    plain = pipeline._classify(e, "", None, None, [], None, commit=False)
+
+    rich_data = {"gym": {"label": "חדר כושר עזריאלי", "icon": "🏋️", "kind": "poi",
+                         "options": [{"minutes": 14.0, "name": "עזריאלי"}]}}
+    monkeypatch.setattr(pipeline.amenities, "nearby", lambda lat, lon: rich_data)
+    rich = pipeline._classify(e, "", None, None, [], None, commit=False)
+
+    assert plain.amenities == {} and rich.amenities == rich_data
+    assert plain.score == rich.score                 # identical, not merely close
+    assert plain.status == rich.status and plain.location_tier == rich.location_tier
+
+
+def test_amenity_failure_cannot_break_a_run(monkeypatch):
+    """A raising lookup would take down every listing in the run, so nearby() swallows
+    its own errors — assert the pipeline still produces a normal result."""
+    from models import ListingExtract
+    _green_world(monkeypatch)
+    monkeypatch.setattr(pipeline.amenities, "_load_data",
+                        lambda: (_ for _ in ()).throw(RuntimeError("corrupt")))
+    monkeypatch.setattr(pipeline.amenities, "_cache", {})
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 100",
+                       available_rooms_count=2, total_roommates_in_apt=3)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value == "MATCH" and res.amenities == {}
+
+
+def test_dropped_listings_never_pay_for_amenity_routing(monkeypatch):
+    """Amenities are computed after the RED/DROP exits, so a rejected listing costs
+    no OSRM calls — the reason it sits below the score, not beside the geocode."""
+    from models import ListingExtract
+    called = []
+    monkeypatch.setattr(pipeline.amenities, "nearby",
+                        lambda lat, lon: called.append(1) or {})
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רמות",
+                       available_rooms_count=2, total_roommates_in_apt=3)
+    assert pipeline._classify(e, "", None, None, [], None, commit=False).status.value == "DROP"
+    assert called == []
+
+
 def test_neighborhood_conflict_flags_needs_data(monkeypatch):
     from models import ListingExtract
     # post says שכונה ג but the point lands in ד -> suspect, flag it
