@@ -13,6 +13,7 @@ listed as unplaced rather than dropped silently.
 """
 from __future__ import annotations
 import html
+import json
 import math
 import sqlite3
 
@@ -26,24 +27,34 @@ _W, _H, _PAD = 1000, 820, 34
 
 
 def _load_listings():
-    """(lat, lon, tier, score, address, price, walk) for each mappable listing, plus
-    the count that couldn't be geocoded."""
+    """(lat, lon, tier, score, address, price, walk, dedup_key) for each mappable
+    listing, plus the count that couldn't be geocoded.
+
+    `dedup_key` is LAST on purpose: build()'s `for _, _, tier, *_ in placed` counter and
+    any other positional reader keep working, and it's what lets the dashboard tie a map
+    dot to its table row."""
     with sqlite3.connect(config.DB_PATH) as c:
-        rows = c.execute("SELECT address, location_tier, score, price_per_room, walk_minutes "
-                         "FROM listings").fetchall()
+        rows = c.execute("SELECT address, location_tier, score, price_per_room, "
+                         "walk_minutes, dedup_key FROM listings").fetchall()
     placed, unplaced = [], 0
-    for addr, tier, score, price, walk in rows:
-        coords = geocode.geocode(addr)
+    for addr, tier, score, price, walk, key in rows:
+        coords = geocode.geocode_cached(addr)
         if coords:
-            placed.append((coords[0], coords[1], tier or "UNKNOWN", score, addr, price, walk))
+            placed.append((coords[0], coords[1], tier or "UNKNOWN", score, addr, price,
+                           walk, key))
         else:
             unplaced += 1
     return placed, unplaced
 
 
 def _projector(pts):
-    """A lat/lon -> SVG (x,y) function fitted to the bounding box of `pts`, with the
-    longitude squeezed by cos(lat) so the map isn't horizontally stretched."""
+    """(xy, params) — a lat/lon -> SVG (x,y) function fitted to the bounding box of
+    `pts`, with the longitude squeezed by cos(lat) so the map isn't horizontally
+    stretched, PLUS the constants it closes over.
+
+    The params are what let the browser place dots itself: the dashboard draws the
+    backdrop server-side but the dots client-side (so they can follow the filters), and
+    both must use the exact same projection or the dots drift off the map."""
     lats = [p[0] for p in pts]
     lons = [p[1] for p in pts]
     min_la, max_la, min_lo, max_lo = min(lats), max(lats), min(lons), max(lons)
@@ -55,6 +66,21 @@ def _projector(pts):
     def xy(la, lo):
         return (_PAD + (lo - min_lo) * kx * scale,
                 _PAD + (max_la - la) * scale)          # invert: SVG y grows downward
+    return xy, {"min_lon": min_lo, "max_lat": max_la, "kx": kx, "scale": scale,
+                "pad": _PAD, "w": _W, "h": _H}
+
+
+def xy_from(projection):
+    """Rebuild the projection function from its parameters alone.
+
+    Used by build_svg here and mirrored line-for-line by the dashboard's JS. Deriving the
+    server-side dots through the SAME params the browser gets means the two can't drift:
+    if these constants were insufficient, the standalone map would break first."""
+    p = projection
+
+    def xy(la, lo):
+        return (p["pad"] + (lo - p["min_lon"]) * p["kx"] * p["scale"],
+                p["pad"] + (p["max_lat"] - la) * p["scale"])
     return xy
 
 
@@ -62,21 +88,51 @@ def _poly_points(xy, poly) -> str:
     return " ".join(f"{x:.1f},{y:.1f}" for x, y in (xy(la, lo) for la, lo in poly))
 
 
-def build_svg():
-    """(svg_markup, placed_rows, unplaced_count) — the map on its own, so callers that
-    want it inside a bigger page (dashboard.py) don't have to scrape it out of the
-    standalone HTML."""
-    placed, unplaced = _load_listings()
+# Only pin targets with a HANDFUL of locations. The "bus toward the train station"
+# target legitimately matches 428 stops — nearly every stop in the city — so pinning it
+# would bury the map under icons while telling you nothing. The 669 stops (2) and the
+# gym (1) are distinctive and worth showing.
+_MAX_PINS_PER_TARGET = 12
+
+
+def _amenity_pins():
+    """(lat, lon, icon, label) for the transit stops and places in amenities.json, so the
+    map can show WHY a listing's amenity line says what it says. Missing file -> none."""
+    try:
+        data = json.loads(config.AMENITIES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for target in (data.get("targets") or {}).values():
+        places = (target.get("stops") or []) + (target.get("points") or [])
+        if len(places) > _MAX_PINS_PER_TARGET:
+            continue
+        icon = target.get("icon") or "•"
+        for p in places:
+            if p.get("lat") is not None:
+                out.append((p["lat"], p["lon"], icon, p.get("name", "")))
+    return out
+
+
+def build_base_svg(placed=None):
+    """(backdrop_svg, projection) — the map WITHOUT any listing dots: the green zone,
+    the ב/ג/ד outlines, the campus gates and the amenity pins.
+
+    Split out so the dashboard can draw dots in the browser (where they can follow the
+    filters) on top of a backdrop rendered here. `placed` is only used to fit the
+    viewport, so the same projection covers every listing."""
     zone = zones._polygon()
     gates = [(g["lat"], g["lon"], g.get("name", k)) for k, g in config.GATES.items()]
     nbhds = zones._neighborhood_polys()
+    pins = _amenity_pins()
 
-    pts = [(la, lo) for la, lo, *_ in placed] + list(zone) + [(la, lo) for la, lo, _ in gates]
+    pts = [(la, lo) for la, lo, *_ in (placed or [])] + list(zone)
+    pts += [(la, lo) for la, lo, _ in gates]
     for _, poly in nbhds:
         pts += [(la, lo) for la, lo in poly]
     if not pts:
         pts = [(31.26, 34.80)]
-    xy = _projector(pts)
+    xy, projection = _projector(pts)
 
     svg = [f'<svg viewBox="0 0 {_W} {_H}" xmlns="http://www.w3.org/2000/svg">']
     svg.append(f'<rect width="{_W}" height="{_H}" fill="#f6f7f9"/>')
@@ -97,8 +153,24 @@ def build_svg():
         gx, gy = xy(la, lo)
         svg.append(f'<text x="{gx:.1f}" y="{gy:.1f}" font-size="16" text-anchor="middle" '
                    f'dominant-baseline="central">★<title>{html.escape(name)}</title></text>')
-    # listings
-    for la, lo, tier, score, addr, price, walk in placed:
+    # amenity pins (the 669 stops, the bus to the train, the gym)
+    for la, lo, icon, name in pins:
+        px, py = xy(la, lo)
+        svg.append(f'<text x="{px:.1f}" y="{py:.1f}" font-size="11" text-anchor="middle" '
+                   f'dominant-baseline="central" opacity="0.75">{html.escape(icon)}'
+                   f'<title>{html.escape(name)}</title></text>')
+    return "".join(svg), projection
+
+
+def build_svg():
+    """(svg_markup, placed_rows, unplaced_count) — the whole map, dots included, for the
+    standalone page. Built on top of build_base_svg so there is one backdrop renderer."""
+    placed, unplaced = _load_listings()
+    base, projection = build_base_svg(placed)
+    xy = xy_from(projection)
+
+    svg = [base]                       # build_base_svg leaves the <svg> open
+    for la, lo, tier, score, addr, price, walk, _key in placed:
         cx, cy = xy(la, lo)
         color = _TIER_COLOR.get(tier, _TIER_COLOR["UNKNOWN"])
         tip = f"{addr or '—'} | {tier} | ⭐{score if score is not None else '?'}"

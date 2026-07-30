@@ -104,8 +104,24 @@ SQLite + optional Google Sheets + Telegram alert`
   (`query.py`) and `/status` commands; dependency health check.
 - `query.py` — parse a free Hebrew/English search into filters; ranked SQLite search.
 - `replay.py` / `stats.py` — offline re-classify (+`--apply`) and funnel stats.
-- `dashboard.py` — one self-contained `data/dashboard.html`: the zone map plus a
-  sortable/filterable table of every listing. Offline, no CDN, read-only.
+- `dashboard.py` / `serve_dashboard.py` — the browse-by-hand view. The table and the
+  map dots are rendered IN THE BROWSER from one JSON payload, so filtering moves the
+  dots too; the backdrop (zone/gates/amenity pins) comes from `map_listings.build_base_svg`
+  and both sides project through the same `xy_from` params. `dashboard.py` writes a
+  self-contained offline `data/dashboard.html`; `serve_dashboard.py` serves the same page
+  live from SQLite, which is the only way to poll, vote, or open it on a phone.
+  - **A token is required on every route** — the page shows landlords' phone numbers and
+    addresses. `DASHBOARD_TOKEN` in `.env`, else generated into
+    `data/dashboard_token.txt`. For away-from-home use **Tailscale**, not a public
+    tunnel. Don't add an unauthenticated mode.
+  - The image proxy serves **only URLs already in the DB**, keyed by hash — never a URL
+    from the request, or it becomes an open relay. It caches to `data/images/` because
+    Facebook URLs expire (only 8 of 350 listings have permanent Telegram file_ids).
+  - Untrusted post text rides inside a `<script>` block, so it goes through
+    `dashboard._json_for_script` (escapes `<`); `json.dumps` alone would let
+    `</script>` in an address break out.
+  - Viewers use `geocode.geocode_cached` — never the network. Going through the full
+    geocoder took **211 s** to render 350 rows.
 - `setup_always_on.cmd` — run ONCE as Administrator. The `BGU *` tasks ship with
   "wake the computer" OFF, so a run due while the PC sleeps is silently skipped —
   the real cause of "why didn't it run". Also fixes battery wake timers/sleep.

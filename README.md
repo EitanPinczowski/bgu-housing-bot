@@ -311,6 +311,43 @@ OSRM Docker container isn't running — you just won't get walk minutes. The
 `osrm_bgu` container is set to restart with Docker Desktop; make sure Docker
 Desktop is set to start on login if you want walk times on scheduled runs.
 
+### The dashboard — offline file, or live on your phone
+
+```bash
+python dashboard.py
+```
+writes a self-contained `data/dashboard.html` that works offline forever (no CDN, no
+tile server). Filtering the table now moves the **map dots** with it, and every row
+expands to show the per-factor score breakdown and the **original Hebrew post**.
+
+```bash
+run_dashboard.cmd
+```
+serves the same page live from SQLite, which is the only way to get three things a
+static file can't do: pick up new listings without a rebuild, vote (⭐/🗑/📵) and write
+notes, and be opened from a phone. It prints its URLs on startup.
+
+**A token is required on every request** — the page lists landlords' phone numbers and
+home addresses. It comes from `DASHBOARD_TOKEN` in `.env`, or is generated once into
+`data/dashboard_token.txt` so a phone bookmark keeps working. There is deliberately no
+unauthenticated mode.
+
+**To reach it away from home, install [Tailscale](https://tailscale.com/) on the PC and
+the phone** and use the `100.x` URL the server prints. That is a private network between
+your own devices — unlike ngrok or a router port-forward, it puts no public URL on the
+internet holding other people's contact details. For same-Wi-Fi access you may need to
+allow the port once:
+
+```bash
+netsh advfirewall firewall add rule name="BGU dashboard" dir=in action=allow protocol=TCP localport=8777
+```
+
+Other things it does: photos (cached on first view, because Facebook image URLs expire),
+free-text search that also covers the **original post text** — so `ללא תיווך` or `מזגן`
+are findable even though the bot never extracts them — "new since your last visit"
+badges, side-by-side compare with an OSRM-planned viewing route, and `j`/`k`/`s`/`x`
+keyboard triage. On a phone the table becomes cards.
+
 ### Scrape timing — run `update_schedule.cmd` once, as Administrator
 
 Two problems, both measured on 2026-07-30 and both fixed by this script:

@@ -42,38 +42,50 @@ def test_page_is_self_contained(temp_db, monkeypatch, tmp_path):
 
 
 def test_rows_and_filters_are_present(temp_db, monkeypatch, tmp_path):
+    """Rows are rendered in the BROWSER now, from window.__BOOT__, so the assertion is
+    on the payload rather than on server-built <tr>s."""
     monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
     _save("k1", "רגר 5", price=1400)
     _save("k2", "קדש 3", price=1900, status=Status.NEEDS_DATA)
     page = dashboard.build()
     assert "רגר 5" in page and "קדש 3" in page
-    for control in ("id=\"q\"", "id=\"st\"", "id=\"tier\"", "id=\"maxp\"",
-                    "id=\"minr\"", "id=\"stale\"", "id=\"nobroker\"", "id=\"saved\""):
+    for control in ('id="q"', 'id="st"', 'id="tier"', 'id="maxp"', 'id="minr"',
+                    'id="stale"', 'id="nobroker"', 'id="saved"', 'id="onlynew"',
+                    'id="bycolor"'):
         assert control in page
-    # the filter attributes the JS reads must be emitted on each row
-    assert "data-status='MATCH'" in page and "data-price='1400'" in page
+    boot = _boot(page)
+    assert {r["dedup_key"] for r in boot} == {"k1", "k2"}
+    assert {r["price_per_room"] for r in boot} == {1400, 1900}
+    # each row carries what the filters and the map dots need
+    for r in boot:
+        assert set(r) >= {"status", "location_tier", "eff_score", "lat", "lon",
+                          "photos", "breakdown", "post_text", "note", "stale", "broker"}
 
 
-def test_address_is_escaped(temp_db, monkeypatch, tmp_path):
-    """A listing address is untrusted text straight from a Facebook post."""
+def test_untrusted_text_cannot_break_out_of_the_script_block(temp_db, monkeypatch, tmp_path):
+    """Addresses and post bodies come straight from Facebook. They now travel inside a
+    <script> block as JSON, and json.dumps does NOT escape '<' — so "</script>" in an
+    address would close the tag and everything after it would parse as HTML."""
     monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
-    _save("k1", "<script>alert(1)</script> רגר")
+    _save("k1", "</script><img src=x onerror=alert(1)> רגר")
     page = dashboard.build()
-    assert "<script>alert(1)</script>" not in page
-    assert "&lt;script&gt;" in page
+    assert "</script><img" not in page
+    assert "\u003c/script\u003e" in page or "\u003c" in page
+    # exactly two script tags: the boot data and the app
+    assert page.count("<script>") == 2 and page.count("</script>") == 2
+    # and it survives a JSON round-trip unchanged
+    assert _boot(page)[0]["address"].startswith("</script>")
 
 
-def test_unknown_price_and_walk_sort_last_ascending(temp_db, monkeypatch, tmp_path):
-    """A blank price is not "the cheapest" — unknowns must sink, not top the list."""
+def test_sorting_and_unknown_values_are_handled_in_the_payload(temp_db, monkeypatch, tmp_path):
+    """Sorting moved to the browser; nulls stay null in the payload and the JS sinks
+    them (see visible()). The server no longer emits sentinels."""
     monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
     _save("k1", "רגר 5", price=None, walk=None)
-    page = dashboard.build()
-    assert 'data-v="1000000"' in page               # price sentinel
-    assert 'data-v="999"' in page                   # walk sentinel
-    # …and a known value is written as itself, not a sentinel
     _save("k2", "קדש 3", price=1400, walk=6.0)
-    page = dashboard.build()
-    assert 'data-v="1400"' in page and 'data-v="6.0"' in page
+    boot = {r["dedup_key"]: r for r in _boot(dashboard.build())}
+    assert boot["k1"]["price_per_room"] is None and boot["k1"]["walk_minutes"] is None
+    assert boot["k2"]["price_per_room"] == 1400 and boot["k2"]["walk_minutes"] == 6.0
 
 
 def test_broker_and_vote_flags_show(temp_db, monkeypatch, tmp_path):
@@ -82,10 +94,19 @@ def test_broker_and_vote_flags_show(temp_db, monkeypatch, tmp_path):
     storage.set_mark("k1", "u1", "saved")
     monkeypatch.setattr(storage, "phone_listing_count",
                         lambda p: config.BROKER_MIN_LISTINGS + 1)
-    page = dashboard.build()
-    assert "⭐" in page
-    assert f"⚠️{config.BROKER_MIN_LISTINGS + 1}" in page
-    assert "data-broker='1'" in page and "data-saved='1'" in page
+    row = _boot(dashboard.build())[0]
+    assert row["saved"] is True
+    assert row["broker"] == config.BROKER_MIN_LISTINGS + 1
+
+
+def test_live_page_fetches_instead_of_inlining(temp_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    live = dashboard.render_live()
+    assert "/api/listings.json" in live and "window.__LIVE__ = true" in live
+    assert _boot(live) == []                       # nothing inlined; it fetches
+    static = dashboard.render(live=False)
+    assert "window.__LIVE__ = false" in static and len(_boot(static)) == 1
 
 
 def test_empty_db_still_builds(temp_db, monkeypatch, tmp_path):
@@ -106,3 +127,22 @@ def test_build_does_not_modify_the_database(temp_db, monkeypatch, tmp_path):
     after = sqlite3.connect(temp_db).execute(
         "SELECT dedup_key, status, score, address FROM listings ORDER BY dedup_key").fetchall()
     assert before == after
+
+
+def _boot(page):
+    """The JSON the page hands the browser (window.__BOOT__).
+
+    The backslash-u003c escapes are ordinary JSON, so json.loads decodes them
+    itself. (An earlier version ran unicode_escape here, which would have mangled
+    the Hebrew — it only passed because no test asserted on Hebrew content.)"""
+    import json
+    marker = "window.__BOOT__ = "
+    start = page.index(marker) + len(marker)
+    end = page.index(chr(59) + chr(10), start)
+    return json.loads(page[start:end])
+
+
+def test_hebrew_survives_the_payload_round_trip(temp_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "שדרות יצחק רגר 164, שכונה ג׳")
+    assert _boot(dashboard.build())[0]["address"] == "שדרות יצחק רגר 164, שכונה ג׳"

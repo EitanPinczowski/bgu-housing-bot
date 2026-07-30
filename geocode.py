@@ -267,6 +267,56 @@ def geocode(location_text: Optional[str]) -> Optional[Tuple[float, float]]:
     return geocode_detailed(location_text)[0]
 
 
+def geocode_cached(location_text: Optional[str]):
+    """(lat, lon) from the static table / user pins / cache ONLY — never a network call.
+
+    For read-only viewers (the dashboard, the maps) which run over hundreds of rows: a
+    handful of unresolvable addresses would otherwise re-query the Overpass mirrors on
+    every page build. Measured before this existed: 211 seconds to render 350 rows.
+    A name that has never been resolved simply has no dot; the pipeline is what resolves
+    names, not the viewer."""
+    if not location_text:
+        return None
+    location_text = _fold_quotes(location_text)
+    norm = _normalize(location_text)
+
+    # Mirror geocode_detailed's precedence, minus the network tiers — including the
+    # rules that keep it ACCURATE: a neighborhood centroid and a static street entry
+    # both step aside for an address that carries a house number.
+    precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
+    numbered = bool(_house_number(location_text))
+    best_pos, best_coords, skipped_street = None, None, None
+    for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
+        k = _normalize(key)
+        if not k:
+            continue
+        if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
+            continue
+        if numbered and streets.known(k) and k in norm:
+            skipped_street = skipped_street or coords
+            continue
+        pos = norm.find(k)
+        if pos != -1 and (best_pos is None or pos < best_pos):
+            best_pos, best_coords = pos, coords
+    if best_coords is not None:
+        return best_coords
+
+    hn = _house_number(location_text)
+    if hn:                                    # local interpolation, no network
+        for cand in _candidate_tokens(location_text)[:2]:
+            real, _how = streets.canonical(cand)
+            pt = interpolate_house(real or cand, hn)
+            if pt:
+                return pt
+
+    entry = _load_cache().get(norm)
+    if isinstance(entry, dict) and entry.get("c"):
+        return tuple(entry["c"])
+    if isinstance(entry, list) and len(entry) == 2:      # legacy bare [lat, lon]
+        return tuple(entry)
+    return skipped_street                     # street-level, better than no dot at all
+
+
 def geocode_detailed(location_text: Optional[str]):
     """(coords, source) or (None, None). source ∈
     static/cache/google/overpass/nominatim — which tier resolved the name, so a

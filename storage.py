@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS marks (
     ts TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (dedup_key, user_id)
 );
+CREATE TABLE IF NOT EXISTS notes (
+    dedup_key TEXT PRIMARY KEY,
+    text TEXT,
+    ts TEXT DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS unknown_locations (
     location TEXT PRIMARY KEY,
     count INTEGER DEFAULT 0,
@@ -652,6 +657,110 @@ def _group_key(dedup_key, address) -> str:
     (different phones), which must never merge."""
     norm = _norm_addr(address)
     return "addr:" + norm if norm else str(dedup_key)
+
+
+def get_all_images() -> list:
+    """Every image URL stored on any listing. The dashboard's image proxy uses this as
+    its ALLOW-LIST — a URL that isn't here is never fetched, so the proxy can't be turned
+    into a relay for arbitrary addresses."""
+    urls = []
+    with _conn() as c:
+        for (blob,) in c.execute("SELECT images FROM listings WHERE images IS NOT NULL"):
+            try:
+                urls.extend(json.loads(blob) or [])
+            except Exception:
+                continue
+    return urls
+
+
+def dashboard_version() -> dict:
+    """A cheap fingerprint of the listings table, so an open dashboard can poll this and
+    only refetch the full payload when something actually changed."""
+    with _conn() as c:
+        n, newest = c.execute(
+            "SELECT COUNT(*), COALESCE(MAX(first_seen),'') FROM listings").fetchone()
+        marks = c.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
+    return {"count": n, "newest": newest, "marks": marks}
+
+
+def set_note(dedup_key: str, text: Optional[str]) -> None:
+    """Save (or clear) a free-text note against a listing — "called Tue, no answer",
+    "viewing Thu 17:00". Empty text deletes the row rather than storing a blank."""
+    if not dedup_key:
+        return
+    with _conn() as c:
+        if not (text or "").strip():
+            c.execute("DELETE FROM notes WHERE dedup_key=?", (dedup_key,))
+            return
+        c.execute("INSERT INTO notes(dedup_key, text, ts) VALUES (?,?,CURRENT_TIMESTAMP) "
+                  "ON CONFLICT(dedup_key) DO UPDATE SET text=excluded.text, "
+                  "ts=CURRENT_TIMESTAMP", (dedup_key, text.strip()))
+
+
+def get_note(dedup_key: str) -> str:
+    with _conn() as c:
+        row = c.execute("SELECT text FROM notes WHERE dedup_key=?", (dedup_key,)).fetchone()
+    return (row[0] if row else "") or ""
+
+
+def all_notes() -> dict:
+    """{dedup_key: text} — one query, so the dashboard doesn't do N of them."""
+    with _conn() as c:
+        return {k: t for k, t in c.execute("SELECT dedup_key, text FROM notes") if t}
+
+
+def post_text_for(keys) -> dict:
+    """{dedup_key: original post text} for the given listings.
+
+    The extracted fields lose detail — amenities, quirks, "ללא תיווך" — so the dashboard
+    shows the raw ad too. Matched by recomputing each archived post's dedup keys, the
+    same way backfill_first_seen does."""
+    wanted = {k for k in keys if k}
+    if not wanted:
+        return {}
+    out: dict = {}
+    with _conn() as c:
+        rows = c.execute("SELECT parsed_json, raw_text FROM posts "
+                         "WHERE parsed_json IS NOT NULL AND raw_text != ''").fetchall()
+    for pj, raw in rows:
+        try:
+            e = ListingExtract.model_validate_json(pj)
+        except Exception:
+            continue
+        for key in dedup_keys(e):
+            if key in wanted and key not in out:
+                out[key] = raw
+    return out
+
+
+def search_post_text(term: str, limit: int = 400) -> set:
+    """dedup_keys of listings whose ORIGINAL post text contains `term`.
+
+    This is the point of keeping the archive: "ללא תיווך" (236 posts), "מרוהט" (756),
+    "מזגן" (148) are nowhere in the extracted schema, so they're otherwise unsearchable.
+    Quote marks are folded so הכ״ג and הכ"ג match each other."""
+    term = _norm_search(term)
+    if len(term) < 2:
+        return set()
+    hits: set = set()
+    with _conn() as c:
+        rows = c.execute("SELECT parsed_json, raw_text FROM posts "
+                         "WHERE parsed_json IS NOT NULL AND raw_text != ''").fetchall()
+    for pj, raw in rows:
+        if term not in _norm_search(raw):
+            continue
+        try:
+            e = ListingExtract.model_validate_json(pj)
+        except Exception:
+            continue
+        hits.update(k for k in dedup_keys(e) if k)
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def _norm_search(s: Optional[str]) -> str:
+    return (s or "").translate(_ADDR_STRIP).lower()
 
 
 def backfill_first_seen() -> int:

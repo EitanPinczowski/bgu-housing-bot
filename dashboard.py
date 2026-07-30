@@ -15,14 +15,16 @@ works offline and keeps working years from now. Everything is read-only; the
 bot's data is never modified here.
 """
 from __future__ import annotations
+import hashlib
 import html
 import json
 import sys
 import webbrowser
-from datetime import datetime
 
 import amenities
 import config
+import fit
+import geocode
 import map_listings
 import storage
 
@@ -32,7 +34,8 @@ _SQL = """
     SELECT l.dedup_key, l.status, l.location_tier, l.score, l.price_per_room,
            l.available_rooms, l.total_roommates, l.address, l.walk_minutes,
            l.lease_start, l.contact, l.source_url, l."group", l.floor, l.furnished,
-           l.balcony, l.amenities, l.first_seen, l.summary
+           l.balcony, l.elevator, l.images, l.amenities, l.first_seen, l.summary,
+           l.price_from_comment
     FROM listings l
 """
 
@@ -49,6 +52,9 @@ def _rows() -> list:
     saved = {r["dedup_key"] for r in storage.saved_listings(limit=500)}
     contacted = storage.contacted_keys()
     stale = storage.stale_keys()
+    notes = storage.all_notes()
+    keys = [r["dedup_key"] for r in rows]
+    post_text = storage.post_text_for(keys)          # one pass over the archive, not N
     for r in rows:
         key = r["dedup_key"]
         # the effective score is what the bot actually ranks by: quality + group votes
@@ -57,12 +63,61 @@ def _rows() -> list:
         r["contacted"] = key in contacted
         r["stale"] = key in stale
         r["broker"] = storage.phone_listing_count(r["contact"])
+        r["note"] = notes.get(key, "")
+        r["post_text"] = post_text.get(key, "")
         try:
             r["amenity_text"] = " · ".join(amenities.describe(json.loads(r["amenities"] or "{}")))
         except Exception:
             r["amenity_text"] = ""
+        # coordinates for the map dot — geocode is cached, so this is a dict lookup
+        coords = geocode.geocode_cached(r["address"])
+        r["lat"], r["lon"] = (coords if coords else (None, None))
+        r["photos"] = _photo_hashes(r["images"])
+        r["breakdown"] = _breakdown_for(r)
     rows.sort(key=lambda r: r["eff_score"], reverse=True)
     return rows
+
+
+def _photo_hashes(images_json) -> list:
+    """sha1 of each stored image URL. The page requests /img/<sha1>, never the URL
+    itself, so the proxy can only ever serve pictures we already had."""
+    try:
+        urls = json.loads(images_json or "[]") or []
+    except Exception:
+        return []
+    return [hashlib.sha1(u.encode()).hexdigest() for u in urls
+            if isinstance(u, str) and u.startswith(("http://", "https://"))][:6]
+
+
+def _breakdown_for(r) -> list:
+    """[[label, delta], …] — the same per-factor scoring the Telegram alert shows, so
+    'why 71 and not 85' is answerable from the dashboard too."""
+    try:
+        parts = fit.breakdown(
+            r["price_per_room"], r["walk_minutes"], r["location_tier"],
+            r["available_rooms"], r["total_roommates"],
+            bool(r.get("price_from_comment")),
+            lease_start=r["lease_start"], furnished=r["furnished"],
+            floor=r["floor"], has_elevator=r["elevator"], has_balcony=r["balcony"],
+            has_photos=bool(r.get("photos")), broker_listings=r.get("broker") or 0)
+        return [[lbl, d] for lbl, d in parts]
+    except Exception:
+        return []
+
+
+def rows_for_api() -> list:
+    """JSON-safe rows for the live server: drop the columns the page never reads and
+    add the derived contact link."""
+    out = []
+    for r in _rows():
+        out.append({k: r.get(k) for k in (
+            "dedup_key", "status", "location_tier", "eff_score", "score",
+            "price_per_room", "available_rooms", "total_roommates", "address",
+            "walk_minutes", "lease_start", "contact", "source_url", "group", "floor",
+            "amenity_text", "first_seen", "summary", "saved", "contacted", "stale",
+            "broker", "note", "post_text", "lat", "lon", "photos", "breakdown")}
+            | {"wa": _wa_link(r["contact"])})
+    return out
 
 
 def _wa_link(contact) -> str:
@@ -73,185 +128,511 @@ def _wa_link(contact) -> str:
 
 
 _CSS = """
-:root{--fg:#1c2024;--mut:#667;--line:#e3e6ea;--bg:#fff;--card:#fafbfc}
+:root{--fg:#1c2024;--mut:#667;--line:#e3e6ea;--bg:#fff;--card:#fafbfc;--accent:#3367d6}
 @media (prefers-color-scheme:dark){
-  :root{--fg:#e6e8ea;--mut:#98a2ad;--line:#2a2f36;--bg:#14171a;--card:#1b1f24}}
+  :root{--fg:#e6e8ea;--mut:#98a2ad;--line:#2a2f36;--bg:#14171a;--card:#1b1f24;--accent:#7aa2f7}}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.45 system-ui,Segoe UI,Arial;color:var(--fg);background:var(--bg)}
-.wrap{max-width:1400px;margin:0 auto;padding:16px}
+.wrap{max-width:1500px;margin:0 auto;padding:16px}
 h1{font-size:20px;margin:0 0 4px}
-.sub{color:var(--mut);margin:0 0 14px}
-.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;
-     padding:10px;background:var(--card);border:1px solid var(--line);border-radius:8px}
+.sub{color:var(--mut);margin:0 0 12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;padding:10px;
+     background:var(--card);border:1px solid var(--line);border-radius:8px}
 .bar label{color:var(--mut);font-size:12px}
-input,select{font:inherit;padding:5px 7px;border:1px solid var(--line);border-radius:6px;
-             background:var(--bg);color:var(--fg)}
-input[type=search]{min-width:190px}
+input,select,button{font:inherit;padding:5px 8px;border:1px solid var(--line);
+     border-radius:6px;background:var(--bg);color:var(--fg)}
+button{cursor:pointer}button:hover{border-color:var(--accent);color:var(--accent)}
+input[type=search]{min-width:200px}
 .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
-table{border-collapse:collapse;width:100%;min-width:1050px}
+table{border-collapse:collapse;width:100%;min-width:1100px}
 th,td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--line);
       white-space:nowrap;vertical-align:top}
-th{position:sticky;top:0;background:var(--card);cursor:pointer;user-select:none;font-size:12px}
-th:hover{color:#3367d6}
-td.addr{white-space:normal;min-width:190px}
-td.am{white-space:normal;min-width:230px;color:var(--mut);font-size:12px}
-tr:hover td{background:var(--card)}
+th{position:sticky;top:0;background:var(--card);cursor:pointer;user-select:none;font-size:12px;z-index:2}
+th:hover{color:var(--accent)}
+td.addr{white-space:normal;min-width:180px}
+td.am{white-space:normal;min-width:210px;color:var(--mut);font-size:12px}
+tr.row:hover td,tr.row.cursor td{background:var(--card)}
+tr.row.cursor td{box-shadow:inset 2px 0 0 var(--accent)}
 .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-weight:600}
 .GREEN{background:#e5f4e6;color:#1e6b23}.AMBER{background:#fdf1dc;color:#8a5a06}
 .RED{background:#fbe6e4;color:#a3271c}.UNKNOWN{background:#eceff2;color:#5b666f}
 @media (prefers-color-scheme:dark){
  .GREEN{background:#183a1c;color:#8fd694}.AMBER{background:#3d2f11;color:#e5bb6a}
  .RED{background:#3d1a17;color:#f0a79d}.UNKNOWN{background:#262b31;color:#9fb0bd}}
-.map{margin:16px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.thumb{width:54px;height:40px;object-fit:cover;border-radius:4px;cursor:zoom-in;
+       background:var(--card);border:1px solid var(--line)}
+.new{background:var(--accent);color:#fff;border-radius:99px;padding:0 6px;font-size:10px}
+.act button{padding:2px 6px;font-size:13px;line-height:1.2}
+.exp td{background:var(--card);white-space:normal}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.chip{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--line)}
+.chip.pos{color:#1e6b23}.chip.neg{color:#a3271c}
+.raw{white-space:pre-wrap;font-size:12px;color:var(--mut);max-height:220px;overflow:auto;
+     border-right:2px solid var(--line);padding-right:8px;margin:6px 0}
+.note{width:100%;min-height:46px;font:inherit}
+.map{margin:14px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;position:relative}
 .map svg{display:block;width:100%;height:auto}
-.muted{color:var(--mut)}
-a{color:#3367d6}
-.count{color:var(--mut);font-size:12px;margin:8px 2px}
-"""
-
-_JS = """
-const rows=[...document.querySelectorAll('#t tbody tr')];
-const q=document.getElementById('q'), st=document.getElementById('st'),
-      tier=document.getElementById('tier'), maxp=document.getElementById('maxp'),
-      minr=document.getElementById('minr'), hideStale=document.getElementById('stale'),
-      hideBroker=document.getElementById('nobroker'), onlySaved=document.getElementById('saved');
-function apply(){
-  const text=q.value.trim().toLowerCase();
-  let shown=0;
-  for(const r of rows){
-    const d=r.dataset;
-    let ok=true;
-    if(text && !r.textContent.toLowerCase().includes(text)) ok=false;
-    if(ok && st.value && d.status!==st.value) ok=false;
-    if(ok && tier.value && d.tier!==tier.value) ok=false;
-    if(ok && maxp.value && (d.price==='' || +d.price>+maxp.value)) ok=false;
-    if(ok && minr.value && (d.rooms==='' || +d.rooms<+minr.value)) ok=false;
-    if(ok && hideStale.checked && d.stale==='1') ok=false;
-    if(ok && hideBroker.checked && d.broker==='1') ok=false;
-    if(ok && onlySaved.checked && d.saved!=='1') ok=false;
-    r.style.display = ok?'':'none';
-    if(ok) shown++;
-  }
-  document.getElementById('n').textContent = shown+' / '+rows.length+' listings';
+.dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
+.muted{color:var(--mut)}a{color:var(--accent)}
+.count{color:var(--mut);font-size:12px;margin:6px 2px}
+.panel{border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0;
+       background:var(--card);display:none}
+.panel.on{display:block}
+.panel table{min-width:0}
+#lb{position:fixed;inset:0;background:#000c;display:none;align-items:center;
+    justify-content:center;z-index:50}
+#lb.on{display:flex}#lb img{max-width:94vw;max-height:90vh;border-radius:6px}
+.live{font-size:11px;color:var(--mut)}
+/* --- phone: the table becomes cards (it is 1100px wide otherwise) --- */
+@media (max-width:700px){
+  .wrap{padding:10px}
+  .scroll{border:0;overflow:visible}
+  table,tbody,tr,td{display:block;width:100%}
+  thead{display:none}
+  table{min-width:0}
+  tr.row{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;padding:8px;
+         background:var(--card)}
+  tr.row td{border:0;padding:2px 0;white-space:normal;text-align:right}
+  td[data-lbl]:before{content:attr(data-lbl) ": ";color:var(--mut);font-size:11px}
+  td.hide-sm{display:none}
+  tr.exp{border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
+  .thumb{width:100%;height:150px}
 }
-[q,st,tier,maxp,minr,hideStale,hideBroker,onlySaved].forEach(el=>
-  el.addEventListener(el.type==='checkbox'?'change':'input',apply));
-// click a header to sort; click again to reverse
-let lastCol=-1, dir=1;
-document.querySelectorAll('#t th').forEach((th,i)=>th.addEventListener('click',()=>{
-  dir = (i===lastCol) ? -dir : 1; lastCol=i;
-  const num = th.dataset.num==='1';
-  const body=document.querySelector('#t tbody');
-  rows.sort((a,b)=>{
-    const x=a.children[i].dataset.v ?? a.children[i].textContent;
-    const y=b.children[i].dataset.v ?? b.children[i].textContent;
-    if(num){ const nx=parseFloat(x)||-Infinity, ny=parseFloat(y)||-Infinity;
-             return (nx-ny)*dir; }
-    return x.localeCompare(y,'he')*dir;
-  });
-  rows.forEach(r=>body.appendChild(r));
-}));
-apply();
 """
 
-_COLS = [
-    ("ציון", "num"), ("סטטוס", "txt"), ("אזור", "txt"), ("מחיר", "num"),
-    ("פנויים", "num"), ("שותפים", "num"), ("כתובת", "txt"), ("הליכה", "num"),
-    ("כניסה", "txt"), ("קומה", "txt"), ("תחבורה ושירותים", "txt"),
-    ("קשר", "txt"), ("מקור", "txt"),
-]
+_JS = r"""
+const $ = id => document.getElementById(id);
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const fmt = v => (v === null || v === undefined || v === '') ? '' : v;
+let DATA = window.__BOOT__ || [];
+let sortCol = 'eff_score', sortDir = -1, cursor = 0;
+const compare = new Set();
+
+/* "new since last visit" — localStorage only, no server state */
+const LAST = localStorage.getItem('bgu_last_visit') || '';
+localStorage.setItem('bgu_last_visit',
+  new Date().toISOString().slice(0, 19).replace('T', ' '));
+const isNew = r => LAST && r.first_seen && r.first_seen > LAST;
+
+/* the SAME projection the backdrop was drawn with (mirrors map_listings.xy_from) */
+const P = window.__PROJ__ || null;
+const project = (la, lo) => [P.pad + (lo - P.min_lon) * P.kx * P.scale,
+                             P.pad + (P.max_lat - la) * P.scale];
+const TIER_COLOR = {GREEN: '#2e7d32', AMBER: '#e08e0b', RED: '#c0392b', UNKNOWN: '#7f8c8d'};
+function scoreColor(s){
+  const t = Math.max(0, Math.min(100, s || 0)) / 100;
+  return 'hsl(' + Math.round(t * 130) + ' 65% ' + (42 + (1 - t) * 8) + '%)';
+}
+function esc(s){ const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+function passes(r){
+  const text = $('q').value.trim().toLowerCase();
+  if (text){
+    const hay = [r.address, r.contact, r.summary, r.amenity_text, r.note, r.post_text]
+      .join(' ').toLowerCase();
+    if (!hay.includes(text)) return false;
+  }
+  if ($('st').value && r.status !== $('st').value) return false;
+  if ($('tier').value && r.location_tier !== $('tier').value) return false;
+  if ($('maxp').value && (r.price_per_room === null || r.price_per_room > +$('maxp').value)) return false;
+  if ($('minr').value && (r.available_rooms === null || r.available_rooms < +$('minr').value)) return false;
+  if ($('stale').checked && r.stale) return false;
+  if ($('nobroker').checked && r.broker >= 4) return false;
+  if ($('saved').checked && !r.saved) return false;
+  if ($('onlynew').checked && !isNew(r)) return false;
+  return true;
+}
+
+function visible(){
+  const rows = DATA.filter(passes);
+  const k = sortCol;
+  rows.sort((a, b) => {
+    let x = a[k], y = b[k];
+    if (typeof x === 'string' || typeof y === 'string')
+      return String(x || '').localeCompare(String(y || ''), 'he') * sortDir;
+    if (x === null || x === undefined) x = -Infinity;
+    if (y === null || y === undefined) y = -Infinity;
+    return (x - y) * sortDir;
+  });
+  return rows;
+}
+
+function rowHtml(r){
+  const flags = [r.saved ? '⭐' : '', r.contacted ? '📵' : '',
+                 r.stale ? '🕒' : '', r.broker >= 4 ? '⚠️' + r.broker : '',
+                 isNew(r) ? '<span class="new">חדש</span>' : ''
+                ].filter(Boolean).join(' ');
+  const thumb = (r.photos && r.photos.length)
+    ? '<img class="thumb" loading="lazy" src="/img/' + r.photos[0] + '?token=' + TOKEN +
+      '" onerror="this.style.visibility=\'hidden\'">' : '';
+  const addr = r.source_url
+    ? '<a href="' + esc(r.source_url) + '" target="_blank" rel="noreferrer">' + esc(r.address || '—') + '</a>'
+    : esc(r.address || '—');
+  const contact = r.wa
+    ? '<a href="' + esc(r.wa) + '" target="_blank" rel="noreferrer">' + esc(r.contact || '') + '</a>'
+    : esc(r.contact || '');
+  return '<tr class="row" data-key="' + esc(r.dedup_key) + '">' +
+    '<td class="hide-sm">' + thumb + '</td>' +
+    '<td data-lbl="ציון"><b>' + fmt(r.eff_score) + '</b></td>' +
+    '<td data-lbl="סטטוס" class="hide-sm">' + esc(r.status || '') + '</td>' +
+    '<td data-lbl="אזור"><span class="pill ' + esc(r.location_tier || 'UNKNOWN') + '">' +
+      esc(r.location_tier || '?') + '</span></td>' +
+    '<td data-lbl="מחיר">' + fmt(r.price_per_room) + '</td>' +
+    '<td data-lbl="פנויים">' + fmt(r.available_rooms) + '</td>' +
+    '<td data-lbl="שותפים" class="hide-sm">' + fmt(r.total_roommates) + '</td>' +
+    '<td data-lbl="כתובת" class="addr">' + addr +
+      ' <span class="muted">' + flags + '</span></td>' +
+    '<td data-lbl="הליכה">' +
+      (r.walk_minutes === null ? '' : Math.round(r.walk_minutes)) + '</td>' +
+    '<td data-lbl="כניסה" class="hide-sm">' + esc(r.lease_start || '') + '</td>' +
+    '<td data-lbl="תחבורה" class="am">' + esc(r.amenity_text || '') + '</td>' +
+    '<td data-lbl="קשר">' + contact + '</td>' +
+    '<td class="act"><button data-act="save">⭐</button>' +
+      '<button data-act="dismiss">🗑</button>' +
+      '<button data-act="contacted">📵</button>' +
+      '<button data-act="exp">▾</button>' +
+      '<input type="checkbox" data-act="cmp" title="השווה"></td></tr>';
+}
+
+function expandHtml(r){
+  const chips = (r.breakdown || []).map(p =>
+    '<span class="chip ' + (p[1] >= 0 ? 'pos' : 'neg') + '">' + esc(p[0]) + ' ' +
+    (p[1] > 0 ? '+' : '') + p[1] + '</span>').join('');
+  const gallery = (r.photos || []).map(h =>
+    '<img class="thumb" loading="lazy" src="/img/' + h + '?token=' + TOKEN +
+    '" onerror="this.style.display=\'none\'">').join(' ');
+  return '<tr class="exp" data-key="' + esc(r.dedup_key) + '"><td colspan="13">' +
+    '<div class="chips">' + chips + '</div>' +
+    (gallery ? '<div style="margin:6px 0">' + gallery + '</div>' : '') +
+    (r.post_text ? '<div class="raw">' + esc(r.post_text) + '</div>'
+                 : '<div class="muted">הפוסט המקורי לא נשמר</div>') +
+    '<textarea class="note">' + esc(r.note || '') + '</textarea>' +
+    '<div><button data-act="savenote">שמור הערה</button> ' +
+    '<span class="live" data-note-status></span></div></td></tr>';
+}
+
+function drawDots(rows){
+  const svg = document.querySelector('.map svg');
+  if (!svg || !P) return;
+  const old = document.getElementById('dots');
+  if (old) old.remove();
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.id = 'dots';
+  const byScore = $('bycolor').value === 'score';
+  let n = 0;
+  for (const r of rows){
+    if (r.lat === null || r.lat === undefined) continue;
+    const xy = project(r.lat, r.lon);
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('cx', xy[0].toFixed(1));
+    c.setAttribute('cy', xy[1].toFixed(1));
+    c.setAttribute('r', '5');
+    c.setAttribute('class', 'dot');
+    c.setAttribute('fill', byScore ? scoreColor(r.eff_score)
+                                   : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN));
+    c.setAttribute('fill-opacity', '0.85');
+    c.setAttribute('stroke', '#fff');
+    c.setAttribute('stroke-width', '1');
+    c.dataset.key = r.dedup_key;
+    const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    t.textContent = (r.address || '—') + ' | ' + r.location_tier + ' | ⭐' + r.eff_score +
+                    (r.price_per_room ? ' | ' + r.price_per_room + '₪' : '');
+    c.appendChild(t);
+    g.appendChild(c);
+    n++;
+  }
+  svg.appendChild(g);
+  $('mapcount').textContent = n + ' על המפה';
+}
+
+function markCursor(){
+  const rows = document.querySelectorAll('tr.row');
+  rows.forEach((tr, i) => tr.classList.toggle('cursor', i === cursor));
+}
+
+function render(){
+  const rows = visible();
+  $('tb').innerHTML = rows.map(rowHtml).join('');
+  $('n').textContent = rows.length + ' / ' + DATA.length + ' דירות';
+  const nnew = DATA.filter(isNew).length;
+  $('newcount').textContent = nnew
+    ? nnew + ' חדשות מאז הביקור הקודם · ' : '';
+  drawDots(rows);
+  if (cursor >= rows.length) cursor = Math.max(0, rows.length - 1);
+  markCursor();
+}
+
+const rowByKey = k => DATA.find(r => r.dedup_key === k);
+
+async function post(path, body){
+  if (!window.__LIVE__){
+    alert('זמין רק כשהשרת רץ: python serve_dashboard.py');
+    return null;
+  }
+  try {
+    const res = await fetch(path + '?token=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)});
+    return res.ok ? await res.json() : null;
+  } catch (e){ return null; }
+}
+
+['q', 'st', 'tier', 'maxp', 'minr', 'stale', 'nobroker', 'saved', 'onlynew', 'bycolor']
+  .forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    const ev = (el.type === 'checkbox' || el.tagName === 'SELECT') ? 'change' : 'input';
+    el.addEventListener(ev, render);
+  });
+
+document.querySelectorAll('#t thead th[data-k]').forEach(th =>
+  th.addEventListener('click', () => {
+    const k = th.dataset.k;
+    if (!k) return;
+    sortDir = (k === sortCol) ? -sortDir : -1;
+    sortCol = k;
+    render();
+  }));
+
+$('tb').addEventListener('click', async ev => {
+  const btn = ev.target.closest('button, input[type=checkbox]');
+  const tr = ev.target.closest('tr');
+  if (!tr || !btn) return;
+  const key = tr.dataset.key;
+  const r = rowByKey(key);
+  if (!r) return;
+  const act = btn.dataset.act;
+  if (act === 'exp'){
+    const nxt = tr.nextElementSibling;
+    if (nxt && nxt.classList.contains('exp')) nxt.remove();
+    else tr.insertAdjacentHTML('afterend', expandHtml(r));
+    return;
+  }
+  if (act === 'cmp'){
+    if (btn.checked) compare.add(key); else compare.delete(key);
+    drawCompare();
+    return;
+  }
+  if (act === 'savenote'){
+    const ta = tr.querySelector('.note');
+    const out = await post('/api/note', {key: key, text: ta.value});
+    tr.querySelector('[data-note-status]').textContent = out ? 'נשמר' : 'לא נשמר';
+    if (out) r.note = out.text;
+    return;
+  }
+  if (act === 'save' || act === 'dismiss' || act === 'contacted'){
+    const mark = act === 'save' ? 'saved' : act === 'dismiss' ? 'dismissed' : 'contacted';
+    const out = await post('/api/mark', {key: key, mark: mark});
+    if (out){
+      if (mark === 'saved') r.saved = true;
+      if (mark === 'contacted') r.contacted = true;
+      if (out.score) r.eff_score = out.score;
+      render();
+    }
+  }
+});
+
+$('tb').addEventListener('mouseover', ev => {
+  const tr = ev.target.closest('tr.row');
+  if (!tr) return;
+  document.querySelectorAll('.dot').forEach(d =>
+    d.classList.toggle('hi', d.dataset.key === tr.dataset.key));
+});
+
+document.addEventListener('click', ev => {
+  const dot = ev.target.closest('.dot');
+  if (dot){
+    const r = rowByKey(dot.dataset.key);
+    if (r && r.lat)
+      window.open('https://www.google.com/maps/dir/?api=1&destination=' + r.lat + ',' + r.lon, '_blank');
+    return;
+  }
+  const img = ev.target.closest('.thumb');
+  if (img){ $('lbimg').src = img.src; $('lb').classList.add('on'); }
+  else if (ev.target.id === 'lb' || ev.target.id === 'lbimg') $('lb').classList.remove('on');
+});
+
+document.addEventListener('keydown', ev => {
+  /* Only TEXT entry should swallow the shortcuts. A checkbox is an INPUT too, so a
+     blanket tag check meant that ticking a compare box silently killed j/k/s/x. */
+  const a = document.activeElement, t = (a.type || '').toLowerCase();
+  const typing = a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' ||
+    (a.tagName === 'INPUT' && !['checkbox', 'radio', 'button', 'submit'].includes(t));
+  if (typing) return;
+  const rows = document.querySelectorAll('tr.row');
+  if (!rows.length) return;
+  const move = d => { cursor = Math.max(0, Math.min(cursor + d, rows.length - 1));
+                      markCursor(); rows[cursor].scrollIntoView({block: 'nearest'}); };
+  if (ev.key === 'j') move(1);
+  else if (ev.key === 'k') move(-1);
+  else if (ev.key === 's'){ const b = rows[cursor].querySelector('[data-act=save]'); if (b) b.click(); }
+  else if (ev.key === 'x'){ const b = rows[cursor].querySelector('[data-act=dismiss]'); if (b) b.click(); }
+  else if (ev.key === 'Enter'){ const a = rows[cursor].querySelector('td.addr a'); if (a) a.click(); }
+  else if (ev.key === '?') alert('j/k תנועה · s שמור · x בטל · Enter פתח פוסט');
+});
+
+function drawCompare(){
+  const p = $('cmp');
+  if (compare.size < 2){ p.classList.remove('on'); return; }
+  const picked = [...compare].map(rowByKey).filter(Boolean).slice(0, 4);
+  const F = [['ציון', 'eff_score'], ['מחיר', 'price_per_room'],
+             ['פנויים', 'available_rooms'], ['שותפים', 'total_roommates'],
+             ['הליכה', 'walk_minutes'], ['כניסה', 'lease_start'],
+             ['קומה', 'floor'], ['תחבורה', 'amenity_text']];
+  p.innerHTML = '<table><tr><th></th>' +
+    picked.map(r => '<th>' + esc(r.address || '—') + '</th>').join('') + '</tr>' +
+    F.map(f => '<tr><td class="muted">' + f[0] + '</td>' +
+      picked.map(r => '<td>' + esc(fmt(r[f[1]])) + '</td>').join('') + '</tr>').join('') +
+    '</table><button id="route">תכנן מסלול צפייה</button> ' +
+    '<span id="routeout" class="live"></span>';
+  p.classList.add('on');
+  $('route').onclick = async () => {
+    const out = await post('/api/route', {keys: picked.map(r => r.dedup_key)});
+    $('routeout').textContent = out
+      ? out.order.map((k, i) => (i + 1) + '. ' + ((rowByKey(k) || {}).address || k)).join('  →  ') +
+        (out.estimated ? '  (הערכה — OSRM כבוי)' : '')
+      : 'לא זמין';
+  };
+}
+
+async function poll(){
+  try {
+    const v = await (await fetch('/api/version?token=' + encodeURIComponent(TOKEN))).json();
+    const sig = JSON.stringify(v);
+    if (sig !== window.__VER__){
+      window.__VER__ = sig;
+      const d = await (await fetch('/api/listings.json?token=' + encodeURIComponent(TOKEN))).json();
+      DATA = d.listings;
+      render();
+    }
+  } catch (e){ /* server stopped or PC asleep — keep showing what we have */ }
+}
+
+render();
+const focusKey = new URLSearchParams(location.search).get('key');
+if (focusKey){
+  const r = rowByKey(focusKey);
+  if (r){ $('q').value = r.address || ''; render(); }
+}
+if (window.__LIVE__){ window.__VER__ = null; poll(); setInterval(poll, window.__POLL__ * 1000); }
+"""
+
+_HEAD = [("", ""), ("ציון", "eff_score"), ("סטטוס", "status"), ("אזור", "location_tier"),
+         ("מחיר", "price_per_room"), ("פנויים", "available_rooms"),
+         ("שותפים", "total_roommates"), ("כתובת", "address"), ("הליכה", "walk_minutes"),
+         ("כניסה", "lease_start"), ("תחבורה ושירותים", "amenity_text"),
+         ("קשר", "contact"), ("", "")]
 
 
-def _cell(value, sort_value=None, cls="") -> str:
-    v = "" if value is None else str(value)
-    attr = f' data-v="{html.escape(str(sort_value))}"' if sort_value is not None else ""
-    cl = f' class="{cls}"' if cls else ""
-    return f"<td{cl}{attr}>{v}</td>"
+def plan_route(keys) -> dict:
+    """Order a shortlist into an efficient walking route.
+
+    Nearest-neighbour over real foot-routing times from osrm.table_minutes (one call per
+    stop; a shortlist is a handful of flats, so that's a handful of calls). With OSRM
+    down it falls back to straight-line distance and says so, rather than refusing."""
+    import osrm
+    from zones import _haversine_m
+    rows = {r["dedup_key"]: r for r in _rows()}
+    pts = [(k, rows[k]["lat"], rows[k]["lon"]) for k in keys
+           if k in rows and rows[k]["lat"] is not None]
+    if len(pts) < 2:
+        return {"order": [p[0] for p in pts], "estimated": True}
+
+    estimated = False
+    cost = {}
+    for key, la, lo in pts:
+        mins = osrm.table_minutes(la, lo, [(b, c) for _k, b, c in pts])
+        if not mins:
+            estimated = True
+            mins = [_haversine_m(la, lo, b, c) / 80.0 for _k, b, c in pts]
+        cost[key] = {pts[i][0]: (m if m is not None else 1e6) for i, m in enumerate(mins)}
+
+    remaining = [p[0] for p in pts]
+    order = [remaining.pop(0)]
+    while remaining:
+        last = order[-1]
+        nxt = min(remaining, key=lambda k: cost[last].get(k, 1e6))
+        remaining.remove(nxt)
+        order.append(nxt)
+    return {"order": order, "estimated": estimated}
 
 
-def build() -> str:
+def _json_for_script(obj) -> str:
+    """JSON safe to embed inside a <script> block.
+
+    json.dumps escapes quotes and backslashes but NOT '<', so an address or post body
+    containing "</script>" would close the tag and everything after it would be parsed
+    as HTML — a script-injection hole, and this data comes straight from Facebook posts.
+    Escaping < > & as \\uXXXX is invisible to JSON.parse and closes it."""
+    return (json.dumps(obj, ensure_ascii=False)
+            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
+
+
+def render(live: bool) -> str:
+    """The dashboard page. `live=True` fetches from the server and can vote/note;
+    `live=False` inlines the data so the file works offline with no server at all."""
     rows = _rows()
-    svg, placed, unplaced = map_listings.build_svg()
-
-    body = []
-    for r in rows:
-        tier = r["location_tier"] or "UNKNOWN"
-        flags = []
-        if r["saved"]:
-            flags.append("⭐")
-        if r["contacted"]:
-            flags.append("📵")
-        if r["stale"]:
-            flags.append("🕒")
-        if r["broker"] >= config.BROKER_MIN_LISTINGS:
-            flags.append(f"⚠️{r['broker']}")
-        addr = html.escape(r["address"] or "—")
-        if r["source_url"]:
-            addr = f'<a href="{html.escape(r["source_url"])}" target="_blank">{addr}</a>'
-        if flags:
-            addr += ' <span class="muted">' + " ".join(flags) + "</span>"
-        wa = _wa_link(r["contact"])
-        contact = html.escape(r["contact"] or "—")
-        if wa:
-            contact = f'<a href="{html.escape(wa)}" target="_blank">{contact}</a>'
-        walk = "" if r["walk_minutes"] is None else f'{r["walk_minutes"]:.0f}'
-        body.append(
-            "<tr data-status='{s}' data-tier='{t}' data-price='{p}' data-rooms='{rm}' "
-            "data-stale='{sl}' data-broker='{bk}' data-saved='{sv}'>".format(
-                s=r["status"] or "", t=tier, p=r["price_per_room"] or "",
-                rm=r["available_rooms"] or "", sl=int(bool(r["stale"])),
-                bk=int(r["broker"] >= config.BROKER_MIN_LISTINGS), sv=int(bool(r["saved"])))
-            + _cell(f'<b>{r["eff_score"]}</b>', r["eff_score"])
-            + _cell(html.escape(r["status"] or ""))
-            + _cell(f'<span class="pill {tier}">{tier}</span>', tier)
-            # unknowns sort LAST ascending (a blank price is not "the cheapest"),
-            # same convention as the walk column below
-            + _cell(r["price_per_room"], r["price_per_room"] or 10 ** 6)
-            + _cell(r["available_rooms"], r["available_rooms"] or 0)
-            + _cell(r["total_roommates"], r["total_roommates"] or 0)
-            + _cell(addr, r["address"] or "", cls="addr")
-            + _cell(walk, r["walk_minutes"] if r["walk_minutes"] is not None else 999)
-            + _cell(html.escape(r["lease_start"] or ""))
-            + _cell(html.escape(str(r["floor"] or "")))
-            + _cell(html.escape(r["amenity_text"]), cls="am")
-            + _cell(contact)
-            + _cell(html.escape((r["group"] or "").split("/")[-1][:14]))
-            + "</tr>")
-
-    head = "".join(f'<th data-num="{1 if k == "num" else 0}">{h}</th>' for h, k in _COLS)
+    placed = [(r["lat"], r["lon"]) for r in rows if r["lat"] is not None]
+    base_svg, projection = map_listings.build_base_svg(
+        [(la, lo, None, None, None, None, None, None) for la, lo in placed])
+    payload = [] if live else rows_for_api()
     matches = sum(1 for r in rows if r["status"] == "MATCH")
-    page = f"""<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
+    mode = ("מתעדכן אוטומטית" if live
+            else "קובץ סטטי — הרץ serve_dashboard.py לעדכון חי ולגישה מהנייד")
+
+    head = "".join(f'<th data-k="{k}">{html.escape(h)}</th>' for h, k in _HEAD)
+    return f"""<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
 <title>BGU housing dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>{_CSS}</style>
 <div class="wrap">
 <h1>לוח דירות — BGU</h1>
 <p class="sub">{len(rows)} רשומות · {matches} התאמות · {len(placed)} על המפה ·
-   {unplaced} ללא מיקום · עודכן {datetime.now():%Y-%m-%d %H:%M}</p>
+  <span id="newcount"></span><span class="live">{mode}</span></p>
 <div class="bar">
-  <input id="q" type="search" placeholder="חיפוש חופשי…">
+  <input id="q" type="search" placeholder="חיפוש — כולל טקסט הפוסט המקורי…">
   <label>סטטוס <select id="st"><option value="">הכל</option>
     <option>MATCH</option><option>NEEDS_DATA</option></select></label>
   <label>אזור <select id="tier"><option value="">הכל</option>
     <option>GREEN</option><option>AMBER</option><option>RED</option>
     <option>UNKNOWN</option></select></label>
-  <label>מחיר עד <input id="maxp" type="number" style="width:88px" placeholder="₪"></label>
-  <label>חדרים מ־ <input id="minr" type="number" style="width:64px"></label>
-  <label><input id="stale" type="checkbox"> להסתיר ישנות</label>
-  <label><input id="nobroker" type="checkbox"> בלי מתווכים</label>
+  <label>מחיר עד <input id="maxp" type="number" style="width:86px"></label>
+  <label>חדרים מ־ <input id="minr" type="number" style="width:60px"></label>
+  <label><input id="stale" type="checkbox"> ללא ישנות</label>
+  <label><input id="nobroker" type="checkbox"> ללא מתווכים</label>
   <label><input id="saved" type="checkbox"> ⭐ בלבד</label>
+  <label><input id="onlynew" type="checkbox"> חדשות בלבד</label>
+  <label>צבע <select id="bycolor"><option value="tier">אזור</option>
+    <option value="score">ציון</option></select></label>
 </div>
-<div class="count" id="n"></div>
-<div class="scroll"><table id="t"><thead><tr>{head}</tr></thead>
-<tbody>{"".join(body)}</tbody></table></div>
-<div class="map">{svg}</div>
+<div class="count"><span id="n"></span> · <span id="mapcount"></span></div>
+<div class="panel" id="cmp"></div>
+<div class="scroll"><table id="t"><thead><tr>{head}</tr></thead><tbody id="tb"></tbody></table></div>
+<div class="map">{base_svg}</svg></div>
 <p class="sub">⭐ שמור · 📵 יצרתי קשר · 🕒 ישן מ־{config.LISTING_STALE_DAYS} ימים ·
-   ⚠️ מתווך (מספר דירות). לחיצה על כותרת ממיינת.</p>
+  ⚠️ מתווך · ▾ פירוט ניקוד והפוסט המקורי · j/k/s/x מקלדת · לחיצה על נקודה פותחת ניווט.</p>
 </div>
+<div id="lb"><img id="lbimg" alt=""></div>
+<script>
+window.__BOOT__ = {_json_for_script(payload)};
+window.__PROJ__ = {json.dumps(projection)};
+window.__LIVE__ = {str(bool(live)).lower()};
+window.__POLL__ = {config.DASHBOARD_POLL_SECONDS};
+</script>
 <script>{_JS}</script>
 </html>"""
+
+
+def render_live() -> str:
+    """Served by serve_dashboard.py — data comes from /api/listings.json."""
+    return render(live=True)
+
+
+def build() -> str:
+    """Write the offline copy. Same page, data inlined, no server required."""
+    page = render(live=False)
     OUT.write_text(page, encoding="utf-8")
-    print(f"wrote {OUT}  ({len(rows)} listings, {matches} matches)")
+    print(f"wrote {OUT}  ({page.count('dedup_key')} listing references)")
     return page
 
 

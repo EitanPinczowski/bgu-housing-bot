@@ -263,6 +263,25 @@ BEER_SHEVA_VIEWBOX = "34.74,31.30,34.86,31.19"
 # nothing in range simply prints no amenity line.
 # ---------------------------------------------------------------------------
 AMENITIES_PATH = ROOT / "amenities.json"
+
+# ---------------------------------------------------------------------------
+# Live dashboard server (serve_dashboard.py) — reads SQLite on every request so the
+# page is never stale, and is reachable from a phone.
+#
+# IT SHOWS OTHER PEOPLE'S PERSONAL DATA (landlord phone numbers and home addresses),
+# so a token is REQUIRED on every route — there is no "no auth" mode. Put
+# DASHBOARD_TOKEN in .env; if absent, one is generated into data/dashboard_token.txt
+# on first run so a phone bookmark keeps working across restarts.
+#
+# For access away from home use Tailscale (a private network between your own
+# devices) rather than a public tunnel or a port-forward — see the README.
+# ---------------------------------------------------------------------------
+DASHBOARD_PORT = 8777              # 5000 is OSRM
+DASHBOARD_POLL_SECONDS = 45        # how often an open page checks /api/version
+# Cached listing images live here so Facebook URL expiry stops destroying them: only
+# 8 of 349 listings have permanent Telegram file_ids, the rest are FB URLs that rot.
+DASHBOARD_IMAGE_DIR = DATA_DIR / "images"
+DASHBOARD_MAX_IMAGE_BYTES = 4 * 1024 * 1024
 # Only consider stops/POIs within this straight-line distance before routing —
 # keeps the OSRM table small and stops us reporting a "nearby" stop that isn't.
 # A target may override it with "max_meters" (the gym is a single destination 2-3 km
