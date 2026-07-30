@@ -66,6 +66,10 @@ def format_alert(res: PipelineResult) -> str:
         price = f'{e.price_per_room_ils} ש"ח לחדר'
         if e.price_from_comment:
             price += " (מהתגובות — ייתכן שאינו מדויק)"
+        # a divided-out whole-flat total is an inference; say so, so a wrong
+        # division is visible on the alert rather than silently trusted
+        if getattr(e, "price_is_derived", False):
+            price += " (חושב ממחיר דירה שלמה)"
     else:
         price = "מחיר לא צוין"
     rooms = e.available_rooms_count if e.available_rooms_count is not None else "?"
@@ -108,7 +112,8 @@ def format_alert(res: PipelineResult) -> str:
         furnished=getattr(e, "furnished", None), lease_start=e.lease_start_date,
         floor=getattr(e, "floor", None), has_elevator=getattr(e, "has_elevator", None),
         has_balcony=getattr(e, "balcony_or_garden", None),
-        broker_listings=getattr(res, "broker_listings", 0) or 0)
+        broker_listings=getattr(res, "broker_listings", 0) or 0,
+        price_is_derived=getattr(e, "price_is_derived", False))
     factors = fit.top_factors(_bd)
     factors += sorted((p for p in _bd if p[1] < 0), key=lambda p: p[1])[:2]   # notable penalties
     if factors:

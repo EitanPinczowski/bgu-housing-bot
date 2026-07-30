@@ -368,3 +368,69 @@ def test_no_amber_area_matches_dalet_only():
     assert not pipeline._no_amber_area("שכונה ה'")
     assert not pipeline._no_amber_area("הבלוק")
     assert not pipeline._no_amber_area(None)
+
+
+# --- whole-apartment price -> per-room -------------------------------------------
+def _px(price, text):
+    """Run the price recovery over one extract and return (price, was_derived)."""
+    from models import ListingExtract
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=price)
+    e = pipeline._recover_price_per_room(e, text)
+    return e.price_per_room_ils, e.price_is_derived
+
+
+def test_whole_flat_total_becomes_a_per_room_price():
+    """Measured on the archive: 144 of 407 price-drops were whole-flat ads whose TOTAL
+    rent was stored per-room and hard-dropped. Israeli usage: דירת N חדרים = N-1
+    bedrooms, the same convention _recover_rooms already uses."""
+    assert _px(2400, 'להשכרה דירת 3 חדרים ברחוב הכנסת 16, 2400 ש"ח') == (1200, True)
+    assert _px(3600, "להשכרה דירת 4 חדרים, 3600") == (1200, True)
+    # fractional room counts truncate, exactly as _recover_rooms does: דירת 2.5 חדרים
+    # is 2 rooms -> 1 bedroom, so 2800 stays over the cap and the drop stands. (Such a
+    # flat also fails MIN_AVAILABLE_ROOMS anyway.)
+    assert _px(2800, "להשכרה דירת 2.5 חדרים ברחוב המשחררים, 2800") == (2800, False)
+
+
+def test_a_per_person_price_is_never_divided():
+    """'2400 לשותף' already IS the per-room figure — dividing it would invent a
+    listing that doesn't exist."""
+    for marker in ("לשותף", "לכל שותף", "לאדם", "לנפש", "לחדר"):
+        assert _px(2400, f"דירת 3 חדרים, 2400 {marker}") == (2400, False)
+
+
+def test_a_price_already_under_the_cap_is_left_alone():
+    """The rule only rescues listings that were about to be dropped, so it can never
+    turn a correct price into a wrong one."""
+    assert _px(1500, "דירת 3 חדרים, 1500") == (1500, False)
+
+
+def test_still_too_expensive_after_dividing_stays_dropped():
+    # 9000 / 2 = 4500, way past the cap -> leave it, the drop was right
+    assert _px(9000, "דירת 3 חדרים, 9000") == (9000, False)
+
+
+def test_no_whole_flat_phrasing_means_no_division():
+    assert _px(2400, "חדר להשכרה בדירת שותפים, 2400") == (2400, False)
+    assert _px(2400, None) == (2400, False)
+
+
+def test_one_room_flat_never_divides_by_zero():
+    assert _px(2400, "דירת 1 חדרים, 2400") == (2400, False)
+
+
+def test_derived_price_is_penalised_like_an_uncertain_one():
+    import fit
+    labels = [lbl for lbl, _ in fit.breakdown(1200, 8.0, "GREEN", price_is_derived=True)]
+    assert any("מחושב" in lbl for lbl in labels)
+    plain = fit.score(1200, 8.0, "GREEN", 2, 2)
+    derived = fit.score(1200, 8.0, "GREEN", 2, 2, price_is_derived=True)
+    assert derived < plain            # an inference, not a quote
+
+
+def test_the_whole_rule_runs_inside_postprocess():
+    """It must sit in _postprocess_extract so replay applies it to the archive with no
+    LLM calls — that's how the 144 get re-tested offline."""
+    from models import ListingExtract
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=2400)
+    e = pipeline._postprocess_extract(e, 'להשכרה דירת 3 חדרים, 2400 ש"ח', "")
+    assert e.price_per_room_ils == 1200 and e.price_is_derived is True

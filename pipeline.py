@@ -157,6 +157,7 @@ def _postprocess_extract(e, raw_text, comments):
             e.price_per_room_ils = p
             e.price_from_comment = True                  # recovered -> treat as uncertain
     e = _recover_rooms(e, raw_text)                      # whole-flat / share room counts
+    e = _recover_price_per_room(e, raw_text)             # whole-flat TOTAL -> per room
     e.street_address_or_neighborhood = _clean_address(e.street_address_or_neighborhood)
     e.street_address_or_neighborhood = _recover_house_number(
         e.street_address_or_neighborhood, raw_text)
@@ -212,6 +213,52 @@ def _recover_rooms(e, raw_text):
         if 1 <= rooms <= 10:
             e.available_rooms_count = max(0, rooms - 1)
     return e
+
+
+# --- whole-apartment price recovery ----------------------------------------------
+# A whole-flat ad quotes ONE number — the rent for the flat — and the LLM dutifully
+# stores it in price_per_room_ils, which is then compared against a PER-ROOM cap.
+# Measured 2026-07-30: 144 of 407 price-drops were whole-flat ads killed this way
+# ("דירת 3 חדרים … 2400 ש\"ח" -> stored 2400/room, dropped; the real figure is ~1200).
+# That is more than the entire MATCH count, and whole flats are the best case here
+# (every room free). _recover_rooms already applies the N-1 convention to ROOMS; this
+# is the same convention applied to PRICE.
+#
+# A per-person phrasing means the quoted number really IS per room — never divide then.
+_PER_PERSON_RE = re.compile(r"לשותף|לכל שותף|לאדם|לנפש|לחדר|לבנאדם|לבן אדם")
+
+
+def _recover_price_per_room(e, raw_text):
+    """Reinterpret a whole-apartment TOTAL that was stored as a per-room price.
+
+    Unlike the other recoveries this overwrites a value the LLM supplied, so it is
+    deliberately narrow — all four must hold:
+      1. the price is ALREADY above the hard cap (the listing is about to be dropped,
+         so a wrong division can only change a certain 'no' into a 'look at this'),
+      2. the text describes a whole flat of N >= 2 rooms,
+      3. no per-person marker anywhere in the text,
+      4. the derived per-room figure actually lands under the cap.
+    Anything else is left exactly as the LLM read it."""
+    price = e.price_per_room_ils
+    if price is None or price <= config.MAX_PRICE_PER_ROOM_ILS or not raw_text:
+        return e
+    if _PER_PERSON_RE.search(raw_text):
+        return e
+    m = _WHOLE_APT_RE.search(raw_text)
+    if not m:
+        return e
+    try:
+        rooms = int(float(m.group(1)))
+    except ValueError:
+        return e
+    if rooms < 2 or rooms > 10:            # rooms-1 must be >= 1: never divide by zero
+        return e
+    derived = round(price / (rooms - 1))
+    if derived > config.MAX_PRICE_PER_ROOM_ILS:
+        return e                            # still too expensive — the drop was right
+    e.price_per_room_ils = derived
+    e.price_is_derived = True               # surfaced in the alert; penalised like a
+    return e                                # comment-sourced price (it IS an inference)
 
 
 def _recover_house_number(address, raw_text):
@@ -615,7 +662,8 @@ def _classify(e, raw_text: str, source_url, group, images: list,
                           e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
                           neighborhood, has_photos=bool(images),
                           seeks_female=_seeks_female_roommates(raw_text),
-                          broker_listings=res.broker_listings)
+                          broker_listings=res.broker_listings,
+                          price_is_derived=getattr(e, "price_is_derived", False))
 
     # Amenity/transit context for the alert — computed AFTER the score, on kept
     # listings only, so it can neither influence the score nor cost routing on a

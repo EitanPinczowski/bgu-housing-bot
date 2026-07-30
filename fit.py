@@ -52,7 +52,7 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
               floor: Optional[str] = None, has_elevator: Optional[bool] = None,
               has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None,
               has_photos: bool = False, seeks_female: bool = False,
-              broker_listings: int = 0) -> list:
+              broker_listings: int = 0, price_is_derived: bool = False) -> list:
     """The score's per-factor contributions as [(hebrew_label, delta), …], in the
     order they're applied. `score()` is just the clamped sum of the deltas — this is
     the single source of truth, so the alert's "why this score" line can never drift
@@ -158,6 +158,10 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
         parts.append(("אי-ודאות מחיר", -6))
     if price_uncertain:
         parts.append(("מחיר מהתגובות", -3))
+    # a per-room price we divided out of a whole-flat total is an inference, not a
+    # quote — same small penalty as a comment-sourced price
+    if price_is_derived:
+        parts.append(("מחיר מחושב מדירה שלמה", -3))
 
     return parts
 
@@ -184,11 +188,11 @@ def score(price: Optional[int], walk_min: Optional[float], tier: Optional[str],
           floor: Optional[str] = None, has_elevator: Optional[bool] = None,
           has_balcony: Optional[bool] = None, neighborhood: Optional[str] = None,
           has_photos: bool = False, seeks_female: bool = False,
-          broker_listings: int = 0) -> int:
+          broker_listings: int = 0, price_is_derived: bool = False) -> int:
     raw = sum(delta for _, delta in breakdown(
         price, walk_min, tier, avail_rooms, total_mates, price_uncertain,
         age_hours, lease_start, furnished, floor, has_elevator, has_balcony, neighborhood,
-        has_photos, seeks_female, broker_listings))
+        has_photos, seeks_female, broker_listings, price_is_derived))
     # Rescale onto 0–100 so the top isn't compressed by the clamp — features like
     # balcony/furnished now spread the best listings into distinct scores.
     return max(0, min(100, round(100 * raw / _max_possible())))

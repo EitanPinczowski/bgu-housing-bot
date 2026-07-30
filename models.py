@@ -32,6 +32,9 @@ class ListingExtract(BaseModel):
         return data
     missing_critical_data: bool = False
     price_from_comment: bool = False       # price came from a comment, not the post
+    # price was a whole-apartment TOTAL that we divided into a per-room figure
+    # (pipeline._recover_price_per_room). Not asked of the LLM — inferred afterwards.
+    price_is_derived: bool = False
     summary_hebrew: Optional[str] = None
 
 
