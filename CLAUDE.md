@@ -122,6 +122,34 @@ SQLite + optional Google Sheets + Telegram alert`
     `</script>` in an address break out.
   - Viewers use `geocode.geocode_cached` — never the network. Going through the full
     geocoder took **211 s** to render 350 rows.
+  - **The map is the page**, the table is behind a `<details>`. Zoom/pan animate the
+    `viewBox`; strokes are non-scaling and dots/labels counter-scale, so only the
+    geography grows. Zoom is **Ctrl/⌘+wheel only** — a plain wheel must scroll the
+    page, or you can't reach the list under a 78vh map. Dots within ~19 px collapse
+    into a counted badge (`clusterOf`) rebuilt on zoom change, not on pan.
+  - **`python dashboard.py --share`** writes a dated `data/dashboard-YYYY-MM-DD.html`
+    for the people flat-hunting with the user. `window.__SNAPSHOT__` **removes** every
+    write control (a disabled button that alerts "unavailable" is worse) and the
+    `/img` tags, and adds a dated banner. Contacts and WhatsApp links **stay** — the
+    partners need to call the landlord (user's decision) — which is why
+    `notifier.send_document` defaults to the **group**, never `all`. `--send` posts it;
+    `BGU Dashboard Share` runs it daily at 21:00.
+  - `POST /api/walk` (not `GET /api/walk/<key>`): a `dedup_key` is `phone|address`, so
+    a GET would put a landlord's phone number in the URL and the access log. Draws the
+    real OSRM path (`osrm.foot_geometry`, GeoJSON — no polyline decoding). **No
+    straight-line fallback**: there is no honest estimate of *which way* you walk.
+- `map_listings.py` — the shared map renderer (dashboard + `area_map.py`): projection
+  (`_projector`/`xy_from`), street geometry as **4 combined `<path>`s** not ~2,800
+  polylines, zoom-revealed street labels (`data-minzoom`), landmarks, display-only
+  neighborhood outlines, amenity pins, and `walk_rings_svg` (5/10/15/`MAX_WALK_MINUTES`
+  from each gate, using the same arithmetic as `zones.est_walk_to_gate_min`).
+  Layer switches are one class on the `<svg>`; each layer needs its **own** marker
+  class (`st-l`, `nbhd`/`nbhd-abc`, `amen`) — a `:not()` chain once hid the campus label.
+- `load_map_neighborhoods.py` / `map_neighborhoods.json` — **display-only** neighborhood
+  outlines (א–יא, רמות, …). Deliberately NOT `neighborhoods.json`:
+  `zones.in_allowed_neighborhood` passes a point inside **any** polygon in that file, so
+  adding שכונה ו there to label the map would silently widen the ב/ג/ד gate. A
+  `test_zones.py` guard proves it doesn't.
 - `setup_always_on.cmd` — run ONCE as Administrator. The `BGU *` tasks ship with
   "wake the computer" OFF, so a run due while the PC sleeps is silently skipped —
   the real cause of "why didn't it run". Also fixes battery wake timers/sleep.
