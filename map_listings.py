@@ -70,6 +70,17 @@ def _projector(pts):
                 "pad": _PAD, "w": _W, "h": _H}
 
 
+def _bounds_of(projection):
+    """(min_lat, max_lat, min_lon, max_lon) actually visible in the canvas — the inverse
+    of the projection at the four corners. Used to cull street geometry to the view."""
+    p = projection
+    min_lo = p["min_lon"]
+    max_lo = min_lo + (p["w"] - 2 * p["pad"]) / (p["kx"] * p["scale"])
+    max_la = p["max_lat"]
+    min_la = max_la - (p["h"] - 2 * p["pad"]) / p["scale"]
+    return (min_la, max_la, min_lo, max_lo)
+
+
 def xy_from(projection):
     """Rebuild the projection function from its parameters alone.
 
@@ -86,6 +97,117 @@ def xy_from(projection):
 
 def _poly_points(xy, poly) -> str:
     return " ".join(f"{x:.1f},{y:.1f}" for x, y in (xy(la, lo) for la, lo in poly))
+
+
+# --- the street network + landmarks, shared with area_map.py ----------------------
+# area_features.json holds 1,174 named streets (4,038 segments) and the BGU/Soroka
+# footprints, fetched once by load_area_features.py. Rendering lives here because both
+# maps need it and a second copy of these constants would drift.
+_FEATURES_PATH = config.ROOT / "area_features.json"
+# Arteries are drawn boldly and named readily; the residential mesh is thinner, fainter
+# and named only on a long run — that label rule is what keeps 1,174 streets from
+# becoming a wall of text.
+_ARTERY = (3.6, 1.7, "#2b333b", 0.9, 95)      # casing, line, colour, opacity, min label px
+_MINOR = (2.2, 0.9, "#68727d", 0.6, 200)
+_LANDMARK_STYLE = {"university": ("#3949ab", "אוניברסיטת בן גוריון"),
+                   "hospital": ("#ad1457", "סורוקה")}
+
+
+def features() -> dict:
+    try:
+        return json.loads(_FEATURES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"landmarks": [], "streets": []}
+
+
+def _in_bounds(la, lo, bounds) -> bool:
+    min_la, max_la, min_lo, max_lo = bounds
+    return min_la <= la <= max_la and min_lo <= lo <= max_lo
+
+
+# Styling lives in CSS and the geometry in four combined <path>s, rather than ~110
+# characters of stroke attributes on each of ~2,800 <polyline>s. That took the street
+# layer from 620 KB to ~210 KB and, just as importantly, from 2,804 DOM nodes to 4 —
+# which is what keeps the dashboard's zoom smooth. Casings all render beneath all
+# lines, which is also how a road map is supposed to look at junctions.
+STREET_CSS = """
+.st{fill:none;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.st-cas{stroke:#fff;stroke-opacity:.5}
+.st-art{stroke:#2b333b;stroke-opacity:.9;stroke-width:1.7}
+.st-min{stroke:#68727d;stroke-opacity:.6;stroke-width:.9}
+.st-cas-art{stroke-width:3.6}.st-cas-min{stroke-width:2.2}
+"""
+
+
+def _path_d(xy, seg) -> str:
+    """One subpath: 'M x,y x,y …' — after an M, further pairs are implicit lineto."""
+    return "M" + " ".join(f"{x:.1f},{y:.1f}" for x, y in (xy(la, lo) for la, lo in seg))
+
+
+def streets_svg(xy, bounds, feats=None):
+    """(path markup, label list) for every street with geometry inside `bounds`.
+
+    Culling matters: only ~8,900 of the 30,300 street points fall inside the listings
+    map's viewport. Labels come back separately so the caller draws them ON TOP of
+    everything else."""
+    arteries, minors, labels = [], [], []
+    for st in (feats or features()).get("streets", []):
+        main = st.get("main", True)                    # old files had arteries only
+        min_px = _ARTERY[4] if main else _MINOR[4]
+        into = arteries if main else minors
+        best_seg, best_len = None, 0.0
+        for seg in st.get("segments", []):
+            if not any(_in_bounds(la, lo, bounds) for la, lo in seg):
+                continue
+            into.append(_path_d(xy, seg))
+            (ax, ay), (bx, by) = xy(*seg[0]), xy(*seg[-1])
+            seglen = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+            if seglen > best_len:
+                best_len, best_seg = seglen, seg
+        if best_seg and best_len > min_px:
+            labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"], main))
+
+    out = []
+    for d, cls in ((minors, "st-min"), (arteries, "st-art")):
+        if not d:
+            continue
+        joined = "".join(d)
+        casing = "st-cas-art" if cls == "st-art" else "st-cas-min"
+        out.append(f'<path class="st st-cas {casing}" d="{joined}"/>')
+        out.append(f'<path class="st {cls}" d="{joined}"/>')
+    return out, labels
+
+
+def street_labels_svg(labels):
+    """Street names, white-haloed so they read over anything beneath them."""
+    out = []
+    for (sx, sy), name, main in labels:
+        fs, fill = (11, "#1c2229") if main else (9, "#3c454e")
+        out.append(f'<text class="slabel" x="{sx:.0f}" y="{sy:.0f}" font-size="{fs}" '
+                   f'fill="{fill}" text-anchor="middle" style="paint-order:stroke;'
+                   f'stroke:#fff;stroke-width:2.6px">{html.escape(name)}</text>')
+    return out
+
+
+def landmarks_svg(xy, feats=None):
+    """BGU campus (blue) and Soroka (magenta) footprints — the two anchors every
+    address in this search is described relative to."""
+    out = []
+    for lm in (feats or features()).get("landmarks", []):
+        poly = lm.get("polygon_latlon") or []
+        if not poly:
+            continue
+        color, label = _LANDMARK_STYLE.get(lm.get("kind"), ("#444", lm.get("name", "")))
+        out.append(f'<polygon points="{_poly_points(xy, poly)}" fill="{color}" '
+                   f'fill-opacity="0.5" stroke="{color}" stroke-width="2"/>')
+        cla = sum(p[0] for p in poly) / len(poly)
+        clo = sum(p[1] for p in poly) / len(poly)
+        lx, ly = xy(cla, clo)
+        out.append(f'<text class="slabel" x="{lx:.0f}" y="{ly:.0f}" font-size="15" '
+                   f'fill="#fff" text-anchor="middle" font-weight="bold" '
+                   f'style="paint-order:stroke;stroke:{color};stroke-width:3px">'
+                   f'{html.escape(label)}</text>')
+    return out
 
 
 # Only pin targets with a HANDFUL of locations. The "bus toward the train station"
@@ -133,9 +255,16 @@ def build_base_svg(placed=None):
     if not pts:
         pts = [(31.26, 34.80)]
     xy, projection = _projector(pts)
+    bounds = _bounds_of(projection)
 
     svg = [f'<svg viewBox="0 0 {_W} {_H}" xmlns="http://www.w3.org/2000/svg">']
     svg.append(f'<rect width="{_W}" height="{_H}" fill="#f6f7f9"/>')
+    # the street network FIRST, so everything else reads on top of it. Without this the
+    # dots floated over an empty polygon and you couldn't tell where anything was.
+    feats = features()
+    street_lines, street_labels = streets_svg(xy, bounds, feats)
+    svg += street_lines
+    svg += landmarks_svg(xy, feats)
     # the green zone
     svg.append(f'<polygon points="{_poly_points(xy, zone)}" fill="#2e7d32" '
                f'fill-opacity="0.10" stroke="#2e7d32" stroke-width="2"/>')
@@ -156,9 +285,10 @@ def build_base_svg(placed=None):
     # amenity pins (the 669 stops, the bus to the train, the gym)
     for la, lo, icon, name in pins:
         px, py = xy(la, lo)
-        svg.append(f'<text x="{px:.1f}" y="{py:.1f}" font-size="11" text-anchor="middle" '
-                   f'dominant-baseline="central" opacity="0.75">{html.escape(icon)}'
-                   f'<title>{html.escape(name)}</title></text>')
+        svg.append(f'<text class="slabel" x="{px:.1f}" y="{py:.1f}" font-size="11" '
+                   f'text-anchor="middle" dominant-baseline="central" opacity="0.75">'
+                   f'{html.escape(icon)}<title>{html.escape(name)}</title></text>')
+    svg += street_labels_svg(street_labels)      # names last, so they're never buried
     return "".join(svg), projection
 
 

@@ -170,8 +170,31 @@ tr.row.cursor td{box-shadow:inset 2px 0 0 var(--accent)}
 .raw{white-space:pre-wrap;font-size:12px;color:var(--mut);max-height:220px;overflow:auto;
      border-right:2px solid var(--line);padding-right:8px;margin:6px 0}
 .note{width:100%;min-height:46px;font:inherit}
-.map{margin:14px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;position:relative}
-.map svg{display:block;width:100%;height:auto}
+/* The map IS the page now — where a flat is, is the first question. */
+.map{margin:10px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+     position:relative;height:min(78vh,900px);background:#f6f7f9;touch-action:pan-y}
+.map svg{display:block;width:100%;height:100%;cursor:grab}
+.map svg.drag{cursor:grabbing}
+.maphint{position:absolute;inset-inline-start:8px;bottom:6px;font-size:11px;
+         color:var(--mut);background:var(--bg);opacity:.82;padding:1px 7px;border-radius:99px}
+#reset{position:absolute;inset-inline-end:8px;top:8px;font-size:12px;padding:3px 8px;
+       background:var(--bg);opacity:.92}
+/* the list is secondary: collapsed until asked for */
+details.list{margin:10px 0;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+details.list>summary{cursor:pointer;padding:9px 12px;font-weight:600;user-select:none}
+details.list>summary:hover{color:var(--accent)}
+details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
+/* the apartment card — hover on a pointer device, bottom sheet on touch */
+#card{position:absolute;z-index:20;width:265px;background:var(--bg);border:1px solid var(--line);
+      border-radius:10px;box-shadow:0 8px 26px #0003;padding:9px;display:none;font-size:13px}
+#card.on{display:block}
+#card img{width:100%;height:112px;object-fit:cover;border-radius:6px;margin-bottom:6px}
+#card .ttl{font-weight:700;margin-bottom:2px}
+#card .kv{color:var(--mut);font-size:12px;line-height:1.5}
+#card .btns{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+#card .btns a,#card .btns button{font-size:12px;padding:3px 8px;border:1px solid var(--line);
+      border-radius:6px;text-decoration:none;color:var(--fg);background:var(--bg);cursor:pointer}
+#card .x{display:none}
 .dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
@@ -197,6 +220,13 @@ tr.row.cursor td{box-shadow:inset 2px 0 0 var(--accent)}
   td.hide-sm{display:none}
   tr.exp{border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
   .thumb{width:100%;height:150px}
+  .map{height:62vh}                       /* leave room for the sheet */
+  /* the card becomes a bottom sheet: a 265px popover is unusable on a phone */
+  #card{position:fixed;inset:auto 0 0 0;width:auto;border-radius:14px 14px 0 0;
+        max-height:62vh;overflow:auto;box-shadow:0 -8px 26px #0004;padding:12px}
+  #card img{height:150px}
+  #card .x{display:block;position:absolute;inset-inline-end:10px;top:8px;font-size:18px;
+           line-height:1;background:none;border:0;color:var(--mut);cursor:pointer}
 }
 """
 
@@ -311,6 +341,109 @@ function expandHtml(r){
     '<span class="live" data-note-status></span></div></td></tr>';
 }
 
+/* ---------- zoom & pan: animate the viewBox, no library ----------
+   The map is the main view now, so it has to zoom: אברהם אבינו alone holds 21
+   listings, an unreadable blob at full extent. Strokes are non-scaling (CSS), and
+   dots and labels are counter-scaled here so only the geography grows. */
+const WORLD = {x: 0, y: 0, w: (P ? P.w : 1000), h: (P ? P.h : 820)};
+let view = {...WORLD};
+const zoomFactor = () => WORLD.w / view.w;
+
+function applyView(){
+  const svg = document.querySelector('.map svg');
+  if (!svg) return;
+  // keep the window inside the world so the map can't be lost off-screen
+  view.w = Math.min(WORLD.w, Math.max(WORLD.w / 12, view.w));
+  view.h = view.w * (WORLD.h / WORLD.w);
+  view.x = Math.max(0, Math.min(WORLD.w - view.w, view.x));
+  view.y = Math.max(0, Math.min(WORLD.h - view.h, view.y));
+  svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+  const k = zoomFactor();
+  svg.querySelectorAll('.dot').forEach(d => d.setAttribute('r', (5 / k).toFixed(2)));
+  svg.querySelectorAll('.slabel').forEach(t => {
+    if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
+    t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
+  });
+}
+
+function zoomAt(px, py, factor){
+  const svg = document.querySelector('.map svg');
+  const box = svg.getBoundingClientRect();
+  const fx = (px - box.left) / box.width, fy = (py - box.top) / box.height;
+  const ax = view.x + fx * view.w, ay = view.y + fy * view.h;   // anchor stays put
+  view.w = view.w / factor;
+  view.h = view.w * (WORLD.h / WORLD.w);
+  view.x = ax - fx * view.w;
+  view.y = ay - fy * view.h;
+  applyView();
+}
+
+function initMapGestures(){
+  const svg = document.querySelector('.map svg');
+  if (!svg) return;
+  /* Zoom on Ctrl/⌘+wheel only. A plain wheel must scroll the PAGE: the map is 78vh
+     tall, so grabbing every scroll event means you can't reach the list below it —
+     and a casual scroll silently zooms the map, which is exactly what happened the
+     first time this was tried. Same reason `touch-action: pan-y` in the CSS: one
+     finger scrolls the page, two fingers work the map. */
+  svg.addEventListener('wheel', ev => {
+    if (!ev.ctrlKey && !ev.metaKey) return;          // let the page scroll
+    ev.preventDefault();
+    zoomAt(ev.clientX, ev.clientY, ev.deltaY < 0 ? 1.18 : 1 / 1.18);
+  }, {passive: false});
+
+  let drag = null, pinch = null;
+  const pts = new Map();
+  svg.addEventListener('pointerdown', ev => {
+    pts.set(ev.pointerId, ev);
+    if (pts.size === 1 && !ev.target.closest('.dot')){
+      drag = {x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y};
+      svg.classList.add('drag');
+      svg.setPointerCapture(ev.pointerId);
+    } else if (pts.size === 2){
+      drag = null;
+      const [a, b] = [...pts.values()];
+      pinch = {d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+               mx: (a.clientX + b.clientX) / 2, my: (a.clientY + b.clientY) / 2};
+    }
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (pts.has(ev.pointerId)) pts.set(ev.pointerId, ev);
+    if (pinch && pts.size === 2){
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      const mx = (a.clientX + b.clientX) / 2, my = (a.clientY + b.clientY) / 2;
+      const box = svg.getBoundingClientRect();
+      // two fingers also PAN — with one finger reserved for page scroll on touch,
+      // this is the only way to move the map on a phone
+      view.x -= (mx - pinch.mx) * (view.w / box.width);
+      view.y -= (my - pinch.my) * (view.h / box.height);
+      pinch.mx = mx; pinch.my = my;
+      if (pinch.d > 0 && Math.abs(d - pinch.d) > 1){
+        zoomAt(mx, my, d / pinch.d);
+        pinch.d = d;
+      } else {
+        applyView();
+      }
+      return;
+    }
+    if (!drag) return;
+    const box = svg.getBoundingClientRect();
+    view.x = drag.vx - (ev.clientX - drag.x) * (view.w / box.width);
+    view.y = drag.vy - (ev.clientY - drag.y) * (view.h / box.height);
+    applyView();
+  });
+  const release = ev => {
+    pts.delete(ev.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (pts.size === 0){ drag = null; svg.classList.remove('drag'); }
+  };
+  svg.addEventListener('pointerup', release);
+  svg.addEventListener('pointercancel', release);
+  svg.addEventListener('dblclick', () => { view = {...WORLD}; applyView(); });
+  $('reset').addEventListener('click', () => { view = {...WORLD}; applyView(); });
+}
+
 function drawDots(rows){
   const svg = document.querySelector('.map svg');
   if (!svg || !P) return;
@@ -326,7 +459,7 @@ function drawDots(rows){
     const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     c.setAttribute('cx', xy[0].toFixed(1));
     c.setAttribute('cy', xy[1].toFixed(1));
-    c.setAttribute('r', '5');
+    c.setAttribute('r', (5 / zoomFactor()).toFixed(2));   // constant on screen under zoom
     c.setAttribute('class', 'dot');
     c.setAttribute('fill', byScore ? scoreColor(r.eff_score)
                                    : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN));
@@ -354,6 +487,7 @@ function render(){
   const rows = visible();
   $('tb').innerHTML = rows.map(rowHtml).join('');
   $('n').textContent = rows.length + ' / ' + DATA.length + ' דירות';
+  $('listsum').textContent = 'רשימה (' + rows.length + ')';
   const nnew = DATA.filter(isNew).length;
   $('newcount').textContent = nnew
     ? nnew + ' חדשות מאז הביקור הקודם · ' : '';
@@ -437,16 +571,120 @@ $('tb').addEventListener('mouseover', ev => {
   if (!tr) return;
   document.querySelectorAll('.dot').forEach(d =>
     d.classList.toggle('hi', d.dataset.key === tr.dataset.key));
+  const r = rowByKey(tr.dataset.key);
+  if (r && r.lat) showCard(r);          // the list drives the map too
 });
 
-document.addEventListener('click', ev => {
-  const dot = ev.target.closest('.dot');
-  if (dot){
-    const r = rowByKey(dot.dataset.key);
-    if (r && r.lat)
-      window.open('https://www.google.com/maps/dir/?api=1&destination=' + r.lat + ',' + r.lon, '_blank');
-    return;
+/* ---------- the apartment card ----------
+   Hover on a pointer device, tap on touch. matchMedia('(hover: hover)') is the right
+   signal — a narrow window on a laptop still has a mouse. Clicking a dot used to open
+   Google Maps, which would have fired on the tap-to-expand gesture; directions are a
+   button inside the card now. */
+const CAN_HOVER = window.matchMedia('(hover: hover)').matches;
+let cardKey = null, hideTimer = null;
+
+function cardHtml(r){
+  const flags = [r.saved ? '⭐' : '', r.contacted ? '📵' : '', r.stale ? '🕒' : '',
+                 r.broker >= 4 ? '⚠️ מתווך' : '', isNew(r) ? 'חדש' : '']
+                .filter(Boolean).join(' · ');
+  const bits = [
+    r.price_per_room ? r.price_per_room + '₪ לחדר' : 'מחיר לא צוין',
+    (r.available_rooms != null ? r.available_rooms : '?') + ' חדרים פנויים',
+    (r.total_roommates != null ? r.total_roommates + ' שותפים' : ''),
+    (r.walk_minutes != null ? Math.round(r.walk_minutes) + ' דק׳ הליכה' : ''),
+    (r.lease_start ? 'כניסה ' + r.lease_start : ''),
+    (r.floor ? 'קומה ' + r.floor : '')
+  ].filter(Boolean).join(' · ');
+  const photo = (r.photos && r.photos.length)
+    ? '<img loading="lazy" src="/img/' + r.photos[0] + '?token=' + TOKEN +
+      '" onerror="this.style.display=\'none\'">' : '';
+  const btn = (href, label) => href
+    ? '<a href="' + esc(href) + '" target="_blank" rel="noreferrer">' + label + '</a>' : '';
+  const dirs = r.lat
+    ? btn('https://www.google.com/maps/dir/?api=1&destination=' + r.lat + ',' + r.lon, '🧭 ניווט') : '';
+  return photo +
+    '<div class="ttl">' + esc(r.address || '—') +
+      ' <span class="pill ' + esc(r.location_tier || 'UNKNOWN') + '">' +
+      esc(r.location_tier || '?') + '</span></div>' +
+    '<div class="kv">⭐ ' + fmt(r.eff_score) + ' · ' + esc(bits) + '</div>' +
+    (r.amenity_text ? '<div class="kv">' + esc(r.amenity_text) + '</div>' : '') +
+    (flags ? '<div class="kv">' + esc(flags) + '</div>' : '') +
+    (r.note ? '<div class="kv">📝 ' + esc(r.note) + '</div>' : '') +
+    '<div class="btns">' + btn(r.wa, '💬 וואטסאפ') + btn(r.source_url, '🔗 פוסט') + dirs +
+      '<button data-card="save">⭐</button><button data-card="dismiss">🗑</button>' +
+      '<button data-card="contacted">📵</button></div>';
+}
+
+function showCard(r, dot){
+  clearTimeout(hideTimer);
+  cardKey = r.dedup_key;
+  $('cardbody').innerHTML = cardHtml(r);
+  const card = $('card');
+  card.classList.add('on');
+  if (CAN_HOVER && dot){                       // anchor beside the dot, kept in view
+    const map = document.querySelector('.map').getBoundingClientRect();
+    const d = dot.getBoundingClientRect();
+    const w = card.offsetWidth || 265, h = card.offsetHeight || 220;
+    let x = d.left - map.left + 14, y = d.top - map.top - h / 2;
+    x = Math.max(6, Math.min(map.width - w - 6, x));
+    y = Math.max(6, Math.min(map.height - h - 6, y));
+    card.style.left = x + 'px';
+    card.style.top = y + 'px';
+  } else {
+    // bottom-sheet mode: drop any anchor coordinates a previous hover left behind,
+    // or the sheet sits off-flush after a resize
+    card.style.left = card.style.top = '';
   }
+}
+
+function hideCard(){ $('card').classList.remove('on'); cardKey = null; }
+
+function initCard(){
+  const svg = document.querySelector('.map svg');
+  if (!svg) return;
+  if (CAN_HOVER){
+    svg.addEventListener('mouseover', ev => {
+      const dot = ev.target.closest('.dot');
+      if (!dot) return;
+      const r = rowByKey(dot.dataset.key);
+      if (r) showCard(r, dot);
+    });
+    // a grace delay so the pointer can travel from the dot onto the buttons
+    svg.addEventListener('mouseout', ev => {
+      if (ev.target.closest('.dot')) hideTimer = setTimeout(hideCard, 260);
+    });
+    $('card').addEventListener('mouseenter', () => clearTimeout(hideTimer));
+    $('card').addEventListener('mouseleave', hideCard);
+  } else {
+    svg.addEventListener('click', ev => {
+      const dot = ev.target.closest('.dot');
+      if (!dot){ hideCard(); return; }
+      const r = rowByKey(dot.dataset.key);
+      if (r) showCard(r, dot);
+    });
+  }
+  $('card').querySelector('.x').addEventListener('click', hideCard);
+  $('card').addEventListener('click', async ev => {
+    const b = ev.target.closest('[data-card]');
+    if (!b || !cardKey) return;
+    const act = b.dataset.card;
+    const mark = act === 'save' ? 'saved' : act === 'dismiss' ? 'dismissed' : 'contacted';
+    const out = await post('/api/mark', {key: cardKey, mark: mark});
+    if (out){
+      const r = rowByKey(cardKey);
+      if (r){
+        if (mark === 'saved') r.saved = true;
+        if (mark === 'contacted') r.contacted = true;
+        if (out.score) r.eff_score = out.score;
+        const k = cardKey;
+        render();
+        showCard(rowByKey(k));
+      }
+    }
+  });
+}
+
+document.addEventListener('click', ev => {
   const img = ev.target.closest('.thumb');
   if (img){ $('lbimg').src = img.src; $('lb').classList.add('on'); }
   else if (ev.target.id === 'lb' || ev.target.id === 'lbimg') $('lb').classList.remove('on');
@@ -508,7 +746,15 @@ async function poll(){
   } catch (e){ /* server stopped or PC asleep — keep showing what we have */ }
 }
 
+/* the list stays closed by default — the map is the view — but remember a choice */
+const list = $('list');
+if (localStorage.getItem('bgu_list_open') === '1') list.open = true;
+list.addEventListener('toggle', () =>
+  localStorage.setItem('bgu_list_open', list.open ? '1' : '0'));
+
 render();
+initMapGestures();
+initCard();
 const focusKey = new URLSearchParams(location.search).get('key');
 if (focusKey){
   const r = rowByKey(focusKey);
@@ -584,7 +830,7 @@ def render(live: bool) -> str:
     return f"""<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
 <title>BGU housing dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>{_CSS}</style>
+<style>{_CSS}{map_listings.STREET_CSS}</style>
 <div class="wrap">
 <h1>לוח דירות — BGU</h1>
 <p class="sub">{len(rows)} רשומות · {matches} התאמות · {len(placed)} על המפה ·
@@ -607,8 +853,14 @@ def render(live: bool) -> str:
 </div>
 <div class="count"><span id="n"></span> · <span id="mapcount"></span></div>
 <div class="panel" id="cmp"></div>
+<div class="map">{base_svg}</svg>
+  <button id="reset" title="איפוס תצוגה">איפוס</button>
+  <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה להזזה · ריחוף/נגיעה בנקודה לפרטים</div>
+  <div id="card"><button class="x" aria-label="סגור">✕</button><div id="cardbody"></div></div>
+</div>
+<details class="list" id="list"><summary id="listsum">רשימה</summary>
 <div class="scroll"><table id="t"><thead><tr>{head}</tr></thead><tbody id="tb"></tbody></table></div>
-<div class="map">{base_svg}</svg></div>
+</details>
 <p class="sub">⭐ שמור · 📵 יצרתי קשר · 🕒 ישן מ־{config.LISTING_STALE_DAYS} ימים ·
   ⚠️ מתווך · ▾ פירוט ניקוד והפוסט המקורי · j/k/s/x מקלדת · לחיצה על נקודה פותחת ניווט.</p>
 </div>

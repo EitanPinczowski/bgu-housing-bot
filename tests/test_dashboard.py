@@ -146,3 +146,43 @@ def test_hebrew_survives_the_payload_round_trip(temp_db, monkeypatch, tmp_path):
     monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
     _save("k1", "שדרות יצחק רגר 164, שכונה ג׳")
     assert _boot(dashboard.build())[0]["address"] == "שדרות יצחק רגר 164, שכונה ג׳"
+
+
+# --- map-first layout -------------------------------------------------------------
+def test_the_map_comes_before_the_list(temp_db, monkeypatch, tmp_path):
+    """Where a flat is, is the first question — the map leads and the table follows."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert page.index('class="map"') < page.index('details class="list"')
+
+
+def test_the_list_starts_collapsed(temp_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    details = page[page.index('<details class="list"'):]
+    opening_tag = details[:details.index(">") + 1]
+    assert " open" not in opening_tag          # closed until asked for
+    assert "<summary" in details and page.index("<table id=") > page.index("<details")
+
+
+def test_street_styling_is_in_the_page(temp_db, monkeypatch, tmp_path):
+    """Without STREET_CSS the paths default to fill:black and the map renders as
+    filled blobs instead of roads."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert ".st{" in page and "fill:none" in page
+    assert ".st-art{" in page and ".st-min{" in page
+
+
+def test_map_furniture_is_present(temp_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    for bit in ('id="card"', 'id="reset"', 'class="maphint"', 'id="listsum"'):
+        assert bit in page, bit
+    # the dot click must not navigate away — directions live in the card
+    assert "google.com/maps/dir" in page          # present, but inside cardHtml
+    assert "ctrlKey" in page                      # plain wheel scrolls the page

@@ -73,3 +73,82 @@ def test_missing_amenities_file_is_not_fatal(tmp_path, monkeypatch):
     import config
     monkeypatch.setattr(config, "AMENITIES_PATH", tmp_path / "nope.json")
     assert map_listings._amenity_pins() == []
+
+
+# --- the street layer (shared with area_map) --------------------------------------
+_FEATS = {"landmarks": [{"kind": "university", "name": "BGU",
+                         "polygon_latlon": [[31.262, 34.800], [31.263, 34.802],
+                                            [31.261, 34.802]]}],
+          "streets": [
+              {"name": "יצחק רגר", "main": True,
+               "segments": [[[31.250, 34.798], [31.270, 34.799]]]},      # long, in view
+              {"name": "סמטה קטנה", "main": False,
+               "segments": [[[31.2600, 34.7990], [31.2601, 34.7991]]]},  # tiny, in view
+              {"name": "רחוב רחוק", "main": True,
+               "segments": [[[32.900, 35.900], [32.901, 35.901]]]},      # far outside
+          ]}
+_BOUNDS = (31.24, 31.28, 34.77, 34.82)
+
+
+def _xy(la, lo):
+    return ((lo - 34.77) * 20000, (31.28 - la) * 20000)
+
+
+def test_streets_are_culled_to_the_viewport():
+    """Only ~8,900 of the 30,300 street points fall inside the listings map's view;
+    drawing the rest would trade ~400 KB for pixels nobody can see."""
+    paths, labels = map_listings.streets_svg(_xy, _BOUNDS, _FEATS)
+    artery = next(p for p in paths if 'class="st st-art"' in p)
+    # two arteries exist but one is 180 km away, so the combined path has ONE subpath
+    assert artery.count("M") == 1, artery
+    # and the far one contributes neither geometry nor a label
+    assert "רחוב רחוק" not in [n for _pos, n, _m in labels]
+    assert "יצחק רגר" in [n for _pos, n, _m in labels]
+
+
+def test_arteries_and_minor_streets_are_drawn_differently():
+    paths, _ = map_listings.streets_svg(_xy, _BOUNDS, _FEATS)
+    d = "".join(paths)
+    assert 'class="st st-cas st-cas-art"' in d and 'class="st st-art"' in d
+    assert 'class="st st-cas st-cas-min"' in d and 'class="st st-min"' in d
+    # the widths live in CSS, once, rather than on every path
+    assert ".st-art{" in map_listings.STREET_CSS and ".st-min{" in map_listings.STREET_CSS
+    assert "non-scaling-stroke" in map_listings.STREET_CSS
+
+
+def test_geometry_is_four_paths_not_thousands_of_polylines():
+    """620 KB and 2,804 DOM nodes before this; the node count is what keeps zoom smooth."""
+    paths, _ = map_listings.streets_svg(_xy, _BOUNDS, _FEATS)
+    assert len(paths) == 4                        # casing+line for arteries and minors
+    assert all(p.startswith("<path") for p in paths)
+
+
+def test_only_long_segments_get_a_name():
+    """1,174 streets would be a wall of text; a name needs a long enough run in view."""
+    _paths, labels = map_listings.streets_svg(_xy, _BOUNDS, _FEATS)
+    names = [n for _pos, n, _m in labels]
+    assert "יצחק רגר" in names                    # long artery
+    assert "סמטה קטנה" not in names               # a few metres of side street
+
+
+def test_landmarks_render_with_their_labels():
+    out = "".join(map_listings.landmarks_svg(_xy, _FEATS))
+    assert "<polygon" in out and "#3949ab" in out          # BGU blue
+    assert "אוניברסיטת בן גוריון" in out
+
+
+def test_base_svg_now_includes_streets_and_landmarks(monkeypatch):
+    monkeypatch.setattr(map_listings, "features", lambda: _FEATS)
+    monkeypatch.setattr(map_listings, "_amenity_pins", lambda: [])
+    base, _proj = map_listings.build_base_svg(
+        [(31.26, 34.80, "GREEN", 90, "רגר 1", 1400, 8, "k1")])
+    assert 'class="st ' in base                            # street paths
+    assert "#3949ab" in base                               # the campus footprint
+    assert base.index('class="st ') < base.index("<polygon points")  # streets underneath
+
+
+def test_missing_features_file_degrades_quietly(tmp_path, monkeypatch):
+    monkeypatch.setattr(map_listings, "_FEATURES_PATH", tmp_path / "nope.json")
+    assert map_listings.features() == {"landmarks": [], "streets": []}
+    assert map_listings.streets_svg(_xy, _BOUNDS) == ([], [])
+    assert map_listings.landmarks_svg(_xy) == []

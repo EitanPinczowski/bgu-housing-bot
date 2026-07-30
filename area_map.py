@@ -15,6 +15,7 @@ import json
 import math
 
 import config
+import map_listings
 import zones
 
 OUT = config.DATA_DIR / "area_map.html"
@@ -106,46 +107,17 @@ def build() -> str:
     # 2) streets — a white casing + a line so they read over the colored tier grid.
     #    Main arteries are drawn boldly and always named; minor (residential) streets
     #    are a finer mesh and named only when a long-enough segment is in view.
-    street_labels = []
-    for st in feats.get("streets", []):
-        main = st.get("main", True)                    # old files had arteries only
-        cw, lw, lc, lo = (3.6, 1.7, "#2b333b", 0.9) if main else (2.2, 0.9, "#68727d", 0.6)
-        best_seg, best_len = None, 0.0
-        for seg in st.get("segments", []):
-            if not any(_in_bounds(la, lo, bounds) for la, lo in seg):
-                continue
-            pts = _poly(xy, seg)
-            svg.append(f'<polyline points="{pts}" fill="none" stroke="#ffffff" '
-                       f'stroke-width="{cw}" stroke-opacity="0.5" stroke-linejoin="round"/>')
-            svg.append(f'<polyline points="{pts}" fill="none" stroke="{lc}" '
-                       f'stroke-width="{lw}" stroke-opacity="{lo}" stroke-linejoin="round"/>')
-            (ax, ay), (bx, by) = xy(*seg[0]), xy(*seg[-1])
-            seglen = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
-            if seglen > best_len:
-                best_len, best_seg = seglen, seg
-        # name only the longer arteries (the dense network of lines carries the rest,
-        # so labels stay readable, not a wall of text)
-        if best_seg and best_len > (95 if main else 200):
-            street_labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"], main))
+    # Shared with the dashboard map — see map_listings.streets_svg. Four combined
+    # <path>s rather than ~2,800 <polyline>s, which is what keeps both pages small.
+    street_lines, street_labels = map_listings.streets_svg(xy, bounds, feats)
+    svg += street_lines
 
     # 3) green zone outline
     svg.append(f'<polygon points="{_poly(xy, zone)}" fill="none" stroke="#1b5e20" '
                f'stroke-width="3"/>')
 
-    # 4) landmarks: BGU (blue), Soroka (magenta)
-    _LM_STYLE = {"university": ("#3949ab", "אוניברסיטת בן גוריון"),
-                 "hospital": ("#ad1457", "סורוקה")}
-    for lm in feats.get("landmarks", []):
-        color, label = _LM_STYLE.get(lm["kind"], ("#444", lm["name"]))
-        svg.append(f'<polygon points="{_poly(xy, lm["polygon_latlon"])}" fill="{color}" '
-                   f'fill-opacity="0.5" stroke="{color}" stroke-width="2"/>')
-        cla = sum(p[0] for p in lm["polygon_latlon"]) / len(lm["polygon_latlon"])
-        clo = sum(p[1] for p in lm["polygon_latlon"]) / len(lm["polygon_latlon"])
-        lx, ly = xy(cla, clo)
-        svg.append(f'<text x="{lx:.0f}" y="{ly:.0f}" font-size="15" fill="#fff" '
-                   f'text-anchor="middle" font-weight="bold" '
-                   f'style="paint-order:stroke;stroke:{color};stroke-width:3px">'
-                   f'{html.escape(label)}</text>')
+    # 4) landmarks: BGU (blue), Soroka (magenta) — same renderer as the dashboard
+    svg += map_listings.landmarks_svg(xy, feats)
 
     # 5) neighborhood outlines + big labels
     for letter, poly in nbhds:
@@ -158,13 +130,8 @@ def build() -> str:
                    f'text-anchor="middle" font-weight="bold" opacity="0.75">'
                    f'שכונה {html.escape(letter)}</text>')
 
-    # 6) street names — on top, white-haloed so they read over everything. Main
-    #    arteries a touch larger/darker than minor streets.
-    for (sx, sy), name, main in street_labels:
-        fs, fill = (11, "#1c2229") if main else (9, "#3c454e")
-        svg.append(f'<text x="{sx:.0f}" y="{sy:.0f}" font-size="{fs}" fill="{fill}" '
-                   f'text-anchor="middle" style="paint-order:stroke;stroke:#fff;'
-                   f'stroke-width:2.6px">{html.escape(name)}</text>')
+    # 6) street names — on top, white-haloed so they read over everything
+    svg += map_listings.street_labels_svg(street_labels)
 
     # 7) gates
     for la, lo, name in gates:
@@ -181,6 +148,9 @@ def build() -> str:
         f'<span style="background:{_TIER_FILL["RED"]}">&nbsp;&nbsp;</span> RED — out of range')
     page = (
         "<!doctype html><meta charset='utf-8'><title>How the bot sees the area</title>"
+        # the street styling now lives in CSS (shared with the dashboard) instead of on
+        # every path, which is what shrank both pages
+        f"<style>{map_listings.STREET_CSS}</style>"
         "<div style='font-family:system-ui;padding:12px;max-width:1140px'>"
         "<h2 style='margin:0 0 4px'>How the bot understands the area</h2>"
         f"<p style='margin:0 0 8px;font-size:14px'>{legend}</p>"
