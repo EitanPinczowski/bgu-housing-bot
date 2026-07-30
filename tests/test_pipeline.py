@@ -434,3 +434,83 @@ def test_the_whole_rule_runs_inside_postprocess():
     e = ListingExtract(is_apartment_ad=True, price_per_room_ils=2400)
     e = pipeline._postprocess_extract(e, 'להשכרה דירת 3 חדרים, 2400 ש"ח', "")
     assert e.price_per_room_ils == 1200 and e.price_is_derived is True
+
+
+# --- hand-drawn zone edge --------------------------------------------------------
+def _edge_world(monkeypatch, dist_m, source="interpolated", addr="רגר 100"):
+    """A point classified AMBER that sits `dist_m` outside the green polygon."""
+    from models import ListingExtract
+    monkeypatch.setattr(pipeline.geocode, "geocode_detailed", lambda a: ((31.262, 34.80), source))
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest", lambda lat, lon: (7.0, "gate"))
+    monkeypatch.setattr(pipeline.zones, "classify_location",
+                        lambda lat, lon, walk_min=None: "AMBER")
+    monkeypatch.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: False)
+    monkeypatch.setattr(pipeline.zones, "in_allowed_neighborhood", lambda lat, lon: True)
+    monkeypatch.setattr(pipeline.zones, "neighborhood_of", lambda lat, lon: None)
+    monkeypatch.setattr(pipeline.zones, "_dist_point_to_polygon_m", lambda lat, lon: dist_m)
+    monkeypatch.setattr(pipeline.amenities, "nearby", lambda lat, lon: {})
+    return ListingExtract(is_apartment_ad=True, street_address_or_neighborhood=addr,
+                          available_rooms_count=2, total_roommates_in_apt=3,
+                          price_per_room_ils=1400)
+
+
+def test_a_precise_point_just_outside_the_hand_drawn_edge_counts_as_green():
+    """green_zone.json is traced by hand, so 5 m outside the line is not a real
+    verdict — 35 of 239 placed listings sit within 50 m of it."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        e = _edge_world(mp, dist_m=35)
+        res = pipeline._classify(e, "", None, None, [], None, commit=False)
+        assert res.location_tier == "GREEN" and res.preferred is True
+        assert "hand-drawn" in res.reason
+    finally:
+        mp.undo()
+
+
+def test_the_grace_does_not_reach_genuinely_distant_flats():
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        e = _edge_world(mp, dist_m=200)
+        assert pipeline._classify(e, "", None, None, [], None, commit=False).location_tier == "AMBER"
+    finally:
+        mp.undo()
+
+
+def test_an_imprecise_point_near_the_edge_gets_no_grace():
+    """An imprecise placement near the line is the EXISTING NEEDS_DATA case — its own
+    error already swamps the polygon's, so it must not be promoted."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        e = _edge_world(mp, dist_m=35, source="overpass")
+        res = pipeline._classify(e, "", None, None, [], None, commit=False)
+        assert res.location_tier != "GREEN"
+    finally:
+        mp.undo()
+
+
+def test_a_bare_neighborhood_is_never_graced_into_green():
+    """Its 'precise' static point is a whole-area centroid, so the grace must not
+    undo the bare-neighborhood cap."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        e = _edge_world(mp, dist_m=10, source="static", addr="שכונה ג")
+        assert pipeline._classify(e, "", None, None, [], None, commit=False).location_tier != "GREEN"
+    finally:
+        mp.undo()
+
+
+def test_a_no_amber_area_is_never_graced_into_green():
+    """שכונה ד' outside the polygon is RED by an explicit rule; the grace runs after
+    it and must not resurrect it."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        e = _edge_world(mp, dist_m=10, addr="שכונה ד, רחוב האיסיים 5")
+        mp.setattr(pipeline.zones, "in_no_amber_zone", lambda lat, lon: True)
+        assert pipeline._classify(e, "", None, None, [], None, commit=False).location_tier == "RED"
+    finally:
+        mp.undo()

@@ -562,7 +562,8 @@ def all_posts() -> list:
     """Every archived post as a dict, newest first — for replay.py."""
     with _conn() as c:
         cur = c.execute("""SELECT sig, raw_text, comments, images, "group", source_url,
-                                  parsed_json, verdict, reason, tier, score, first_seen
+                                  parsed_json, verdict, reason, tier, score, first_seen,
+                                  posted_at
                            FROM posts ORDER BY first_seen DESC""")
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]

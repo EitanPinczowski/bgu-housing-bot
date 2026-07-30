@@ -576,6 +576,21 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     # its real tier and can still be GREEN.
     elif tier == "GREEN" and geocode.is_bare_neighborhood(e.street_address_or_neighborhood):
         tier = "AMBER"
+    # The green polygon is hand-traced, so its line carries real drawing error, yet a
+    # PRECISE point a few metres outside it was still confidently demoted out of GREEN
+    # (worth 15 score points and the ✅ label). 35 of 239 placed listings sit within
+    # 50 m of that line, where the polygon's own error dominates the verdict — so give
+    # those the benefit of the doubt. Deliberately narrow, and ordered LAST of the three
+    # so it can never undo them: only OUTWARD, only a few tens of metres, only a precise
+    # point, never a bare neighborhood (whose "precise" static centroid describes a
+    # whole area), and never a no-amber area like שכונה ד'.
+    edge_grace = False
+    if (tier == "AMBER" and getattr(config, "ZONE_EDGE_GRACE_METERS", 0)
+            and lat is not None and not no_amber
+            and geocode.is_precise_source(geo_source)
+            and not geocode.is_bare_neighborhood(e.street_address_or_neighborhood)
+            and zones._dist_point_to_polygon_m(lat, lon) <= config.ZONE_EDGE_GRACE_METERS):
+        tier, edge_grace = "GREEN", True
     # Address precision: an IMPRECISELY-placed listing (a street-name / bare point, not a
     # precise house/POI hit) can't be a confident GREEN. On a boundary-crossing street
     # (green on one end, red on the other) a name-only point could be the wrong side →
@@ -647,6 +662,8 @@ def _classify(e, raw_text: str, source_url, group, images: list,
     else:
         label = ("in green zone (preferred)" if tier == "GREEN"
                  else "within a 20-min walk of a gate (acceptable, not preferred)")
+        if edge_grace:      # say that the call was a near-edge one, not a clean inside
+            label = "just outside the hand-drawn zone edge — treated as in-zone"
         res = result(Status.MATCH, label, geo_source=geo_source,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
 

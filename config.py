@@ -70,6 +70,14 @@ FLOOR_PENALTY_CAP = 40
 # the house) can't tell green from red, so the listing is flagged NEEDS_DATA instead of
 # being confidently accepted or dropped. An exact/interpolated point keeps its real tier.
 EDGE_UNCERTAIN_METERS = 150
+# The green zone is traced BY HAND in Google My Maps, so its boundary carries real
+# drawing error — yet a PRECISE point 5 m outside it was confidently downgraded from
+# GREEN to AMBER (worth 15 score points and the ✅ label). Measured 2026-07-30: 35 of
+# 239 placed listings sit within 50 m of that line, so the polygon's own error
+# dominates the verdict there. A precise point this far OUTSIDE the polygon is
+# therefore treated as GREEN. Deliberately small, and only outward — it must never
+# start pulling in genuinely distant flats. 0 disables.
+ZONE_EDGE_GRACE_METERS = 40
 # For a listing we can only place at STREET level on a boundary-crossing street, judge it
 # by how much of that street is actually in range (zones.street_in_range_fraction):
 #   >= BOUNDARY_STREET_ACCEPT  -> trust the tier (e.g. השלום is 98% in-range — dropping

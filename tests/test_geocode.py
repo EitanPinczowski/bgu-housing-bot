@@ -390,3 +390,70 @@ def test_street_fallback_is_reported_as_imprecise():
     import geocode
     assert not geocode.is_precise_source("static_street")
     assert geocode.confidence("static_street") == "street"
+
+
+# --- recall: Hebrew abbreviation marks, word prefixes, descriptive locations -------
+def test_hebrew_abbreviation_marks_are_folded_to_ascii():
+    """The proven bug: `הכ״ג 5` (gershayim U+05F4) resolved to nothing while `הכ"ג 5`
+    resolved fine, because the external geocoders were handed the RAW address. Israeli
+    street names are full of these (רד״ק, רמב״ם, הכ״ג, שד״ל)."""
+    import geocode
+    assert geocode._fold_quotes("הכ״ג 5") == 'הכ"ג 5'
+    assert geocode._fold_quotes("רח׳ רד״ק") == "רח' רד\"ק"
+    assert geocode._fold_quotes("“x”") == '"x"'
+    assert geocode._fold_quotes(None) == ""
+    # and the tokenizer reaches the same street either way
+    import streets
+    for form in ("הכ״ג 5", 'הכ"ג 5'):
+        toks = geocode._candidate_tokens(geocode._fold_quotes(form))
+        assert any(streets.canonical(t)[0] for t in toks), form
+
+
+def test_word_prefixes_are_stripped_from_street_names():
+    import geocode
+    import streets
+    for addr, street in (("רחבת הרב עוזיאל", "עוזיאל"), ("סמטת יונתן", "יונתן"),
+                         ("משעול הדס", "הדס")):
+        toks = geocode._candidate_tokens(addr)
+        assert not any(t.startswith(("רחבת", "סמטת", "משעול")) for t in toks), toks
+    assert streets.canonical("גמל")[0] == "גמל"        # sanity: the index works
+
+
+def test_a_described_position_near_a_landmark_resolves():
+    """'ליד האוניברסיטה וסורוקה' names no street but is unambiguously campus-adjacent;
+    it used to come back UNKNOWN and get dropped."""
+    import geocode
+    for text in ("ליד האוניברסיטה וסורוקה", "קרוב לאוניברסיטת בן גוריון",
+                 "מול שער האוניברסיטה", "בסמוך לסורוקה"):
+        assert geocode._descriptive_landmark(text) is not None, text
+
+
+def test_a_landmark_mentioned_in_passing_never_hijacks_a_real_address(monkeypatch):
+    """This is why the landmark tier runs LAST instead of being a static key: as a
+    static entry 'האוניברסיטה' would capture any address that merely mentions it."""
+    import geocode
+    # a real street resolves normally -> the landmark tier is never consulted
+    monkeypatch.setattr(geocode, "_cache_lookup", lambda n: ("none", None, None))
+    monkeypatch.setattr(geocode, "_overpass", lambda t: ((31.2437, 34.7936), "overpass", True))
+    monkeypatch.setattr(geocode, "_save_cache", lambda: None)
+    coords, src = geocode.geocode_detailed("רגר 5, 5 דקות מהאוניברסיטה")
+    assert coords and src == "overpass"
+    # only when every real tier fails does the description answer
+    monkeypatch.setattr(geocode, "_overpass", lambda t: (None, None, True))
+    monkeypatch.setattr(geocode, "_nominatim", lambda t: None)
+    coords, src = geocode.geocode_detailed("ליד האוניברסיטה וסורוקה")
+    assert src == "landmark"
+
+
+def test_landmark_needs_both_a_proximity_word_and_a_landmark():
+    import geocode
+    assert geocode._descriptive_landmark("אוניברסיטת בן גוריון") is None   # no bearing
+    assert geocode._descriptive_landmark("ליד הסופר") is None              # no landmark
+    assert geocode._descriptive_landmark(None) is None
+
+
+def test_landmark_points_are_treated_as_imprecise():
+    """A landmark point describes a neighbourhood-sized area, so the boundary rules
+    must stay cautious about it."""
+    import geocode
+    assert not geocode.is_precise_source("landmark")

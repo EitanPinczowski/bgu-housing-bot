@@ -21,6 +21,7 @@ import json
 import os
 import sys
 from collections import Counter
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -67,6 +68,25 @@ def _is_imprecise_post(post, bare_nbhd_only: bool = False) -> bool:
     return geocode.is_bare_neighborhood(loc) or (not bare_nbhd_only and geocode.is_bare_street(loc))
 
 
+def _age_hours(post):
+    """How old the post is NOW, from its archived publish time — or None when the
+    archive never captured one.
+
+    Passing None here (which is what replay did) silently changed the score: a live
+    run supplies a real age so the freshness factor contributes, replay supplied
+    nothing so it contributed 0, and every `replay --apply` therefore rewrote scores
+    2-4 points downward. Same input, different number, depending on which code path
+    last touched the row. Now both paths measure freshness the same way."""
+    stamp = post.get("posted_at")
+    if not stamp:
+        return None
+    try:
+        posted = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (datetime.now() - posted).total_seconds() / 3600.0)
+
+
 def _reclassify(post):
     """Current-code verdict for one archived post, or None if unusable."""
     imgs = json.loads(post["images"]) if post["images"] else []
@@ -81,7 +101,7 @@ def _reclassify(post):
     e = ListingExtract.model_validate_json(post["parsed_json"])
     e = pipeline._postprocess_extract(e, post["raw_text"] or "", post["comments"] or "")
     return pipeline._classify(e, post["raw_text"] or "", post["source_url"],
-                              post["group"], imgs, None, commit=False)
+                              post["group"], imgs, _age_hours(post), commit=False)
 
 
 def main() -> None:

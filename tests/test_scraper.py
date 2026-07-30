@@ -213,3 +213,69 @@ def test_scrape_group_drops_thin_text_without_image(monkeypatch):
     _stub_scraper(monkeypatch, [_FakeStory("דירה 📞")])          # thin, and _images -> []
     posts, stats = scraper.scrape_group(_FakePage(), "https://www.facebook.com/groups/1")
     assert posts == []
+
+
+# --- comment capture (locale) ----------------------------------------------------
+class _CmtArt:
+    def __init__(self, text, label=None):
+        self._t, self._l = text, label
+
+    def get_attribute(self, name):
+        return self._l if name == "aria-label" else None
+
+    def inner_text(self):
+        return self._t
+
+
+class _CmtStory(_CmtArt):
+    def __init__(self, text, children):
+        super().__init__(text, None)
+        self._kids = children
+
+    def query_selector_all(self, sel):
+        return [self] + self._kids          # the story is its own [role=article]
+
+
+def test_hebrew_comment_labels_are_read():
+    """The bug: the browser runs locale='he-IL' but only an English 'Comment by …'
+    aria-label was accepted, so comment coverage sat at 8% of posts — and comments
+    are where Israeli housing ads put the price."""
+    import scraper
+    story = _CmtStory("גוף הפוסט", [
+        _CmtArt("דנה כהן\n1500 לחודש", label="תגובה מאת דנה כהן"),
+        _CmtArt("יוסי\nעדיין פנוי?", label="תגובה מאת יוסי"),
+    ])
+    got = scraper._comments(story)
+    assert "1500 לחודש" in got and "עדיין פנוי?" in got
+    assert "גוף הפוסט" not in got            # the post body is not a comment
+
+
+def test_english_labels_still_work():
+    import scraper
+    story = _CmtStory("body", [_CmtArt("Dana\n1500", label="Comment by Dana")])
+    assert "1500" in scraper._comments(story)
+
+
+def test_unlabelled_articles_fall_back_to_position():
+    """A future Facebook relabel must not silently zero coverage again — anything
+    nested that isn't the story itself counts."""
+    import scraper
+    story = _CmtStory("body", [_CmtArt("דנה\n1500 שח", label=None)])
+    got = scraper._comments(story)
+    assert "1500 שח" in got and "body" not in got
+
+
+def test_ui_chrome_is_filtered_in_both_languages():
+    import scraper
+    story = _CmtStory("body", [
+        _CmtArt("אהבתי\nהגב\nשיתוף\n1500 שח", label="תגובה מאת דנה"),
+        _CmtArt("Like\nReply\n1400", label="Comment by Dan")])
+    got = scraper._comments(story)
+    assert "1500 שח" in got and "1400" in got
+    for junk in ("אהבתי", "הגב", "שיתוף", "Like", "Reply"):
+        assert junk not in got
+
+
+def test_a_story_with_no_comments_yields_nothing():
+    import scraper
+    assert scraper._comments(_CmtStory("body", [])) == ""

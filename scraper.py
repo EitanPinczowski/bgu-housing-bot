@@ -372,19 +372,38 @@ def _images(story, limit: int = 6) -> list[str]:
     return out
 
 
-_CMT_DROP = {"Reply", "Like", "Facebook", "Follow", "See more", "Author"}
+_CMT_DROP = {"Reply", "Like", "Facebook", "Follow", "See more", "Author",
+             # the same chrome under the he-IL locale this profile actually runs in
+             "אהבתי", "הגב", "תגובה", "תגובות", "שיתוף", "שתף", "עוד", "הצג עוד",
+             "כותב", "מחבר", "עקוב"}
+# A comment article's aria-label is LOCALE-DEPENDENT. The browser runs he-IL (see
+# launch_persistent_context below) but this only accepted the English "Comment by …",
+# which is why comment coverage sat at 8% of posts — and comments are exactly where
+# Israeli housing posts put the price (hence price_from_comment).
+_COMMENT_LABEL_PREFIXES = ("comment", "תגובה")
 
 
-def _comments(story, limit: int = 4) -> str:
-    """Text of the first few visible comments (people often post the price
-    there). Comments are nested [role=article]s with an aria 'Comment by …'."""
+def _comments(story, limit: int = 6) -> str:
+    """Text of the first few visible comments (people often post the price there).
+
+    Comments are nested [role=article]s. We prefer the aria-label, but fall back to
+    "any nested article that isn't the story itself" when no label matches — that
+    fallback is locale-independent, so a Facebook relabel can't silently zero this
+    again. Reads only what is already rendered: no "View more comments" click, so
+    this adds no interaction and no extra page reads."""
     out = []
     try:
-        for art in story.query_selector_all('[role="article"]'):
-            if not (art.get_attribute("aria-label") or "").startswith("Comment"):
-                continue
-            lines = [l.strip() for l in (art.inner_text() or "").splitlines()
-                     if l.strip() and len(l.strip()) > 1 and l.strip() not in _CMT_DROP]
+        arts = story.query_selector_all('[role="article"]')
+        labelled = [a for a in arts
+                    if (a.get_attribute("aria-label") or "").strip().lower()
+                    .startswith(_COMMENT_LABEL_PREFIXES)]
+        # Fall back to position: the story is its own [role=article], so every OTHER
+        # nested one is a comment regardless of how Facebook labels it.
+        candidates = labelled or [a for a in arts if a != story]
+        for art in candidates:
+            lines = [line.strip() for line in (art.inner_text() or "").splitlines()
+                     if line.strip() and len(line.strip()) > 1
+                     and line.strip() not in _CMT_DROP]
             t = " ".join(lines)
             if t:
                 out.append(t)

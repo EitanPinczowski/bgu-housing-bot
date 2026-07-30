@@ -24,7 +24,7 @@ import streets
 # opposed to a bare neighborhood ("שכונה ג"), which covers a whole area and so
 # can't be trusted as GREEN (see the amber cap in pipeline).
 _STREET_WORDS = ("רחוב", "רח'", "רח׳", "שדרות", "שד'", "שד׳", "דרך", "סמטת",
-                 "סמטה", "שביל")
+                 "סמטה", "שביל", "רחבת", "כיכר", "משעול")
 
 
 def is_precise_address(s: Optional[str]) -> bool:
@@ -137,6 +137,21 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
 _MIN_REVERSE_MATCH = 4
 
 
+# Hebrew abbreviation marks. `_normalize` (below) DROPS them, which is right for
+# comparing against our own tables — but the external geocoders never saw a normalized
+# string, they got the raw address, and they don't understand these characters:
+# measured 2026-07-30, `הכ״ג 5` resolved to nothing while `הכ"ג 5` resolved fine.
+# Israeli street names are full of them (רד״ק, רמב״ם, הכ״ג, שד״ל), so fold them to
+# their ASCII equivalents before anything leaves this module.
+_QUOTE_FOLD = str.maketrans({"״": '"', "׳": "'", "“": '"', "”": '"', "‘": "'", "’": "'"})
+
+
+def _fold_quotes(text: Optional[str]) -> str:
+    """Hebrew gershayim/geresh (and curly quotes) -> ASCII, so an address written the
+    normal Israeli way reaches Overpass/Nominatim in a form they can match."""
+    return (text or "").translate(_QUOTE_FOLD)
+
+
 def _normalize(text: str) -> str:
     return (text or "").replace("״", "").replace("׳", "").strip().lower()
 
@@ -153,7 +168,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 2
+GEOCODE_LOGIC_VERSION = 3      # 3: Hebrew gershayim folded before the external tiers
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -259,6 +274,9 @@ def geocode_detailed(location_text: Optional[str]):
     Order: static table -> cache -> Google -> Overpass -> Nominatim."""
     if not location_text:
         return None, None
+    # Fold Hebrew abbreviation marks once, here, so every tier below — the static
+    # match, the street index, Overpass and Nominatim — sees the same ASCII form.
+    location_text = _fold_quotes(location_text)
     norm = _normalize(location_text)
 
     # 1) static table: substring match. FORWARD (the table key appears inside the
@@ -332,6 +350,19 @@ def geocode_detailed(location_text: Optional[str]):
             coords, source = ocoords, osrc          # 'osm_addr' (precise) or 'overpass'
     if coords is None and config.USE_NOMINATIM_FALLBACK:
         ncoords = _nominatim(location_text)
+        # Retry on the CLEANED street + house number. Nominatim matches the whole
+        # string, so trailing context defeats it exactly the way the city name did:
+        # `הכ״ג 5` resolves but `רחוב הכ״ג 5, שכונה ג׳` did not, despite the tokenizer
+        # already knowing the street. Only worth trying when it actually differs.
+        if ncoords is None and hn:
+            for cand in _candidate_tokens(location_text)[:2]:
+                real, _how = streets.canonical(cand)
+                probe = f"{real or cand} {hn}"
+                if probe == location_text.strip():
+                    continue
+                ncoords = _nominatim(probe)
+                if ncoords:
+                    break
         if ncoords:
             coords, source = ncoords, "nominatim"
 
@@ -346,6 +377,14 @@ def geocode_detailed(location_text: Optional[str]):
     # used to be placed still gets placed.
     if skipped_street_coords is not None:
         return skipped_street_coords, "static_street"
+    # Last resort: the post never gave a street, only a bearing off a landmark
+    # ("ליד האוניברסיטה וסורוקה", "קרוב לאוניברסיטת בן גוריון"). Those are
+    # campus-adjacent — i.e. in the zone — but were coming back UNKNOWN and dropped.
+    # Runs LAST on purpose: as a static key, "האוניברסיטה" would hijack any address
+    # merely mentioning the campus ("רגר 5, 5 דקות מהאוניברסיטה").
+    lm = _descriptive_landmark(location_text)
+    if lm:
+        return lm, "landmark"                      # imprecise by design — see _CONFIDENCE
     global misses
     misses += 1                   # a real location string we couldn't map (for run metrics)
     if authoritative:             # a real not-found (a geocoder answered) — remember it
@@ -436,7 +475,7 @@ def _google_places(location_text: str) -> Optional[Tuple[float, float]]:
 # neighborhood ("…, שכונה ד") so the query matches the OSM `name` tag of the street itself
 # ("רחוב רינגלבלום 5" -> "רינגלבלום", "רחוב האיסיים 5, שכונה ד" -> "האיסיים").
 _OVERPASS_STRIP = re.compile(
-    r"\d+(?:/\d+)?|שכונ[הת]\s*[א-י]?['׳]?|רחוב|רח['׳]|שדרות|שדרה|שד['׳]|דרך|סמטת|סמטה|שביל|רחבת|רחבה|כיכר")
+    r"\d+(?:/\d+)?|שכונ[הת]\s*[א-י]?['׳]?|רחוב|רח['׳]|שדרות|שדרה|שד['׳]|דרך|סמטת|סמטה|שביל|רחבת|רחבה|כיכר|משעול")
 
 
 def _overpass_name(location_text: str) -> str:
@@ -478,6 +517,37 @@ def _candidate_tokens(location_text: Optional[str]) -> list:
     for c in cleaned:                                       # then the cleaned raw tokens
         add(c)
     return out
+
+
+# Landmarks a post can describe itself as being near, when it names no street at all.
+# Only places whose surroundings are unambiguously in the search area belong here — a
+# point is emitted for the LANDMARK, not the flat, so it must be a good approximation
+# of "somewhere around here".
+_LANDMARKS = (
+    (("אוניברסיטת בן גוריון", "אוניברסיטה", "האוניברסיטה", "בן גוריון", "בן-גוריון"),
+     (31.2622, 34.8015)),                                  # campus centre
+    (("סורוקה", "בית החולים סורוקה", "המרכז הרפואי סורוקה"),
+     (31.2585, 34.8005)),                                  # Soroka
+    (("הבלוק", "בבלוק"), (31.259386, 34.796130)),
+)
+# "near / next to / opposite / close to" — the phrasings that make a landmark the
+# subject of the address rather than a passing mention.
+_NEAR_RE = re.compile(r"ליד|קרוב\s+ל|בסמוך|קרבת|צמוד\s+ל|מול\s+שער|במרחק")
+
+
+def _descriptive_landmark(location_text: Optional[str]):
+    """(lat, lon) for an address that only describes a position near a landmark, else
+    None. Requires BOTH a proximity word and a known landmark, and is only consulted
+    after every real geocoding tier has failed."""
+    if not location_text:
+        return None
+    text = _fold_quotes(location_text)
+    if not _NEAR_RE.search(text):
+        return None
+    for names, point in _LANDMARKS:
+        if any(n in text for n in names):
+            return point
+    return None
 
 
 def _house_number(location_text: Optional[str]) -> Optional[str]:
