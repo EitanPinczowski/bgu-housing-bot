@@ -348,6 +348,41 @@ are findable even though the bot never extracts them — "new since your last vi
 badges, side-by-side compare with an OSRM-planned viewing route, and `j`/`k`/`s`/`x`
 keyboard triage. On a phone the table becomes cards.
 
+**The map is the page.** It zooms (Ctrl/⌘+wheel, or pinch — a plain wheel scrolls the
+page on purpose) and pans by dragging. Dots too close together collapse into a numbered
+badge that splits as you zoom, so a street holding two dozen listings never reads as
+one. Hovering a dot opens a small card beside it; tapping does the same on a phone.
+Street names appear as they become legible. **Shift+drag** (or the `▭ אזור` button)
+rubber-bands an area and filters to it. The legend panel — collapsed, top corner —
+explains every symbol and switches layers off: streets, neighborhood outlines, transit
+pins, and **walk-time rings** at 5/10/15/20 min around each gate, which is the
+`MAX_WALK_MINUTES` rule behind every AMBER made visible. 🚶 on a card draws the **real
+OSRM walking route** to the nearest gate (live server only — a static file has no
+router to ask).
+
+### Sharing it with the people flat-hunting with you
+
+Two routes, and the difference matters:
+
+```bash
+python dashboard.py --share          # data/dashboard-YYYY-MM-DD.html
+python dashboard.py --share --send   # …and post it to the Telegram group
+```
+
+**A file** (~800 KB, one self-contained page) that anyone can open on a phone straight
+from the chat — no account, nothing to install. It is a *snapshot*: the write buttons
+(⭐/🗑/📵, notes, route planning) are **removed rather than disabled**, and a dated
+banner says when it was taken, so a three-day-old copy is never mistaken for live data.
+Contacts and WhatsApp links stay, because your partners need to call the landlord too —
+which is exactly why it goes to the group only, never anywhere public.
+`update_schedule.cmd` registers **BGU Dashboard Share** to post it daily at 21:00, after
+the last scrape; `run_dashboard_share.cmd` is the same thing by hand.
+
+**Live**, if they need to vote and see new listings as they land: `tailscale share`, or
+invite their own Tailscale account to this one machine, and give them the token URL.
+That needs their account and this PC awake, which is why the daily file is the default
+rather than the only route. Still no public tunnel — the reasoning above hasn't changed.
+
 ### Scrape timing — run `update_schedule.cmd` once, as Administrator
 
 Two problems, both measured on 2026-07-30 and both fixed by this script:

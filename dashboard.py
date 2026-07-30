@@ -15,6 +15,7 @@ works offline and keeps working years from now. Everything is read-only; the
 bot's data is never modified here.
 """
 from __future__ import annotations
+import datetime as dt
 import hashlib
 import html
 import json
@@ -244,6 +245,10 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
     justify-content:center;z-index:50}
 #lb.on{display:flex}#lb img{max-width:94vw;max-height:90vh;border-radius:6px}
 .live{font-size:11px;color:var(--mut)}
+.snap{background:#fdf1dc;color:#8a5a06;border:1px solid #e6c58a;border-radius:8px;
+      padding:7px 10px;margin:0 0 10px;font-size:13px}
+@media (prefers-color-scheme:dark){
+  .snap{background:#3d2f11;color:#e5bb6a;border-color:#6b5417}}
 /* --- phone: the table becomes cards (it is 1100px wide otherwise) --- */
 @media (max-width:700px){
   .wrap{padding:10px}
@@ -272,6 +277,10 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 _JS = r"""
 const $ = id => document.getElementById(id);
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
+/* A snapshot is a file someone was SENT: no server behind it. Write controls are
+   removed rather than disabled — a button that alerts "unavailable" is worse than
+   no button — while contacts, WhatsApp links and the map stay fully usable. */
+const SNAP = !!window.__SNAPSHOT__;
 const fmt = v => (v === null || v === undefined || v === '') ? '' : v;
 let DATA = window.__BOOT__ || [];
 let sortCol = 'eff_score', sortDir = -1, cursor = 0;
@@ -332,7 +341,9 @@ function rowHtml(r){
                  r.stale ? '🕒' : '', r.broker >= 4 ? '⚠️' + r.broker : '',
                  isNew(r) ? '<span class="new">חדש</span>' : ''
                 ].filter(Boolean).join(' ');
-  const thumb = (r.photos && r.photos.length)
+  // photos come from the server's /img proxy, so a snapshot has none to show — omit
+  // the tag rather than ship a request that can only fail behind an onerror
+  const thumb = (!SNAP && r.photos && r.photos.length)
     ? '<img class="thumb" loading="lazy" src="/img/' + r.photos[0] + '?token=' + TOKEN +
       '" onerror="this.style.visibility=\'hidden\'">' : '';
   const addr = r.source_url
@@ -357,9 +368,10 @@ function rowHtml(r){
     '<td data-lbl="כניסה" class="hide-sm">' + esc(r.lease_start || '') + '</td>' +
     '<td data-lbl="תחבורה" class="am">' + esc(r.amenity_text || '') + '</td>' +
     '<td data-lbl="קשר">' + contact + '</td>' +
-    '<td class="act"><button data-act="save">⭐</button>' +
-      '<button data-act="dismiss">🗑</button>' +
-      '<button data-act="contacted">📵</button>' +
+    '<td class="act">' +
+      (SNAP ? '' : '<button data-act="save">⭐</button>' +
+                   '<button data-act="dismiss">🗑</button>' +
+                   '<button data-act="contacted">📵</button>') +
       '<button data-act="exp">▾</button>' +
       '<input type="checkbox" data-act="cmp" title="השווה"></td></tr>';
 }
@@ -368,7 +380,7 @@ function expandHtml(r){
   const chips = (r.breakdown || []).map(p =>
     '<span class="chip ' + (p[1] >= 0 ? 'pos' : 'neg') + '">' + esc(p[0]) + ' ' +
     (p[1] > 0 ? '+' : '') + p[1] + '</span>').join('');
-  const gallery = (r.photos || []).map(h =>
+  const gallery = (SNAP ? [] : (r.photos || [])).map(h =>
     '<img class="thumb" loading="lazy" src="/img/' + h + '?token=' + TOKEN +
     '" onerror="this.style.display=\'none\'">').join(' ');
   return '<tr class="exp" data-key="' + esc(r.dedup_key) + '"><td colspan="13">' +
@@ -376,9 +388,11 @@ function expandHtml(r){
     (gallery ? '<div style="margin:6px 0">' + gallery + '</div>' : '') +
     (r.post_text ? '<div class="raw">' + esc(r.post_text) + '</div>'
                  : '<div class="muted">הפוסט המקורי לא נשמר</div>') +
-    '<textarea class="note">' + esc(r.note || '') + '</textarea>' +
-    '<div><button data-act="savenote">שמור הערה</button> ' +
-    '<span class="live" data-note-status></span></div></td></tr>';
+    (SNAP
+      ? (r.note ? '<div class="raw">📝 ' + esc(r.note) + '</div>' : '')
+      : '<textarea class="note">' + esc(r.note || '') + '</textarea>' +
+        '<div><button data-act="savenote">שמור הערה</button> ' +
+        '<span class="live" data-note-status></span></div>') + '</td></tr>';
 }
 
 /* ---------- zoom & pan: animate the viewBox, no library ----------
@@ -841,7 +855,7 @@ function cardHtml(r){
     (r.walk_minutes != null ? Math.round(r.walk_minutes) + ' דק׳' : ''),
     (r.lease_start || '')
   ].filter(Boolean).join(' · ');
-  const photo = (r.photos && r.photos.length)
+  const photo = (!SNAP && r.photos && r.photos.length)
     ? '<img loading="lazy" src="/img/' + r.photos[0] + '?token=' + TOKEN +
       '" onerror="this.style.display=\'none\'">' : '';
   const btn = (href, label, title) => href
@@ -873,7 +887,12 @@ function showCard(r, dot){
   $('cardbody').innerHTML = cardHtml(r);
   const card = $('card');
   card.classList.add('on');
-  if (CAN_HOVER && dot){
+  /* Below 700px the CSS turns the card into a bottom sheet; positioning it beside
+     the dot would fight that with inline left/top. A touchscreen laptop narrowed to
+     phone width reports hover, so the width is the honest test, not CAN_HOVER. */
+  const SHEET = window.matchMedia('(max-width:700px)').matches;
+  if (SHEET){ card.style.left = ''; card.style.top = ''; }
+  if (CAN_HOVER && dot && !SHEET){
     /* Sit beside the dot on whichever side has room, and never ON it — the thing
        you're pointing at has to stay visible. Try right, then left, then below,
        then above; clamp into the map either way. */
@@ -1025,9 +1044,10 @@ function drawCompare(){
     picked.map(r => '<th>' + esc(r.address || '—') + '</th>').join('') + '</tr>' +
     F.map(f => '<tr><td class="muted">' + f[0] + '</td>' +
       picked.map(r => '<td>' + esc(fmt(r[f[1]])) + '</td>').join('') + '</tr>').join('') +
-    '</table><button id="route">תכנן מסלול צפייה</button> ' +
-    '<span id="routeout" class="live"></span>';
+    '</table>' + (SNAP ? '' : '<button id="route">תכנן מסלול צפייה</button> ' +
+    '<span id="routeout" class="live"></span>');
   p.classList.add('on');
+  if (SNAP) return;
   $('route').onclick = async () => {
     const out = await post('/api/route', {keys: picked.map(r => r.dedup_key)});
     $('routeout').textContent = out
@@ -1119,9 +1139,11 @@ def _json_for_script(obj) -> str:
             .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
 
 
-def render(live: bool) -> str:
+def render(live: bool, snapshot: bool = False) -> str:
     """The dashboard page. `live=True` fetches from the server and can vote/note;
-    `live=False` inlines the data so the file works offline with no server at all."""
+    `live=False` inlines the data so the file works offline with no server at all.
+    `snapshot=True` is the copy you send someone: same page, write controls removed,
+    dated so a three-day-old file is never mistaken for current."""
     rows = _rows()
     placed = [(r["lat"], r["lon"]) for r in rows if r["lat"] is not None]
     base_svg, projection = map_listings.build_base_svg(
@@ -1130,6 +1152,9 @@ def render(live: bool) -> str:
     matches = sum(1 for r in rows if r["status"] == "MATCH")
     mode = ("מתעדכן אוטומטית" if live
             else "קובץ סטטי — הרץ serve_dashboard.py לעדכון חי ולגישה מהנייד")
+    stamp = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
+    banner = (f'<p class="snap">📸 צילום מצב מ־{stamp} — הנתונים לא מתעדכנים בקובץ הזה. '
+              f'דירה שנמצאה אחרי המועד הזה לא תופיע כאן.</p>' if snapshot else "")
 
     head = "".join(f'<th data-k="{k}">{html.escape(h)}</th>' for h, k in _HEAD)
     return f"""<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
@@ -1138,6 +1163,7 @@ def render(live: bool) -> str:
 <style>{_CSS}{map_listings.STREET_CSS}</style>
 <div class="wrap">
 <h1>לוח דירות — BGU</h1>
+{banner}
 <p class="sub">{len(rows)} רשומות · {matches} התאמות · {len(placed)} על המפה ·
   <span id="newcount"></span><span class="live">{mode}</span></p>
 <div class="bar">
@@ -1182,6 +1208,7 @@ def render(live: bool) -> str:
 window.__BOOT__ = {_json_for_script(payload)};
 window.__PROJ__ = {json.dumps(projection)};
 window.__LIVE__ = {str(bool(live)).lower()};
+window.__SNAPSHOT__ = {str(bool(snapshot)).lower()};
 window.__POLL__ = {config.DASHBOARD_POLL_SECONDS};
 </script>
 <script>{_JS}</script>
@@ -1267,7 +1294,32 @@ def build() -> str:
     return page
 
 
+def build_share():
+    """A dated copy to send to the people flat-hunting with you.
+
+    One self-contained file: no server, no account, no install — it opens on a phone
+    from a Telegram chat. Contacts and WhatsApp links stay (the user's decision: the
+    partners need to call the landlord too), so treat it like the phone numbers it
+    contains and send it only to that group."""
+    path = config.DATA_DIR / f"dashboard-{dt.date.today().isoformat()}.html"
+    page = render(live=False, snapshot=True)
+    path.write_text(page, encoding="utf-8")
+    print(f"wrote {path}  ({len(page) // 1024} KB, "
+          f"{page.count('dedup_key')} listing references)")
+    return path
+
+
 if __name__ == "__main__":
-    build()
-    if "--open" in sys.argv:
-        webbrowser.open(OUT.as_uri())
+    if "--share" in sys.argv:
+        shared = build_share()
+        if "--send" in sys.argv:
+            import notifier
+            ok = notifier.send_document(
+                shared, caption=f"לוח הדירות — צילום מצב {dt.date.today().isoformat()}")
+            print("sent to Telegram" if ok else "NOT sent (check the token/chat id)")
+        if "--open" in sys.argv:
+            webbrowser.open(shared.as_uri())
+    else:
+        build()
+        if "--open" in sys.argv:
+            webbrowser.open(OUT.as_uri())

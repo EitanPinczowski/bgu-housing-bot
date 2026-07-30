@@ -4,6 +4,7 @@ The contract is that it works forever with no network: everything inline, no CDN
 no tile server. These tests pin that, plus the details that are easy to break
 silently (HTML escaping, the sort keys, and read-only access to the DB).
 """
+import datetime as dt
 import re
 
 import pytest
@@ -223,3 +224,48 @@ def test_legend_explains_the_map_without_javascript(temp_db, monkeypatch, tmp_pa
            if "data-layer=" in line and "checked" not in line]
     assert len(off) == 1 and 'data-layer="rings"' in off[0], off
     assert "initLayers();" in page
+
+
+# --- the shared snapshot -----------------------------------------------------------
+def test_snapshot_removes_write_controls_and_dates_itself(temp_db, monkeypatch, tmp_path):
+    """A file someone was SENT has no server behind it. Buttons that could only alert
+    'unavailable' are removed, not disabled — and the banner is what stops a
+    three-day-old copy being read as current."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    _save("k1", "רגר 5")
+    path = dashboard.build_share()
+    page = path.read_text(encoding="utf-8")
+
+    assert path.name == f"dashboard-{dt.date.today().isoformat()}.html"
+    assert "window.__SNAPSHOT__ = true;" in page
+    assert "צילום מצב" in page and dt.date.today().strftime("%d/%m/%Y") in page
+    # the flag is what every write control is gated on
+    assert "const SNAP = !!window.__SNAPSHOT__;" in page
+    for gated in ("(SNAP ? '' : '<button data-act=\"save\">⭐</button>'",
+                  "? (r.note ? '<div class=\"raw\">📝 '",     # note read-only
+                  "if (SNAP) return;"):                       # no route planner
+        assert gated in page, gated
+    # …and what it must NOT remove: the contacts, per the user's decision
+    assert "google.com/maps/dir" in page and "'wa'" not in page.split("_HEAD")[0]
+
+
+def test_snapshot_makes_no_external_requests(temp_db, monkeypatch, tmp_path):
+    """Self-contained is the whole point: it has to work on a phone with the PC off,
+    and it must not phone home from someone else's device."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    _save("k1", "רגר 5")
+    page = dashboard.build_share().read_text(encoding="utf-8")
+    for tag in ("<script src=", "<link rel=\"stylesheet\"", "@import", "tile.openstreetmap"):
+        assert tag not in page, tag
+    # the /img proxy needs the server, so a snapshot omits the tag instead of
+    # shipping a request that can only fail
+    assert "/img/" in page                   # the code path still exists for live mode
+    assert "(!SNAP && r.photos" in page
+
+
+def test_normal_build_keeps_the_write_controls(temp_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "window.__SNAPSHOT__ = false;" in page
+    assert "צילום מצב" not in page

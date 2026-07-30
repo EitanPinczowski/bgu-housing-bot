@@ -3,6 +3,7 @@ never from code."""
 from __future__ import annotations
 import os
 import re
+from pathlib import Path
 from urllib.parse import quote
 
 import requests
@@ -231,6 +232,38 @@ def _post_to_all(method: str, payload: dict, timeout: int, target: str = "all"):
         elif first_ok is None:
             first_ok = resp
     return first_ok
+
+
+def send_document(path, caption: str = "", target: str = "group") -> bool:
+    """Post a file to Telegram. Multipart, so it can't go through _post_to_all's
+    json= body.
+
+    Used for the dated dashboard snapshot: the partners are already in the group, so
+    the file lands where they already get alerts — no account, nothing to install. It
+    carries phone numbers and addresses, which is why it defaults to the GROUP rather
+    than 'all', and why nothing here ever takes a chat id from outside config."""
+    path = Path(path)
+    token, ids = _token(), _recipients(target)
+    if not token or not ids:
+        print("[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping send.")
+        return False
+    if not path.exists():
+        print(f"[notifier] {path} does not exist — nothing to send.")
+        return False
+    ok = False
+    for cid in ids:
+        try:
+            with path.open("rb") as fh:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendDocument",
+                    data={"chat_id": cid, "caption": caption[:1024]},
+                    files={"document": (path.name, fh, "text/html")}, timeout=120)
+            r.raise_for_status()
+            ok = True
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            print(f"[notifier] sendDocument to {cid} failed (status {status})")
+    return ok
 
 
 def _largest_photo_id(photo_sizes) -> str | None:

@@ -113,3 +113,44 @@ def test_plain_text_fallback_on_400(monkeypatch):
     assert ok == {"ok": True, "result": {}}      # the alert still went out
     assert len(seen) == 2                          # formatted attempt, then plain retry
     assert "parse_mode" not in seen[1] and seen[1]["text"] == "bad-text."  # de-escaped plain text
+
+
+# --- sending the dashboard snapshot ------------------------------------------------
+def test_send_document_posts_multipart_to_the_group(monkeypatch, tmp_path):
+    """_post_to_all sends json=, which cannot carry a file; sendDocument needs
+    multipart. And the file lists phone numbers, so it defaults to the group — the
+    same place the alerts already go — never to whatever chat id is lying around."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "T")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100123,55501")   # a group and a DM
+    f = tmp_path / "dashboard-2026-07-30.html"
+    f.write_text("<html>hi</html>", encoding="utf-8")
+    calls = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, data=None, files=None, timeout=None, **kw):
+        calls.append({"url": url, "data": data, "files": files})
+        return _Resp()
+
+    monkeypatch.setattr(notifier.requests, "post", fake_post)
+    assert notifier.send_document(f, caption="צילום מצב") is True
+    assert len(calls) == 1                                    # the group only
+    assert calls[0]["url"].endswith("/sendDocument")
+    assert calls[0]["data"]["chat_id"] == "-100123"
+    assert calls[0]["files"]["document"][0] == f.name
+    assert calls[0]["data"]["caption"] == "צילום מצב"
+
+
+def test_send_document_returns_false_without_a_token(monkeypatch, tmp_path):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    f = tmp_path / "d.html"
+    f.write_text("x", encoding="utf-8")
+    assert notifier.send_document(f) is False                 # no raise
+
+
+def test_send_document_returns_false_for_a_missing_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "T")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100123")
+    assert notifier.send_document(tmp_path / "never-built.html") is False

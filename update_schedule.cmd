@@ -47,14 +47,19 @@ if errorlevel 1 (
 set "HERE=%~dp0"
 
 echo.
-echo === 1/2  Re-timing the full scrape to 6 runs, skipping the dead noon slot ===
+echo === 1/3  Re-timing the full scrape to 6 runs, skipping the dead noon slot ===
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$t = @('08:00','10:00','14:00','16:00','18:00','20:00') | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }; Set-ScheduledTask -TaskName 'BGU Housing Scraper' -Trigger $t | Out-Null; Write-Host '  [ok] BGU Housing Scraper -> 08:00 10:00 14:00 16:00 18:00 20:00'"
 
 echo.
-echo === 2/2  Creating the hot pass at the gaps in the afternoon peak ===
+echo === 2/3  Creating the hot pass at the gaps in the afternoon peak ===
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$a = New-ScheduledTaskAction -Execute '%HERE%run_scraper_hot.cmd' -WorkingDirectory '%HERE%'; $t = @('12:00','15:00','17:00','19:00') | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Housing Scraper Hot' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Housing Scraper Hot -> 12:00 15:00 17:00 19:00'"
+
+echo.
+echo === 3/3  Daily dashboard snapshot to the Telegram group ===
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$a = New-ScheduledTaskAction -Execute '%HERE%run_dashboard_share.cmd' -WorkingDirectory '%HERE%'; $t = New-ScheduledTaskTrigger -Daily -At '21:00'; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Dashboard Share' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Dashboard Share -> 21:00 daily (after the last scrape)'"
 
 echo.
 echo === done ===
@@ -64,6 +69,7 @@ echo                                          from its 8.4h / n=44 baseline)
 echo.
 echo   UNDO:
 echo     schtasks /Delete /TN "BGU Housing Scraper Hot" /F
+echo     schtasks /Delete /TN "BGU Dashboard Share" /F
 echo     ...and restore the 7 old triggers (08 10 12 14 16 18 20) in Task Scheduler.
 echo.
 pause
