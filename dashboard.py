@@ -177,23 +177,46 @@ tr.row.cursor td{box-shadow:inset 2px 0 0 var(--accent)}
 .map svg.drag{cursor:grabbing}
 .maphint{position:absolute;inset-inline-start:8px;bottom:6px;font-size:11px;
          color:var(--mut);background:var(--bg);opacity:.82;padding:1px 7px;border-radius:99px}
-#reset{position:absolute;inset-inline-end:8px;top:8px;font-size:12px;padding:3px 8px;
-       background:var(--bg);opacity:.92}
+.mapbtns{position:absolute;inset-inline-end:8px;top:8px;z-index:15;display:flex;gap:4px}
+.mapbtns button{font-size:12px;padding:3px 8px;background:var(--bg);opacity:.92;
+       border:1px solid var(--line);border-radius:5px;color:var(--fg);cursor:pointer}
+.mapbtns button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* legend + layer switches: a corner panel, collapsed by default so it explains the
+   map to someone opening it cold without covering it for someone who knows it */
+#legend{position:absolute;inset-inline-end:8px;top:40px;z-index:16;width:216px;
+        background:var(--bg);border:1px solid var(--line);border-radius:8px;
+        box-shadow:0 4px 16px #0002;font-size:11.5px}
+#legend>summary{cursor:pointer;padding:5px 9px;font-weight:600;user-select:none;
+        list-style:none}
+#legend>summary::-webkit-details-marker{display:none}
+#legend .body{padding:2px 9px 8px;max-height:min(56vh,420px);overflow:auto}
+#legend h4{margin:7px 0 3px;font-size:11px;color:var(--mut);font-weight:600}
+#legend .li{display:flex;gap:6px;align-items:center;line-height:1.7}
+#legend .sw{flex:0 0 auto;width:13px;height:13px;border-radius:3px;border:1px solid #0002}
+#legend .ln{flex:0 0 auto;width:16px;height:0;border-top-style:solid}
+#legend label.lay{display:flex;gap:6px;align-items:center;line-height:1.9;cursor:pointer}
+#legend label.lay input{margin:0}
 /* the list is secondary: collapsed until asked for */
 details.list{margin:10px 0;border:1px solid var(--line);border-radius:8px;background:var(--card)}
 details.list>summary{cursor:pointer;padding:9px 12px;font-weight:600;user-select:none}
 details.list>summary:hover{color:var(--accent)}
 details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 /* the apartment card — hover on a pointer device, bottom sheet on touch */
-#card{position:absolute;z-index:20;width:265px;background:var(--bg);border:1px solid var(--line);
-      border-radius:10px;box-shadow:0 8px 26px #0003;padding:9px;display:none;font-size:13px}
+/* Small on purpose: it annotates the map, it shouldn't cover it. A 52x40 thumbnail
+   beside the title instead of a full-width banner is most of the height saving. */
+#card{position:absolute;z-index:20;width:200px;background:var(--bg);border:1px solid var(--line);
+      border-radius:9px;box-shadow:0 6px 20px #0003;padding:7px;display:none;font-size:12px}
 #card.on{display:block}
-#card img{width:100%;height:112px;object-fit:cover;border-radius:6px;margin-bottom:6px}
-#card .ttl{font-weight:700;margin-bottom:2px}
-#card .kv{color:var(--mut);font-size:12px;line-height:1.5}
-#card .btns{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
-#card .btns a,#card .btns button{font-size:12px;padding:3px 8px;border:1px solid var(--line);
-      border-radius:6px;text-decoration:none;color:var(--fg);background:var(--bg);cursor:pointer}
+#card .hd{display:flex;gap:6px;align-items:flex-start}
+#card img{width:52px;height:40px;object-fit:cover;border-radius:4px;flex:0 0 auto}
+#card .ttl{font-weight:700;font-size:12.5px;line-height:1.25}
+#card .kv{color:var(--mut);font-size:11.5px;line-height:1.45}
+#card .am{color:var(--mut);font-size:11px;display:-webkit-box;-webkit-line-clamp:2;
+      -webkit-box-orient:vertical;overflow:hidden}
+#card .btns{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+#card .btns a,#card .btns button{font-size:13px;line-height:1;padding:3px 6px;
+      border:1px solid var(--line);border-radius:5px;text-decoration:none;
+      color:var(--fg);background:var(--bg);cursor:pointer}
 #card .x{display:none}
 .dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
 .muted{color:var(--mut)}a{color:var(--accent)}
@@ -221,6 +244,7 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
   tr.exp{border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
   .thumb{width:100%;height:150px}
   .map{height:62vh}                       /* leave room for the sheet */
+  #legend{width:min(74vw,206px);top:38px;font-size:11px}
   /* the card becomes a bottom sheet: a 265px popover is unusable on a phone */
   #card{position:fixed;inset:auto 0 0 0;width:auto;border-radius:14px 14px 0 0;
         max-height:62vh;overflow:auto;box-shadow:0 -8px 26px #0004;padding:12px}
@@ -363,6 +387,10 @@ function applyView(){
   svg.querySelectorAll('.slabel').forEach(t => {
     if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
     t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
+    // reveal names as they become legible: arteries at 1x, side streets once you're
+    // zoomed in among them (see map_listings.street_labels_svg)
+    const mz = +t.dataset.minzoom || 1;
+    t.style.display = (k >= mz) ? '' : 'none';
   });
 }
 
@@ -442,6 +470,38 @@ function initMapGestures(){
   svg.addEventListener('pointercancel', release);
   svg.addEventListener('dblclick', () => { view = {...WORLD}; applyView(); });
   $('reset').addEventListener('click', () => { view = {...WORLD}; applyView(); });
+}
+
+/* ---------- layer switches ----------
+   Each checkbox toggles one class on the <svg>; the CSS (map_listings.STREET_CSS)
+   does the hiding. Cheaper than walking thousands of nodes, and it survives
+   drawDots() rebuilding the dot layer. Choices persist per browser. */
+const LAYER_KEY = 'bgu.layers';
+function applyLayers(){
+  const svg = document.querySelector('.map svg');
+  if (!svg) return;
+  const state = {};
+  document.querySelectorAll('#legend input[data-layer]').forEach(cb => {
+    state[cb.dataset.layer] = cb.checked;
+    if (cb.dataset.layer === 'rings'){
+      const g = svg.querySelector('#rings');
+      if (g) g.style.display = cb.checked ? '' : 'none';
+    } else {
+      svg.classList.toggle('no-' + cb.dataset.layer, !cb.checked);
+    }
+  });
+  try { localStorage.setItem(LAYER_KEY, JSON.stringify(state)); } catch (e) {}
+  applyView();                            // street labels also obey zoom
+}
+
+function initLayers(){
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(LAYER_KEY) || '{}'); } catch (e) {}
+  document.querySelectorAll('#legend input[data-layer]').forEach(cb => {
+    if (cb.dataset.layer in saved) cb.checked = !!saved[cb.dataset.layer];
+    cb.addEventListener('change', applyLayers);
+  });
+  applyLayers();
 }
 
 function drawDots(rows){
@@ -584,35 +644,41 @@ const CAN_HOVER = window.matchMedia('(hover: hover)').matches;
 let cardKey = null, hideTimer = null;
 
 function cardHtml(r){
+  /* Only what decides a click. The note and the full metric list live in the row
+     expander — repeating them here is what made the card cover the map. */
   const flags = [r.saved ? '⭐' : '', r.contacted ? '📵' : '', r.stale ? '🕒' : '',
-                 r.broker >= 4 ? '⚠️ מתווך' : '', isNew(r) ? 'חדש' : '']
-                .filter(Boolean).join(' · ');
+                 r.broker >= 4 ? '⚠️' : '', isNew(r) ? 'חדש' : '']
+                .filter(Boolean).join(' ');
   const bits = [
-    r.price_per_room ? r.price_per_room + '₪ לחדר' : 'מחיר לא צוין',
-    (r.available_rooms != null ? r.available_rooms : '?') + ' חדרים פנויים',
-    (r.total_roommates != null ? r.total_roommates + ' שותפים' : ''),
-    (r.walk_minutes != null ? Math.round(r.walk_minutes) + ' דק׳ הליכה' : ''),
-    (r.lease_start ? 'כניסה ' + r.lease_start : ''),
-    (r.floor ? 'קומה ' + r.floor : '')
+    r.price_per_room ? r.price_per_room + '₪' : 'ללא מחיר',
+    (r.available_rooms != null ? r.available_rooms + ' חד׳' : ''),
+    (r.walk_minutes != null ? Math.round(r.walk_minutes) + ' דק׳' : ''),
+    (r.lease_start || '')
   ].filter(Boolean).join(' · ');
   const photo = (r.photos && r.photos.length)
     ? '<img loading="lazy" src="/img/' + r.photos[0] + '?token=' + TOKEN +
       '" onerror="this.style.display=\'none\'">' : '';
-  const btn = (href, label) => href
-    ? '<a href="' + esc(href) + '" target="_blank" rel="noreferrer">' + label + '</a>' : '';
+  const btn = (href, label, title) => href
+    ? '<a href="' + esc(href) + '" target="_blank" rel="noreferrer" title="' + title +
+      '">' + label + '</a>' : '';
   const dirs = r.lat
-    ? btn('https://www.google.com/maps/dir/?api=1&destination=' + r.lat + ',' + r.lon, '🧭 ניווט') : '';
-  return photo +
-    '<div class="ttl">' + esc(r.address || '—') +
+    ? btn('https://www.google.com/maps/dir/?api=1&destination=' + r.lat + ',' + r.lon,
+          '🧭', 'ניווט') : '';
+  // the real OSRM route needs the server; in a shared snapshot there's nothing to ask
+  const walk = (window.__LIVE__ && r.lat)
+    ? '<button data-card="walk" title="מסלול הליכה לשער">🚶</button>' : '';
+  const votes = window.__LIVE__
+    ? '<button data-card="save" title="שמור">⭐</button>' +
+      '<button data-card="dismiss" title="הסתר">🗑</button>' +
+      '<button data-card="contacted" title="יצרתי קשר">📵</button>' : '';
+  return '<div class="hd">' + photo + '<div><div class="ttl">' + esc(r.address || '—') +
       ' <span class="pill ' + esc(r.location_tier || 'UNKNOWN') + '">' +
       esc(r.location_tier || '?') + '</span></div>' +
-    '<div class="kv">⭐ ' + fmt(r.eff_score) + ' · ' + esc(bits) + '</div>' +
-    (r.amenity_text ? '<div class="kv">' + esc(r.amenity_text) + '</div>' : '') +
-    (flags ? '<div class="kv">' + esc(flags) + '</div>' : '') +
-    (r.note ? '<div class="kv">📝 ' + esc(r.note) + '</div>' : '') +
-    '<div class="btns">' + btn(r.wa, '💬 וואטסאפ') + btn(r.source_url, '🔗 פוסט') + dirs +
-      '<button data-card="save">⭐</button><button data-card="dismiss">🗑</button>' +
-      '<button data-card="contacted">📵</button></div>';
+    '<div class="kv">⭐' + fmt(r.eff_score) + ' · ' + esc(bits) +
+      (flags ? ' · ' + esc(flags) : '') + '</div></div></div>' +
+    (r.amenity_text ? '<div class="am">' + esc(r.amenity_text) + '</div>' : '') +
+    '<div class="btns">' + btn(r.wa, '💬', 'וואטסאפ') + btn(r.source_url, '🔗', 'הפוסט') +
+      dirs + walk + votes + '</div>';
 }
 
 function showCard(r, dot){
@@ -621,13 +687,23 @@ function showCard(r, dot){
   $('cardbody').innerHTML = cardHtml(r);
   const card = $('card');
   card.classList.add('on');
-  if (CAN_HOVER && dot){                       // anchor beside the dot, kept in view
+  if (CAN_HOVER && dot){
+    /* Sit beside the dot on whichever side has room, and never ON it — the thing
+       you're pointing at has to stay visible. Try right, then left, then below,
+       then above; clamp into the map either way. */
     const map = document.querySelector('.map').getBoundingClientRect();
     const d = dot.getBoundingClientRect();
-    const w = card.offsetWidth || 265, h = card.offsetHeight || 220;
-    let x = d.left - map.left + 14, y = d.top - map.top - h / 2;
-    x = Math.max(6, Math.min(map.width - w - 6, x));
-    y = Math.max(6, Math.min(map.height - h - 6, y));
+    const w = card.offsetWidth || 200, h = card.offsetHeight || 110;
+    const GAP = 12;
+    const dx = d.left - map.left, dy = d.top - map.top;
+    let x, y = Math.max(6, Math.min(map.height - h - 6, dy + d.height / 2 - h / 2));
+    if (dx + d.width + GAP + w <= map.width - 6) x = dx + d.width + GAP;      // right
+    else if (dx - GAP - w >= 6) x = dx - GAP - w;                             // left
+    else {                                                                     // stack
+      x = Math.max(6, Math.min(map.width - w - 6, dx + d.width / 2 - w / 2));
+      y = (dy + d.height + GAP + h <= map.height - 6) ? dy + d.height + GAP
+                                                      : Math.max(6, dy - GAP - h);
+    }
     card.style.left = x + 'px';
     card.style.top = y + 'px';
   } else {
@@ -754,6 +830,7 @@ list.addEventListener('toggle', () =>
 
 render();
 initMapGestures();
+initLayers();
 initCard();
 const focusKey = new URLSearchParams(location.search).get('key');
 if (focusKey){
@@ -854,7 +931,10 @@ def render(live: bool) -> str:
 <div class="count"><span id="n"></span> · <span id="mapcount"></span></div>
 <div class="panel" id="cmp"></div>
 <div class="map">{base_svg}</svg>
-  <button id="reset" title="איפוס תצוגה">איפוס</button>
+  <div class="mapbtns">
+    <button id="reset" title="איפוס תצוגה">איפוס</button>
+  </div>
+  {_legend_html()}
   <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה להזזה · ריחוף/נגיעה בנקודה לפרטים</div>
   <div id="card"><button class="x" aria-label="סגור">✕</button><div id="cardbody"></div></div>
 </div>
@@ -873,6 +953,49 @@ window.__POLL__ = {config.DASHBOARD_POLL_SECONDS};
 </script>
 <script>{_JS}</script>
 </html>"""
+
+
+def _legend_html() -> str:
+    """What every symbol means, plus switches to turn the busier layers off.
+
+    Written server-side rather than in JS because it is static text, and because a
+    partner opening the shared file cold is exactly who needs it — it has to be in
+    the markup even if the script never runs."""
+    tc = map_listings._TIER_COLOR
+
+    def sw(color: str, label: str) -> str:
+        return (f'<div class="li"><span class="sw" style="background:{color}"></span>'
+                f'{html.escape(label)}</div>')
+
+    def ln(css: str, label: str) -> str:
+        return (f'<div class="li"><span class="ln" style="{css}"></span>'
+                f'{html.escape(label)}</div>')
+
+    def lay(lid: str, label: str, on: bool) -> str:
+        return (f'<label class="lay"><input type="checkbox" data-layer="{lid}"'
+                f'{" checked" if on else ""}> {html.escape(label)}</label>')
+
+    return f"""<details id="legend"><summary>מקרא ושכבות ▾</summary><div class="body">
+<h4>נקודה = דירה</h4>
+{sw(tc["GREEN"], "GREEN — בתוך האזור הירוק")}
+{sw(tc["AMBER"], f'AMBER — עד {config.MAX_WALK_MINUTES} דק׳ הליכה לשער')}
+{sw(tc["RED"], "RED — מחוץ לטווח")}
+{sw(tc["UNKNOWN"], "לא זוהה מיקום")}
+<div class="li muted">בבחירת צבע לפי ציון: אדום=0 → ירוק=100</div>
+<h4>רקע</h4>
+{ln("border-top-width:3px;border-color:#1b5e20", "האזור הירוק (מצויר ביד)")}
+{ln("border-top-width:1.6px;border-color:#1a237e;border-top-style:dashed", "שכונות ב/ג/ד — הקבילות")}
+{ln("border-top-width:1.2px;border-color:#8a94a6;border-top-style:dashed", "שכונות אחרות — לאוריינטציה בלבד")}
+{ln("border-top-width:2.4px;border-color:#c8ccd2", "עורק ראשי · קו דק = רחוב פנימי")}
+{sw("#3949ab", "אוניברסיטת בן גוריון")}
+{sw("#ad1457", "סורוקה")}
+<div class="li">★ שערי הקמפוס · 🚌 קו 669 · 🚆 לרכבת · 🏋️ חדר כושר</div>
+<h4>שכבות</h4>
+{lay("streets", "רחובות ושמותיהם", True)}
+{lay("nbhd", "גבולות שכונות", True)}
+{lay("amen", "סימוני תחבורה וחדר כושר", True)}
+{lay("rings", f"טבעות הליכה 5/10/15/{config.MAX_WALK_MINUTES} דק׳ מהשערים", False)}
+</div></details>"""
 
 
 def render_live() -> str:

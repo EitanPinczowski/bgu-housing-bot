@@ -46,7 +46,8 @@ def test_base_svg_has_the_backdrop_but_no_dots(monkeypatch):
         [(31.26, 34.80, "GREEN", 90, "רגר 1", 1400, 8, "k1")])
     assert "<polygon" in base                       # the green zone
     assert "★" in base                              # the gates
-    assert "<circle" not in base                    # dots are the browser's job
+    assert 'class="dot"' not in base                # dots are the browser's job
+    assert "רגר 1" not in base                      # nor any listing's identity
     assert not base.endswith("</svg>")              # left open for callers to extend
     assert projection["scale"] > 0
 
@@ -102,8 +103,8 @@ def test_streets_are_culled_to_the_viewport():
     # two arteries exist but one is 180 km away, so the combined path has ONE subpath
     assert artery.count("M") == 1, artery
     # and the far one contributes neither geometry nor a label
-    assert "רחוב רחוק" not in [n for _pos, n, _m in labels]
-    assert "יצחק רגר" in [n for _pos, n, _m in labels]
+    assert "רחוב רחוק" not in [n for _pos, n, _main, _mz in labels]
+    assert "יצחק רגר" in [n for _pos, n, _main, _mz in labels]
 
 
 def test_arteries_and_minor_streets_are_drawn_differently():
@@ -126,9 +127,71 @@ def test_geometry_is_four_paths_not_thousands_of_polylines():
 def test_only_long_segments_get_a_name():
     """1,174 streets would be a wall of text; a name needs a long enough run in view."""
     _paths, labels = map_listings.streets_svg(_xy, _BOUNDS, _FEATS)
-    names = [n for _pos, n, _m in labels]
+    names = [n for _pos, n, _main, _mz in labels]
     assert "יצחק רגר" in names                    # long artery
     assert "סמטה קטנה" not in names               # a few metres of side street
+
+
+def test_labels_are_revealed_by_zoom_not_all_at_once():
+    """250 names at full extent is a wall of text. Each label carries the zoom at
+    which its segment is long enough to read; the dashboard's applyView() hides it
+    below that, so arteries show at 1x and side streets only once you're in among
+    them."""
+    _paths, labels = map_listings.streets_svg(_xy, _BOUNDS, _FEATS)
+    mz = {n: m for _pos, n, _main, m in labels}
+    assert mz["יצחק רגר"] == 1                       # a long artery: legible at 1x
+    short = [{"name": "רחוב בינוני", "main": False,
+              "segments": [[[31.2600, 34.7990], [31.2620, 34.7990]]]}]
+    _p, lb = map_listings.streets_svg(_xy, _BOUNDS,
+                                      {"landmarks": [], "streets": short})
+    assert lb and lb[0][3] > 1                       # shorter run: needs zooming in
+    out = "".join(map_listings.street_labels_svg(lb))
+    assert 'data-minzoom="' in out and 'class="slabel st-l"' in out
+
+
+def test_label_count_is_capped():
+    many = [{"name": f"רחוב {i}", "main": False,
+             "segments": [[[31.250 + i * 1e-4, 34.790], [31.250 + i * 1e-4, 34.800]]]}
+            for i in range(map_listings._LABEL_CAP + 60)]
+    _p, labels = map_listings.streets_svg(_xy, _BOUNDS,
+                                          {"landmarks": [], "streets": many})
+    assert len(labels) == map_listings._LABEL_CAP
+
+
+def test_walk_rings_match_the_20_minute_rule_they_illustrate():
+    """The rings exist to make MAX_WALK_MINUTES visible, so their radii have to be
+    the same arithmetic zones.est_walk_to_gate_min uses — otherwise the picture
+    contradicts the classifier."""
+    import re
+    import config
+    import geocode
+    xy, params = map_listings._projector([(31.24, 34.77), (31.29, 34.83)])
+    out = "".join(map_listings.walk_rings_svg(xy))
+    rings = re.findall(r'class="ring(?: ring-max)?" cx="([\d.]+)" cy="([\d.]+)" '
+                       r'r="([\d.]+)"', out)
+    assert len(rings) == 4 * len(config.GATES)
+    assert out.count("ring-max") == len(config.GATES)          # the boundary ring
+    assert 'id="rings"' in out and "display:none" in out       # off until switched on
+
+    gate = next(iter(config.GATES.values()))
+    cx, _cy = xy(gate["lat"], gate["lon"])
+    px_per_deg = abs(xy(gate["lat"], gate["lon"] + 0.01)[0] - cx) / 0.01
+    mine = sorted(float(r) for gx, _gy, r in rings if abs(float(gx) - cx) < 0.5)
+    for want, r in zip((5, 10, 15, config.MAX_WALK_MINUTES), mine):
+        metres = geocode._haversine_m(gate["lat"], gate["lon"],
+                                      gate["lat"], gate["lon"] + r / px_per_deg)
+        got = metres * config.WALK_DETOUR_FACTOR / config.WALK_SPEED_M_PER_MIN
+        assert abs(got - want) < 0.2, f"{want}-min ring reads as {got:.1f} min"
+
+
+def test_each_layer_has_its_own_switch_class():
+    """The legend's checkboxes toggle one class on the <svg>; every hideable thing
+    needs a marker class of its own. A :not() chain caught the campus labels once."""
+    css = map_listings.STREET_CSS
+    for rule in (".no-streets .st-l", ".no-nbhd .nbhd-abc", ".no-amen .amen"):
+        assert rule in css, rule
+    lm = "".join(map_listings.landmarks_svg(_xy, _FEATS))
+    assert 'class="slabel"' in lm and "st-l" not in lm    # campus label is not a street
 
 
 def test_landmarks_render_with_their_labels():

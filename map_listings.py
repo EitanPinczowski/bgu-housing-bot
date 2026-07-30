@@ -109,6 +109,14 @@ _FEATURES_PATH = config.ROOT / "area_features.json"
 # becoming a wall of text.
 _ARTERY = (3.6, 1.7, "#2b333b", 0.9, 95)      # casing, line, colour, opacity, min label px
 _MINOR = (2.2, 0.9, "#68727d", 0.6, 200)
+# Labels are now revealed BY ZOOM rather than filtered once at build time. Measured on
+# the dashboard's viewport: 412 streets are drawn but only 26 cleared the old
+# thresholds — every one an artery, because a residential street never spans 200 px of
+# a 1000 px canvas covering ~4 km. So emit down to a much shorter run and let each
+# label carry the zoom at which it becomes legible.
+_LABEL_MIN_PX = 25            # shortest visible run that can ever earn a name
+_LABEL_CAP = 250              # keep the file sane; longest runs win
+_LABEL_TARGET_PX = 90         # a name shows once its run reaches this on screen
 _LANDMARK_STYLE = {"university": ("#3949ab", "אוניברסיטת בן גוריון"),
                    "hospital": ("#ad1457", "סורוקה")}
 
@@ -136,6 +144,21 @@ STREET_CSS = """
 .st-art{stroke:#2b333b;stroke-opacity:.9;stroke-width:1.7}
 .st-min{stroke:#68727d;stroke-opacity:.6;stroke-width:.9}
 .st-cas-art{stroke-width:3.6}.st-cas-min{stroke-width:2.2}
+/* display-only neighborhood areas: present for orientation, deliberately quieter
+   than the ב/ג/ד outlines, which are the ones that actually gate a listing */
+.nbhd{fill:#6b7280;fill-opacity:.045;stroke:#6b7280;stroke-opacity:.45;stroke-width:1;
+      stroke-dasharray:3,5;vector-effect:non-scaling-stroke}
+.nbhd-l{fill:#6b7280;opacity:.7;paint-order:stroke;stroke:#fff;stroke-width:2.4px}
+/* walking contours around the campus gates — the AMBER/RED boundary, made visible */
+.ring{fill:none;stroke:#2e7d32;stroke-opacity:.30;stroke-width:1;stroke-dasharray:4,4;
+      vector-effect:non-scaling-stroke}
+.ring-max{stroke:#e08e0b;stroke-opacity:.55;stroke-width:1.6;stroke-dasharray:none}
+/* layer switches — one class on the <svg> hides a whole layer. Each layer has its
+   own marker class rather than a :not() chain, so adding a label somewhere else on
+   the map can't accidentally join a layer it has nothing to do with. */
+.no-streets .st,.no-streets .st-l{display:none!important}
+.no-nbhd .nbhd,.no-nbhd .nbhd-l,.no-nbhd .nbhd-abc{display:none!important}
+.no-amen .amen{display:none!important}
 """
 
 
@@ -153,7 +176,6 @@ def streets_svg(xy, bounds, feats=None):
     arteries, minors, labels = [], [], []
     for st in (feats or features()).get("streets", []):
         main = st.get("main", True)                    # old files had arteries only
-        min_px = _ARTERY[4] if main else _MINOR[4]
         into = arteries if main else minors
         best_seg, best_len = None, 0.0
         for seg in st.get("segments", []):
@@ -164,8 +186,15 @@ def streets_svg(xy, bounds, feats=None):
             seglen = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
             if seglen > best_len:
                 best_len, best_seg = seglen, seg
-        if best_seg and best_len > min_px:
-            labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"], main))
+        if best_seg and best_len >= _LABEL_MIN_PX:
+            # the zoom at which this run is long enough on screen to read. An artery
+            # spanning the view shows at 1x; a 30 px side street waits until ~3x.
+            minzoom = max(1.0, round(_LABEL_TARGET_PX / best_len, 1))
+            labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"], main,
+                           minzoom, best_len))
+    # cap by run length so the longest (most useful) names survive
+    labels.sort(key=lambda item: item[4], reverse=True)
+    labels = [item[:4] for item in labels[:_LABEL_CAP]]
 
     out = []
     for d, cls in ((minors, "st-min"), (arteries, "st-art")):
@@ -179,13 +208,49 @@ def streets_svg(xy, bounds, feats=None):
 
 
 def street_labels_svg(labels):
-    """Street names, white-haloed so they read over anything beneath them."""
+    """Street names, white-haloed so they read over anything beneath them.
+
+    `data-minzoom` is the zoom at which each becomes legible; the dashboard's
+    applyView() shows/hides on it, so zooming in reveals side-street names instead of
+    dumping 400 labels on the first view. A static viewer that ignores the attribute
+    simply shows them all."""
     out = []
-    for (sx, sy), name, main in labels:
+    for (sx, sy), name, main, minzoom in labels:
         fs, fill = (11, "#1c2229") if main else (9, "#3c454e")
-        out.append(f'<text class="slabel" x="{sx:.0f}" y="{sy:.0f}" font-size="{fs}" '
-                   f'fill="{fill}" text-anchor="middle" style="paint-order:stroke;'
-                   f'stroke:#fff;stroke-width:2.6px">{html.escape(name)}</text>')
+        out.append(f'<text class="slabel st-l" data-minzoom="{minzoom}" x="{sx:.0f}" '
+                   f'y="{sy:.0f}" font-size="{fs}" fill="{fill}" text-anchor="middle" '
+                   f'style="paint-order:stroke;stroke:#fff;stroke-width:2.6px">'
+                   f'{html.escape(name)}</text>')
+    return out
+
+
+_MAP_NBHD_PATH = config.ROOT / "map_neighborhoods.json"
+
+
+def display_neighborhoods_svg(xy, bounds):
+    """Faint outlines + names for the WIDER set of neighborhoods, purely for
+    orientation — knowing a dot sits in שכונה ו is why you'd want the outline.
+
+    Read from map_neighborhoods.json, NEVER neighborhoods.json: zones.py treats every
+    polygon in that second file as an ACCEPTED neighborhood, so mixing display areas in
+    would silently let rejected ones pass the ב/ג/ד gate. Drawn subordinate to the
+    ב/ג/ד outlines, which stay bolder because those are the ones that matter."""
+    try:
+        data = json.loads(_MAP_NBHD_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for area in data.get("neighborhoods", []):
+        poly = area.get("polygon_latlon") or []
+        if len(poly) < 3 or not any(_in_bounds(la, lo, bounds) for la, lo in poly):
+            continue
+        out.append(f'<polygon class="nbhd" points="{_poly_points(xy, poly)}"/>')
+        cla = sum(p[0] for p in poly) / len(poly)
+        clo = sum(p[1] for p in poly) / len(poly)
+        lx, ly = xy(cla, clo)
+        out.append(f'<text class="slabel nbhd-l" data-minzoom="1" x="{lx:.0f}" '
+                   f'y="{ly:.0f}" font-size="13" text-anchor="middle">'
+                   f'{html.escape(area.get("name", ""))}</text>')
     return out
 
 
@@ -264,19 +329,22 @@ def build_base_svg(placed=None):
     feats = features()
     street_lines, street_labels = streets_svg(xy, bounds, feats)
     svg += street_lines
+    svg += display_neighborhoods_svg(xy, bounds)   # orientation, beneath ב/ג/ד
     svg += landmarks_svg(xy, feats)
     # the green zone
     svg.append(f'<polygon points="{_poly_points(xy, zone)}" fill="#2e7d32" '
                f'fill-opacity="0.10" stroke="#2e7d32" stroke-width="2"/>')
     # neighborhood outlines + labels
     for letter, poly in nbhds:
-        svg.append(f'<polygon points="{_poly_points(xy, poly)}" fill="none" '
-                   f'stroke="#3367d6" stroke-width="1.4" stroke-dasharray="5,4"/>')
+        svg.append(f'<polygon class="nbhd-abc" points="{_poly_points(xy, poly)}" '
+                   f'fill="none" stroke="#3367d6" stroke-width="1.4" '
+                   f'stroke-dasharray="5,4"/>')
         cla = sum(p[0] for p in poly) / len(poly)
         clo = sum(p[1] for p in poly) / len(poly)
         lx, ly = xy(cla, clo)
-        svg.append(f'<text x="{lx:.0f}" y="{ly:.0f}" font-size="18" fill="#3367d6" '
-                   f'text-anchor="middle" font-weight="bold">{html.escape(letter)}</text>')
+        svg.append(f'<text class="nbhd-abc" x="{lx:.0f}" y="{ly:.0f}" font-size="18" '
+                   f'fill="#3367d6" text-anchor="middle" font-weight="bold">'
+                   f'{html.escape(letter)}</text>')
     # gates
     for la, lo, name in gates:
         gx, gy = xy(la, lo)
@@ -285,11 +353,37 @@ def build_base_svg(placed=None):
     # amenity pins (the 669 stops, the bus to the train, the gym)
     for la, lo, icon, name in pins:
         px, py = xy(la, lo)
-        svg.append(f'<text class="slabel" x="{px:.1f}" y="{py:.1f}" font-size="11" '
-                   f'text-anchor="middle" dominant-baseline="central" opacity="0.75">'
-                   f'{html.escape(icon)}<title>{html.escape(name)}</title></text>')
+        svg.append(f'<text class="slabel amen" data-minzoom="1" x="{px:.1f}" '
+                   f'y="{py:.1f}" font-size="11" text-anchor="middle" '
+                   f'dominant-baseline="central" opacity="0.75">{html.escape(icon)}'
+                   f'<title>{html.escape(name)}</title></text>')
+    svg += walk_rings_svg(xy)
     svg += street_labels_svg(street_labels)      # names last, so they're never buried
     return "".join(svg), projection
+
+
+def walk_rings_svg(xy):
+    """5/10/15/20-minute walking contours around each campus gate.
+
+    MAX_WALK_MINUTES is what separates AMBER from RED for every listing, and until now
+    that boundary existed only as a number in a column. Radii come from the same
+    calibrated straight-line estimate zones.est_walk_to_gate_min uses (measured against
+    OSRM: median error -0.4 min), so the rings sit where the rule actually bites.
+    Hidden by default — turned on from the legend's layer toggles."""
+    out = ['<g id="rings" style="display:none">']
+    metres_per_min = config.WALK_SPEED_M_PER_MIN / config.WALK_DETOUR_FACTOR
+    for g in config.GATES.values():
+        cx, cy = xy(g["lat"], g["lon"])
+        for minutes in (5, 10, 15, config.MAX_WALK_MINUTES):
+            # convert metres to canvas units via a point due east of the gate
+            east = xy(g["lat"], g["lon"] + 0.01)
+            px_per_m = abs(east[0] - cx) / (0.01 * 111320 * math.cos(math.radians(g["lat"])))
+            r = minutes * metres_per_min * px_per_m
+            last = minutes == config.MAX_WALK_MINUTES
+            out.append(f'<circle class="ring{" ring-max" if last else ""}" '
+                       f'cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}"/>')
+    out.append("</g>")
+    return out
 
 
 def build_svg():

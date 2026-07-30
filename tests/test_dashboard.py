@@ -186,3 +186,20 @@ def test_map_furniture_is_present(temp_db, monkeypatch, tmp_path):
     # the dot click must not navigate away — directions live in the card
     assert "google.com/maps/dir" in page          # present, but inside cardHtml
     assert "ctrlKey" in page                      # plain wheel scrolls the page
+
+
+def test_legend_explains_the_map_without_javascript(temp_db, monkeypatch, tmp_path):
+    """A partner opens the shared file cold; the key to the symbols has to be in the
+    markup, not assembled by a script that a downloaded file may never run."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    legend = page.split('<details id="legend"')[1].split("</details>")[0]
+    assert "GREEN" in legend and "AMBER" in legend and "RED" in legend
+    assert str(config.MAX_WALK_MINUTES) in legend          # the rule behind AMBER
+    assert "ב/ג/ד" in legend                               # which outlines matter
+    for layer in ("streets", "nbhd", "amen", "rings"):
+        assert f'data-layer="{layer}"' in legend, layer
+    # rings are the only layer off by default — they clutter until you want them
+    assert legend.count("checked") == 3
+    assert "initLayers();" in page

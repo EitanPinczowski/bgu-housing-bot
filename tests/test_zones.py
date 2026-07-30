@@ -85,3 +85,54 @@ def test_zone_centre_is_in_range():
     lat = sum(p[0] for p in poly) / len(poly)
     lon = sum(p[1] for p in poly) / len(poly)
     assert zones.classify_location(lat, lon) in ("GREEN", "AMBER")
+
+
+# --- display-only neighborhoods must never affect classification -------------------
+def test_display_neighborhoods_cannot_widen_the_allowed_set(tmp_path, monkeypatch):
+    """map_neighborhoods.json exists so the dashboard can label שכונה א/ה/ו for
+    orientation. zones.in_allowed_neighborhood returns True for ANY polygon in
+    neighborhoods.json, so if those display areas ever leaked into that file, listings
+    in rejected neighborhoods would silently start passing the ב/ג/ד gate. This is the
+    guard for that."""
+    import json
+    import config
+    import map_listings
+    import zones
+
+    # a display file that contains a rejected neighborhood
+    box = [[31.30, 34.70], [31.30, 34.71], [31.31, 34.71], [31.31, 34.70]]
+    disp = tmp_path / "map_neighborhoods.json"
+    disp.write_text(json.dumps({"neighborhoods": [{"name": "שכונה ו",
+                                                   "polygon_latlon": box}]},
+                               ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(map_listings, "_MAP_NBHD_PATH", disp)
+
+    # …and a classification file that holds only ב
+    allowed = tmp_path / "neighborhoods.json"
+    allowed.write_text(json.dumps({"neighborhoods": [
+        {"letter": "ב", "name": "שכונה ב",
+         "polygon_latlon": [[31.25, 34.79], [31.25, 34.80], [31.26, 34.80], [31.26, 34.79]]}]},
+        ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(config, "NEIGHBORHOODS_PATH", allowed)
+    zones._neighborhood_polys.cache_clear()
+    try:
+        inside_vav = (31.305, 34.705)
+        assert zones.in_allowed_neighborhood(*inside_vav) is False
+        assert zones.neighborhood_of(*inside_vav) is None
+        # the real ב polygon still works
+        assert zones.in_allowed_neighborhood(31.255, 34.795) is True
+        assert zones.neighborhood_of(31.255, 34.795) == "ב"
+        # and the display layer DOES draw the area zones refuses to accept
+        drawn = "".join(map_listings.display_neighborhoods_svg(
+            lambda la, lo: ((lo - 34.6) * 1000, (31.4 - la) * 1000),
+            (31.0, 31.5, 34.6, 34.9)))
+        assert "שכונה ו" in drawn and 'class="nbhd"' in drawn
+    finally:
+        zones._neighborhood_polys.cache_clear()
+
+
+def test_display_neighborhoods_absent_is_not_fatal(tmp_path, monkeypatch):
+    import map_listings
+    monkeypatch.setattr(map_listings, "_MAP_NBHD_PATH", tmp_path / "nope.json")
+    assert map_listings.display_neighborhoods_svg(lambda a, b: (0, 0),
+                                                  (31.0, 31.5, 34.6, 34.9)) == []
