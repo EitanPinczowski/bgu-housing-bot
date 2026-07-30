@@ -346,3 +346,47 @@ def test_uncache_removes_matching_entries(monkeypatch, tmp_path):
     assert "גר ברינגלבלום 5" not in geocode._cache
     assert "רחוב אחר" in geocode._cache      # untouched
     assert geocode.uncache("") == []
+
+
+# --- placement accuracy ----------------------------------------------------------
+def test_house_numbers_are_not_swallowed_by_a_static_street_entry():
+    """The וינגייט bug: a STATIC_TABLE STREET entry answered every house number with
+    one coordinate, so interpolate_house never ran and each flat landed on the same
+    spot (which was itself 520 m off the street)."""
+    import geocode
+    a = geocode.geocode_detailed("וינגייט 74")
+    b = geocode.geocode_detailed("וינגייט 16")
+    assert a[0] and b[0]
+    assert a[0] != b[0], "different house numbers must not share one point"
+    assert a[1] != "static" and b[1] != "static"
+
+
+def test_a_bare_street_still_uses_the_static_point():
+    """Only NUMBERED addresses bypass the entry — don't over-correct and lose the
+    placement for a street named with no number."""
+    import geocode
+    coords, src = geocode.geocode_detailed("וינגייט")
+    assert coords and src == "static"
+
+
+def test_a_bare_neighborhood_still_resolves():
+    import geocode
+    coords, src = geocode.geocode_detailed("שכונה ג")
+    assert coords and src == "static"
+
+
+def test_every_static_entry_sits_on_the_street_it_names():
+    """The permanent guard for the whole class. Median offset across stored listings
+    is ~3 m, so 150 m is a blunder threshold, not a tolerance."""
+    import audit_geocode
+    bad = audit_geocode.audit_static()
+    assert bad == [], f"static points off their own street: {bad}"
+
+
+def test_street_fallback_is_reported_as_imprecise():
+    """When a numbered address can't be resolved precisely we fall back to the skipped
+    street point — but it must NOT count as precise, or the boundary rules would trust
+    a street-level guess near the zone edge."""
+    import geocode
+    assert not geocode.is_precise_source("static_street")
+    assert geocode.confidence("static_street") == "street"

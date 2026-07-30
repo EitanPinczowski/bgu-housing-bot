@@ -116,6 +116,25 @@ def _ollama_ok() -> bool:
         return False
 
 
+def _check_geocode_placement():
+    """Are the pinned coordinates actually on the streets they name?
+
+    A geocoding blunder is silent — the listing lands somewhere plausible and gets a
+    tier and a walk time with nothing looking wrong. Checking the STATIC_TABLE against
+    independent OSM geometry is fast and caught a street entry sitting 520 m off its
+    own street, which also swallowed every house number on it."""
+    try:
+        import audit_geocode
+        bad = audit_geocode.audit_static()
+    except Exception as exc:
+        return ("geocode pins", SKIP, f"can't audit ({type(exc).__name__})", "")
+    if not bad:
+        return ("geocode pins", PASS, "static points sit on their streets", "")
+    worst = ", ".join(f"{n} ({d} m)" for d, n in bad[:3])
+    return ("geocode pins", FAIL, f"{len(bad)} off their street: {worst}",
+            "run: python audit_geocode.py  (then correct the coordinate in geocode.py)")
+
+
 def _task_wake_flags():
     """{task name: WakeToRun} for the project's scheduled tasks, or None if we can't
     ask (not Windows / no Task Scheduler). Read-only."""
@@ -291,7 +310,7 @@ def checks() -> list:
     out += _check_data_files()
     out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
-            _check_wake_timers()]
+            _check_wake_timers(), _check_geocode_placement()]
     return out
 
 

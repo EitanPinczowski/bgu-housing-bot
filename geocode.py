@@ -115,7 +115,9 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
     "שכונה ד": (31.2635, 34.7975),
     "שכונה ב": (31.2585, 34.7950),
     "שכונה ו": (31.2625, 34.7990),
-    "וינגייט": (31.2600, 34.8015),
+    # snapped onto the real OSM geometry 2026-07-30 — the old point was 520 m off the
+    # street and answered every house number identically (audit_geocode.py catches this)
+    "וינגייט": (31.255862, 34.804043),
     # "הבלוק" — student-building cluster, GREEN zone, ~8 min to שער סורוקה.
     # Both forms so it matches whether the model writes "הבלוק" or "בבלוק".
     "הבלוק": (31.259386, 34.796130),
@@ -270,14 +272,26 @@ def geocode_detailed(location_text: Optional[str]):
     #    A whole-neighborhood centroid key ("שכונה ד") is SKIPPED when the address is a
     #    specific street ("רחוב האיסיים 5, שכונה ד") — the street must be geocoded to its
     #    real spot (Overpass), not to the neighborhood's green-zone centroid.
+    #    A STREET key is likewise skipped once the address carries a HOUSE NUMBER:
+    #    a street entry is one point for the whole street, so "וינגייט 74" and
+    #    "וינגייט 16" were both answered with the same coordinate and interpolation
+    #    never ran (measured 2026-07-30: that point was also 474 m off the real
+    #    street). Slang/POI keys that aren't OSM street names still answer, and the
+    #    skipped point is kept as `static_fallback` in case nothing better resolves,
+    #    so this can only improve precision, never lose a placement.
     precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
+    numbered = bool(_house_number(location_text))
     best_pos, best_coords = None, None
+    skipped_street_coords = None
     for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
         k = _normalize(key)
         if not k:
             continue
         if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
             continue                                        # don't let a nbhd centroid hijack a street
+        if numbered and streets.known(k) and k in norm:
+            skipped_street_coords = skipped_street_coords or coords
+            continue                                        # let the house number win
         pos = norm.find(k)
         if pos != -1:                                       # forward: key inside the address
             if best_pos is None or pos < best_pos:
@@ -326,6 +340,12 @@ def geocode_detailed(location_text: Optional[str]):
         cache[norm] = {"c": [coords[0], coords[1]], "s": source}
         _save_cache()
         return coords, source
+    # Nothing more precise resolved, so fall back to the street-level static point we
+    # skipped above. Street-level, not house-level, so it's reported as a LOW-precision
+    # source and the boundary/edge rules stay cautious about it — but a listing that
+    # used to be placed still gets placed.
+    if skipped_street_coords is not None:
+        return skipped_street_coords, "static_street"
     global misses
     misses += 1                   # a real location string we couldn't map (for run metrics)
     if authoritative:             # a real not-found (a geocoder answered) — remember it
