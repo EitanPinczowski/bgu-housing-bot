@@ -66,6 +66,32 @@ def _foot_minutes(lat: float, lon: float, gate: dict, tries: int = 3) -> Optiona
     return None
 
 
+def foot_geometry(lat: float, lon: float, gate: dict) -> Optional[dict]:
+    """The actual walking path to one gate: {minutes, metres, coords:[[lat,lon],…]}.
+
+    Same endpoint as _foot_minutes but asking for the geometry, so the dashboard can
+    draw the route instead of a straight line that crosses the railway. GeoJSON —
+    OSRM returns the LineString directly, no polyline decoding involved. One attempt:
+    this is a click, not a classification, and a spinner beats a 3-second retry."""
+    coords = f"{lon},{lat};{gate['lon']},{gate['lat']}"
+    try:
+        r = requests.get(f"{config.OSRM_BASE_URL}/route/v1/foot/{coords}",
+                         params={"overview": "full", "geometries": "geojson"},
+                         timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "Ok" or not data.get("routes"):
+            return None
+        route = data["routes"][0]
+        line = (route.get("geometry") or {}).get("coordinates") or []
+        return {"minutes": route["duration"] / 60.0,
+                "metres": route["distance"],
+                # OSRM speaks lon,lat; the map projects lat,lon
+                "coords": [[c[1], c[0]] for c in line]}
+    except Exception:
+        return None
+
+
 # Persistent walk-time cache, keyed on the rounded coordinate. Routing is the slow part
 # of a replay/map rebuild (geocode is cached but walk-times weren't); reuse them across
 # runs. ~4-decimal rounding ≈ 11 m — plenty for a walk-minute figure.

@@ -26,6 +26,7 @@ import config
 import fit
 import geocode
 import map_listings
+import osrm
 import storage
 
 OUT = config.DATA_DIR / "dashboard.html"
@@ -224,6 +225,13 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
        padding:0 3px}
 #boxrect{fill:#3367d6;fill-opacity:.13;stroke:#3367d6;stroke-width:1.4;
        stroke-dasharray:5,4;vector-effect:non-scaling-stroke;pointer-events:none}
+#walknote{position:absolute;inset-inline-start:8px;bottom:28px;z-index:15;font-size:11.5px;
+       background:var(--bg);opacity:.94;padding:2px 8px;border-radius:99px;
+       border:1px solid var(--line)}
+.wr,.wr-cas{fill:none;vector-effect:non-scaling-stroke;pointer-events:none;
+       stroke-linecap:round;stroke-linejoin:round}
+.wr-cas{stroke:#fff;stroke-width:6}
+.wr{stroke:#7b1fa2;stroke-width:3}
 .dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
 .muted{color:var(--mut)}a{color:var(--accent)}
@@ -893,6 +901,47 @@ function showCard(r, dot){
 
 function hideCard(){ $('card').classList.remove('on'); cardKey = null; }
 
+/* ---------- the real walking route ----------
+   The walk column is a number; this draws the line it came from. Straight-line would
+   be a lie here — the railway and Soroka are both in the way — so this is OSRM or
+   nothing, and "nothing" says so rather than falling back to a fiction. */
+async function drawWalk(key, btn){
+  const svg = document.querySelector('.map svg');
+  const old = document.getElementById('walkroute');
+  const note = $('walknote');
+  if (old){
+    const same = old.dataset.key === key;
+    old.remove();
+    note.style.display = 'none';
+    if (same) return;                             // clicking 🚶 again clears the line
+  }
+  if (btn) btn.textContent = '…';
+  const out = await post('/api/walk', {key: key});
+  if (btn) btn.textContent = '🚶';
+  if (!out || !out.ok){
+    note.textContent = out && out.reason === 'no_location'
+      ? 'אין מיקום לדירה הזו' : 'OSRM כבוי — אין מסלול אמיתי להראות';
+    note.style.display = '';
+    return;
+  }
+  const g = el('g');
+  g.id = 'walkroute';
+  g.dataset.key = key;
+  const d = out.coords.map((c, i) => (i ? 'L' : 'M') + project(c[0], c[1])
+                                       .map(v => v.toFixed(1)).join(' ')).join(' ');
+  for (const cls of ['wr-cas', 'wr']){            // casing + line, so it reads over streets
+    const p = el('path');
+    p.setAttribute('d', d);
+    p.setAttribute('class', cls);
+    g.appendChild(p);
+  }
+  svg.appendChild(g);
+  note.textContent = '🚶 ' + out.minutes + ' דק׳ · ' + out.metres + ' מ׳ אל ' + out.gate +
+                     ' — לחצו שוב לניקוי';
+  note.style.display = '';
+  fitTo(out.coords.map(c => ({lat: c[0], lon: c[1]})));
+}
+
 function initCard(){
   const svg = document.querySelector('.map svg');
   if (!svg) return;
@@ -922,6 +971,7 @@ function initCard(){
     const b = ev.target.closest('[data-card]');
     if (!b || !cardKey) return;
     const act = b.dataset.card;
+    if (act === 'walk'){ await drawWalk(cardKey, b); return; }
     const mark = act === 'save' ? 'saved' : act === 'dismiss' ? 'dismissed' : 'contacted';
     const out = await post('/api/mark', {key: cardKey, mark: mark});
     if (out){
@@ -1116,6 +1166,7 @@ def render(live: bool) -> str:
   </div>
   <div id="boxchip" style="display:none">אזור מסומן
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
+  <div id="walknote" style="display:none"></div>
   {_legend_html()}
   <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה להזזה · ריחוף/נגיעה בנקודה לפרטים</div>
   <div id="card"><button class="x" aria-label="סגור">✕</button><div id="cardbody"></div></div>
@@ -1135,6 +1186,27 @@ window.__POLL__ = {config.DASHBOARD_POLL_SECONDS};
 </script>
 <script>{_JS}</script>
 </html>"""
+
+
+def walk_route(key: str) -> dict:
+    """The real walking path from one listing to its nearest campus gate.
+
+    The walk column is a number; this is the line it came from — whether you cross
+    the railway, go round Soroka, or walk straight down רגר. OSRM only: there is no
+    honest straight-line version of "which way do I actually go", so with the router
+    down this returns {ok: False} and the page says so."""
+    row = next((r for r in _rows() if r["dedup_key"] == key), None)
+    if not row or row["lat"] is None:
+        return {"ok": False, "reason": "no_location"}
+    best = None
+    for gate in config.GATES.values():
+        got = osrm.foot_geometry(row["lat"], row["lon"], gate)
+        if got and (best is None or got["minutes"] < best["minutes"]):
+            best = got | {"gate": gate.get("name", "")}
+    if not best:
+        return {"ok": False, "reason": "osrm_down"}
+    return {"ok": True, "gate": best["gate"], "coords": best["coords"],
+            "minutes": round(best["minutes"], 1), "metres": round(best["metres"])}
 
 
 def _legend_html() -> str:

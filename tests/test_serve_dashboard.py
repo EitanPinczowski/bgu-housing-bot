@@ -70,7 +70,7 @@ def test_every_get_route_requires_the_token(path):
     assert _get(path + "?token=wrong")[0] == 403                 # wrong one
 
 
-@pytest.mark.parametrize("path", ["/api/mark", "/api/note", "/api/route"])
+@pytest.mark.parametrize("path", ["/api/mark", "/api/note", "/api/route", "/api/walk"])
 def test_every_write_route_requires_the_token(path, temp_db):
     code, _ = _post(path, {"key": "k", "mark": "saved"})
     assert code == 403
@@ -179,3 +179,46 @@ def test_private_data_is_not_cacheable(temp_db):
     h = _FakeHandler("/api/version?token=s3cret")
     h.run()
     assert "no-store" in h.sent["headers"]["Cache-Control"]
+
+
+# --- the walking route -------------------------------------------------------------
+def test_walk_route_is_a_post_so_the_phone_never_enters_a_url(temp_db):
+    """A dedup_key is phone|address. GET /api/walk/<key> would put a landlord's phone
+    number in the request line, the access log and the browser history; the body
+    keeps it out of all three."""
+    assert _get("/api/walk?token=s3cret")[0] == 404          # no GET route at all
+    code, body = _post("/api/walk?token=s3cret", {"key": "nope"})
+    assert code == 200
+    assert json.loads(body)["ok"] is False                   # unknown key, not a crash
+
+
+def test_walk_route_says_so_when_osrm_is_down(temp_db, monkeypatch):
+    """There is no honest straight-line version of 'which way do I actually walk',
+    so with the router down the answer is 'no route', never a guessed one."""
+    import dashboard
+    monkeypatch.setattr(dashboard, "_rows",
+                        lambda: [{"dedup_key": "k1", "lat": 31.26, "lon": 34.80}])
+    monkeypatch.setattr(dashboard.osrm, "foot_geometry", lambda *a, **k: None)
+    code, body = _post("/api/walk?token=s3cret", {"key": "k1"})
+    out = json.loads(body)
+    assert code == 200 and out == {"ok": False, "reason": "osrm_down"}
+
+
+def test_walk_route_returns_the_nearest_gate_not_the_first(temp_db, monkeypatch):
+    import dashboard
+    monkeypatch.setattr(dashboard, "_rows",
+                        lambda: [{"dedup_key": "k1", "lat": 31.26, "lon": 34.80}])
+    seen = []
+
+    def fake(lat, lon, gate):
+        seen.append(gate)
+        far = len(seen) != 2
+        return {"minutes": 30.0 if far else 4.0, "metres": 900 if far else 300,
+                "coords": [[lat, lon], [gate["lat"], gate["lon"]]]}
+
+    monkeypatch.setattr(dashboard.osrm, "foot_geometry", fake)
+    out = json.loads(_post("/api/walk?token=s3cret", {"key": "k1"})[1])
+    assert out["ok"] and out["minutes"] == 4.0 and out["metres"] == 300
+    assert out["gate"] == seen[1].get("name")
+    # lat,lon for the projector — OSRM's own lon,lat order would put the line in Egypt
+    assert out["coords"][0] == [31.26, 34.80]

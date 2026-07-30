@@ -207,6 +207,10 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/note":
             storage.set_note(key, payload.get("text") or "")
             return self._json(200, {"ok": True, "text": storage.get_note(key)})
+        if route == "/api/walk":
+            # POST, not GET /api/walk/<key>, because a dedup_key is phone|address —
+            # a GET would write a landlord's phone number into the URL and the log.
+            return self._json(200, dashboard.walk_route(key))
         return self._send(404, b"not found")
 
     def _route_plan(self, payload):
