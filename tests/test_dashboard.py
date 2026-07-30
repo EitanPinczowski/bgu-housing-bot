@@ -188,6 +188,24 @@ def test_map_furniture_is_present(temp_db, monkeypatch, tmp_path):
     assert "ctrlKey" in page                      # plain wheel scrolls the page
 
 
+def test_map_interrogation_controls_are_wired(temp_db, monkeypatch, tmp_path):
+    """Fit / box-select / cluster behaviour is interaction logic, verified in a real
+    browser. What a unit test can hold is that the controls exist and are connected —
+    a renamed id silently dropping a listener is the failure that would slip through."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    for bit in ('id="fitbtn"', 'id="boxbtn"', 'id="boxchip"', 'id="boxclear"'):
+        assert bit in page, bit
+    for handler in ("$('fitbtn').addEventListener", "$('boxbtn').addEventListener",
+                    "$('boxclear').addEventListener"):
+        assert handler in page, handler
+    assert "if (!inBox(r)) return false;" in page      # the box is a real filter
+    assert "grp.__rows = b.rows" in page               # not a comma-joined key list
+    # colour is not a filter, so switching it must not move the map
+    assert "$('bycolor').addEventListener('change', render);" in page
+
+
 def test_legend_explains_the_map_without_javascript(temp_db, monkeypatch, tmp_path):
     """A partner opens the shared file cold; the key to the symbols has to be in the
     markup, not assembled by a script that a downloaded file may never run."""
@@ -200,6 +218,8 @@ def test_legend_explains_the_map_without_javascript(temp_db, monkeypatch, tmp_pa
     assert "ב/ג/ד" in legend                               # which outlines matter
     for layer in ("streets", "nbhd", "amen", "rings"):
         assert f'data-layer="{layer}"' in legend, layer
-    # rings are the only layer off by default — they clutter until you want them
-    assert legend.count("checked") == 3
+    # rings are the only switch off by default — they clutter until you want them
+    off = [line for line in legend.splitlines()
+           if "data-layer=" in line and "checked" not in line]
+    assert len(off) == 1 and 'data-layer="rings"' in off[0], off
     assert "initLayers();" in page

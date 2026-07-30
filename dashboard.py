@@ -218,7 +218,14 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
       border:1px solid var(--line);border-radius:5px;text-decoration:none;
       color:var(--fg);background:var(--bg);cursor:pointer}
 #card .x{display:none}
+#boxchip{position:absolute;inset-inline-start:8px;top:8px;z-index:15;font-size:12px;
+       background:var(--accent);color:#fff;border-radius:99px;padding:2px 6px 2px 10px}
+#boxchip button{background:none;border:0;color:#fff;cursor:pointer;font-size:12px;
+       padding:0 3px}
+#boxrect{fill:#3367d6;fill-opacity:.13;stroke:#3367d6;stroke-width:1.4;
+       stroke-dasharray:5,4;vector-effect:non-scaling-stroke;pointer-events:none}
 .dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
+.cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
 .panel{border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0;
@@ -294,6 +301,7 @@ function passes(r){
   if ($('nobroker').checked && r.broker >= 4) return false;
   if ($('saved').checked && !r.saved) return false;
   if ($('onlynew').checked && !isNew(r)) return false;
+  if (!inBox(r)) return false;
   return true;
 }
 
@@ -372,6 +380,7 @@ function expandHtml(r){
 const WORLD = {x: 0, y: 0, w: (P ? P.w : 1000), h: (P ? P.h : 820)};
 let view = {...WORLD};
 const zoomFactor = () => WORLD.w / view.w;
+let lastRows = [], lastZoom = 0;
 
 function applyView(){
   const svg = document.querySelector('.map svg');
@@ -392,6 +401,12 @@ function applyView(){
     const mz = +t.dataset.minzoom || 1;
     t.style.display = (k >= mz) ? '' : 'none';
   });
+  // clusters are a function of zoom, so they have to be rebuilt when it changes —
+  // but not while panning, which would redraw 350 nodes on every pointermove
+  if (Math.abs(Math.log(k / (lastZoom || k))) > 0.01 || !lastZoom){
+    lastZoom = k;
+    drawDots(lastRows);
+  }
 }
 
 function zoomAt(px, py, factor){
@@ -420,10 +435,25 @@ function initMapGestures(){
     zoomAt(ev.clientX, ev.clientY, ev.deltaY < 0 ? 1.18 : 1 / 1.18);
   }, {passive: false});
 
-  let drag = null, pinch = null;
+  let drag = null, pinch = null, sel = null;   // sel: the box-select rubber band
   const pts = new Map();
+  const toWorld = (cx, cy) => {
+    const b = svg.getBoundingClientRect();
+    return [view.x + ((cx - b.left) / b.width) * view.w,
+            view.y + ((cy - b.top) / b.height) * view.h];
+  };
   svg.addEventListener('pointerdown', ev => {
     pts.set(ev.pointerId, ev);
+    if (pts.size === 1 && (ev.shiftKey || boxPending)){
+      ev.preventDefault();
+      const [wx, wy] = toWorld(ev.clientX, ev.clientY);
+      sel = {x0: wx, y0: wy};
+      const r = el('rect');
+      r.id = 'boxrect';
+      svg.appendChild(r);
+      svg.setPointerCapture(ev.pointerId);
+      return;
+    }
     if (pts.size === 1 && !ev.target.closest('.dot')){
       drag = {x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y};
       svg.classList.add('drag');
@@ -437,6 +467,18 @@ function initMapGestures(){
   });
   svg.addEventListener('pointermove', ev => {
     if (pts.has(ev.pointerId)) pts.set(ev.pointerId, ev);
+    if (sel){
+      const [wx, wy] = toWorld(ev.clientX, ev.clientY);
+      sel.x1 = wx; sel.y1 = wy;
+      const r = document.getElementById('boxrect');
+      if (r){
+        r.setAttribute('x', Math.min(sel.x0, wx));
+        r.setAttribute('y', Math.min(sel.y0, wy));
+        r.setAttribute('width', Math.abs(wx - sel.x0));
+        r.setAttribute('height', Math.abs(wy - sel.y0));
+      }
+      return;
+    }
     if (pinch && pts.size === 2){
       const [a, b] = [...pts.values()];
       const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -463,13 +505,34 @@ function initMapGestures(){
   });
   const release = ev => {
     pts.delete(ev.pointerId);
+    if (sel){
+      const b = sel; sel = null; boxPending = false;
+      // a tap, not a drag: treat it as "cancel", not as an empty selection
+      const tiny = !b.x1 || (Math.abs(b.x1 - b.x0) < 4 && Math.abs(b.y1 - b.y0) < 4);
+      setBox(tiny ? null : {x0: Math.min(b.x0, b.x1), x1: Math.max(b.x0, b.x1),
+                            y0: Math.min(b.y0, b.y1), y1: Math.max(b.y0, b.y1)});
+    }
     if (pts.size < 2) pinch = null;
     if (pts.size === 0){ drag = null; svg.classList.remove('drag'); }
   };
   svg.addEventListener('pointerup', release);
   svg.addEventListener('pointercancel', release);
   svg.addEventListener('dblclick', () => { view = {...WORLD}; applyView(); });
-  $('reset').addEventListener('click', () => { view = {...WORLD}; applyView(); });
+  $('reset').addEventListener('click', () => {
+    view = {...WORLD};
+    if (boxSel) setBox(null); else applyView();
+  });
+  $('fitbtn').addEventListener('click', () => fitTo(visible()));
+  $('boxbtn').addEventListener('click', () => {
+    boxPending = !boxPending;
+    $('boxbtn').classList.toggle('on', boxPending);
+  });
+  $('boxclear').addEventListener('click', () => setBox(null));
+  // a cluster badge zooms to the flats hiding inside it
+  svg.addEventListener('click', ev => {
+    const grp = ev.target.closest('.cl');
+    if (grp && grp.__rows) fitTo(grp.__rows);
+  });
 }
 
 /* ---------- layer switches ----------
@@ -483,7 +546,10 @@ function applyLayers(){
   const state = {};
   document.querySelectorAll('#legend input[data-layer]').forEach(cb => {
     state[cb.dataset.layer] = cb.checked;
-    if (cb.dataset.layer === 'rings'){
+    if (cb.dataset.layer === 'autofit'){
+      /* not a layer — a behaviour. It lives here because this is where the map's
+         own switches are, but it has nothing to hide. */
+    } else if (cb.dataset.layer === 'rings'){
       const g = svg.querySelector('#rings');
       if (g) g.style.display = cb.checked ? '' : 'none';
     } else {
@@ -504,39 +570,141 @@ function initLayers(){
   applyLayers();
 }
 
-function drawDots(rows){
+/* ---------- clustering ----------
+   אברהם אבינו alone holds 21 listings on one street: at full extent they are a
+   single blob that reads as one flat. Dots closer together than CLUSTER_PX collapse
+   into a badge with the count, and split apart again as you zoom in — so the map
+   never lies about how much is there. Clustering runs over the FILTERED rows, so
+   the badges always add up to the counter above the map. */
+const CLUSTER_PX = 19;
+const el = t => document.createElementNS('http://www.w3.org/2000/svg', t);
+
+function clusterOf(rows){
   const svg = document.querySelector('.map svg');
-  if (!svg || !P) return;
-  const old = document.getElementById('dots');
-  if (old) old.remove();
-  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-  g.id = 'dots';
-  const byScore = $('bycolor').value === 'score';
-  let n = 0;
+  const box = svg.getBoundingClientRect();
+  const cell = CLUSTER_PX * (view.w / (box.width || 1));
+  const bins = new Map();
   for (const r of rows){
     if (r.lat === null || r.lat === undefined) continue;
     const xy = project(r.lat, r.lon);
-    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    c.setAttribute('cx', xy[0].toFixed(1));
-    c.setAttribute('cy', xy[1].toFixed(1));
-    c.setAttribute('r', (5 / zoomFactor()).toFixed(2));   // constant on screen under zoom
-    c.setAttribute('class', 'dot');
-    c.setAttribute('fill', byScore ? scoreColor(r.eff_score)
-                                   : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN));
-    c.setAttribute('fill-opacity', '0.85');
+    const id = Math.floor(xy[0] / cell) + ':' + Math.floor(xy[1] / cell);
+    let b = bins.get(id);
+    if (!b){ b = {x: 0, y: 0, rows: []}; bins.set(id, b); }
+    b.x += xy[0]; b.y += xy[1]; b.rows.push(r);
+  }
+  for (const b of bins.values()){ b.x /= b.rows.length; b.y /= b.rows.length; }
+  return [...bins.values()];
+}
+
+function drawDots(rows){
+  const svg = document.querySelector('.map svg');
+  if (!svg || !P) return;
+  lastRows = rows;
+  const old = document.getElementById('dots');
+  if (old) old.remove();
+  const g = el('g');
+  g.id = 'dots';
+  const byScore = $('bycolor').value === 'score';
+  const k = zoomFactor();
+  const fill = r => byScore ? scoreColor(r.eff_score)
+                            : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
+  let n = 0, clusters = 0;
+  for (const b of clusterOf(rows)){
+    n += b.rows.length;
+    if (b.rows.length === 1){
+      const r = b.rows[0];
+      const c = el('circle');
+      c.setAttribute('cx', b.x.toFixed(1));
+      c.setAttribute('cy', b.y.toFixed(1));
+      c.setAttribute('r', (5 / k).toFixed(2));       // constant on screen under zoom
+      c.setAttribute('class', 'dot');
+      c.setAttribute('fill', fill(r));
+      c.setAttribute('fill-opacity', '0.85');
+      c.setAttribute('stroke', '#fff');
+      c.setAttribute('stroke-width', '1');
+      c.dataset.key = r.dedup_key;
+      const t = el('title');
+      t.textContent = (r.address || '—') + ' | ' + r.location_tier + ' | ⭐' + r.eff_score +
+                      (r.price_per_room ? ' | ' + r.price_per_room + '₪' : '');
+      c.appendChild(t);
+      g.appendChild(c);
+      continue;
+    }
+    clusters++;
+    // one badge for the group, coloured by its best listing so a cluster hiding a
+    // strong match doesn't read as background noise
+    const best = b.rows.reduce((a, r) => (r.eff_score > a.eff_score ? r : a), b.rows[0]);
+    const grp = el('g');
+    grp.setAttribute('class', 'cl');
+    // the rows themselves, not a joined list of keys — a dedup_key is phone|address
+    // and an address may contain a comma, which a split(',') would tear in half
+    grp.__rows = b.rows;
+    const c = el('circle');
+    c.setAttribute('cx', b.x.toFixed(1));
+    c.setAttribute('cy', b.y.toFixed(1));
+    c.setAttribute('r', (10 / k).toFixed(2));
+    c.setAttribute('fill', fill(best));
+    c.setAttribute('fill-opacity', '0.9');
     c.setAttribute('stroke', '#fff');
-    c.setAttribute('stroke-width', '1');
-    c.dataset.key = r.dedup_key;
-    const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-    t.textContent = (r.address || '—') + ' | ' + r.location_tier + ' | ⭐' + r.eff_score +
-                    (r.price_per_room ? ' | ' + r.price_per_room + '₪' : '');
-    c.appendChild(t);
-    g.appendChild(c);
-    n++;
+    c.setAttribute('stroke-width', (2 / k).toFixed(2));
+    const t = el('text');
+    t.setAttribute('x', b.x.toFixed(1));
+    t.setAttribute('y', b.y.toFixed(1));
+    t.setAttribute('font-size', (10 / k).toFixed(2));
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'central');
+    t.setAttribute('fill', '#fff');
+    t.setAttribute('font-weight', 'bold');
+    t.textContent = b.rows.length;
+    const ttl = el('title');
+    ttl.textContent = b.rows.length + ' דירות כאן — לחיצה מתקרבת';
+    grp.append(c, t, ttl);
+    g.appendChild(grp);
   }
   svg.appendChild(g);
-  $('mapcount').textContent = n + ' על המפה';
+  $('mapcount').textContent = n + ' על המפה' +
+    (clusters ? ' · ' + clusters + ' קבוצות' : '');
 }
+
+/* ---------- fit the view to what is showing ---------- */
+function fitTo(rows, animateFrom){
+  const pts = rows.filter(r => r.lat !== null && r.lat !== undefined)
+                  .map(r => project(r.lat, r.lon));
+  if (!pts.length) return;
+  let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
+  let y0 = Math.min(...pts.map(p => p[1])), y1 = Math.max(...pts.map(p => p[1]));
+  const padx = Math.max((x1 - x0) * 0.12, 25), pady = Math.max((y1 - y0) * 0.12, 25);
+  x0 -= padx; x1 += padx; y0 -= pady; y1 += pady;
+  // honour the aspect ratio, and never zoom past the pan/zoom clamp — three
+  // neighbouring flats should not slam the map to 12x
+  let w = Math.max(x1 - x0, (y1 - y0) * (WORLD.w / WORLD.h));
+  w = Math.min(WORLD.w, Math.max(WORLD.w / 8, w));
+  view.w = w;
+  view.h = w * (WORLD.h / WORLD.w);
+  view.x = (x0 + x1) / 2 - view.w / 2;
+  view.y = (y0 + y1) / 2 - view.h / 2;
+  applyView();
+}
+
+/* ---------- box select ----------
+   The one filter a map can express that the toolbar cannot: "these streets, here".
+   Shift+drag so it never fights drag-to-pan, plus a button for touch. */
+let boxSel = null;                       // {x0,y0,x1,y1} in world coords, or null
+function inBox(r){
+  if (!boxSel || r.lat === null || r.lat === undefined) return !boxSel;
+  const [x, y] = project(r.lat, r.lon);
+  return x >= boxSel.x0 && x <= boxSel.x1 && y >= boxSel.y0 && y <= boxSel.y1;
+}
+function setBox(b){
+  boxSel = b;
+  const chip = $('boxchip');
+  chip.style.display = b ? '' : 'none';
+  $('boxbtn').classList.toggle('on', !!boxPending);
+  const rect = document.getElementById('boxrect');
+  if (rect) rect.remove();
+  render();
+}
+let boxPending = false;                  // touch: next drag draws a box, not a pan
 
 function markCursor(){
   const rows = document.querySelectorAll('tr.row');
@@ -571,13 +739,23 @@ async function post(path, body){
   } catch (e){ return null; }
 }
 
-['q', 'st', 'tier', 'maxp', 'minr', 'stale', 'nobroker', 'saved', 'onlynew', 'bycolor']
+/* Narrowing the filters should take you to what is left — otherwise "3 דירות" sits
+   somewhere off the current view and you have to hunt for it. Colour is not a filter,
+   so it does not move the map. Switchable off in the legend panel. */
+function afterFilter(){
+  render();
+  const cb = document.querySelector('#legend input[data-layer="autofit"]');
+  if (cb && cb.checked) fitTo(visible());
+}
+
+['q', 'st', 'tier', 'maxp', 'minr', 'stale', 'nobroker', 'saved', 'onlynew']
   .forEach(id => {
-    const el = $(id);
-    if (!el) return;
-    const ev = (el.type === 'checkbox' || el.tagName === 'SELECT') ? 'change' : 'input';
-    el.addEventListener(ev, render);
+    const node = $(id);
+    if (!node) return;
+    const ev = (node.type === 'checkbox' || node.tagName === 'SELECT') ? 'change' : 'input';
+    node.addEventListener(ev, afterFilter);
   });
+$('bycolor').addEventListener('change', render);
 
 document.querySelectorAll('#t thead th[data-k]').forEach(th =>
   th.addEventListener('click', () => {
@@ -932,8 +1110,12 @@ def render(live: bool) -> str:
 <div class="panel" id="cmp"></div>
 <div class="map">{base_svg}</svg>
   <div class="mapbtns">
+    <button id="fitbtn" title="התאם את התצוגה לדירות המסוננות">התאם</button>
+    <button id="boxbtn" title="סימון אזור: Shift+גרירה, או לחצו כאן ואז גררו">▭ אזור</button>
     <button id="reset" title="איפוס תצוגה">איפוס</button>
   </div>
+  <div id="boxchip" style="display:none">אזור מסומן
+    <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
   {_legend_html()}
   <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה להזזה · ריחוף/נגיעה בנקודה לפרטים</div>
   <div id="card"><button class="x" aria-label="סגור">✕</button><div id="cardbody"></div></div>
@@ -995,6 +1177,8 @@ def _legend_html() -> str:
 {lay("nbhd", "גבולות שכונות", True)}
 {lay("amen", "סימוני תחבורה וחדר כושר", True)}
 {lay("rings", f"טבעות הליכה 5/10/15/{config.MAX_WALK_MINUTES} דק׳ מהשערים", False)}
+<h4>התנהגות</h4>
+{lay("autofit", "התאם תצוגה לסינון", True)}
 </div></details>"""
 
 
