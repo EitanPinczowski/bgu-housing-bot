@@ -141,3 +141,18 @@ def test_wake_timer_check(monkeypatch):
     # not Windows / no Task Scheduler -> SKIP, never a false alarm
     monkeypatch.setattr(doctor, "_task_wake_flags", lambda: None)
     assert doctor._check_wake_timers()[1] == doctor.SKIP
+
+
+def test_hot_pass_scheduled_check(monkeypatch):
+    """The --hot pass was built, documented and budgeted, but never scheduled — for
+    days nothing failed, detection was just quietly 8.4 h slow."""
+    monkeypatch.setattr(doctor, "_task_wake_flags",
+                        lambda: {"BGU Housing Scraper": True})
+    name, status, detail, rem = doctor._check_hot_scheduled()
+    assert status == doctor.WARN and "update_schedule" in rem
+    monkeypatch.setattr(doctor, "_task_wake_flags",
+                        lambda: {"BGU Housing Scraper": True,
+                                 "BGU Housing Scraper Hot": True})
+    assert doctor._check_hot_scheduled()[1] == doctor.PASS
+    monkeypatch.setattr(doctor, "_task_wake_flags", lambda: None)
+    assert doctor._check_hot_scheduled()[1] == doctor.SKIP

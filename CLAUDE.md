@@ -158,9 +158,17 @@ the scraper MUST be conservative and the user must stay in control:
   2. `main.py --hot`: a shallow pass over only the `HOT_GROUP_COUNT=3` best groups
      (`HOT_MIN_POSTS=10`), cutting detection lag from ~2h25m to ~30–40 min.
      4 hot runs/day ≈ **120 reads/day**.
-  **Net: ~1660 reads/day vs 2100 before — about 21% BELOW the previous volume.** Keep it
-  that way: if hot runs are added, take the budget out of the low-yield groups, and
-  re-check with `python group_report.py`. All other safety rules are untouched (dry-run
+  **2026-07-30 correction — the hot pass had never actually been scheduled.** Task
+  Scheduler had one scraper task running `run_scraper.cmd` with no arguments, so the
+  "4 hot runs/day" in the budget above was fiction and real volume was 7 × 251 =
+  **1757 reads/day**. Measured consequence: median time-to-detect **8.4 h (n=44)**,
+  only 7 of 44 listings seen within an hour — the exact problem `--hot` was built for.
+  `update_schedule.cmd` fixes it and pays for it: **6 full runs (08/10/14/16/18/20,
+  dropping the dead noon slot) + 4 hot runs (12/15/17/19) = 1626 reads/day, −7.5%**.
+  Between 14:00 and 20:00 — where 45 of 63 timed posts land — something now runs every
+  hour instead of every two. Keep the invariant: **hot runs must be paid for out of
+  full runs**, and re-check with `python group_report.py` and `python stats.py`
+  (which now prints time-to-detect and runs/day, both with their n). All other safety rules are untouched (dry-run
   default, jitter, daytime only, read-only, checkpoint-abort).
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.

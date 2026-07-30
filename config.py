@@ -360,6 +360,11 @@ GROUP_MIN_HISTORY = 25             # below this many archived posts, assume full
 # post-reads/day, and 4 hot runs cost ~120/day -> ~1660 total, still ~21% BELOW the old
 # 2100. Every safety rule is unchanged (real logged-in profile, randomized delays +
 # jitter, daytime only, read-only, dry-run default, checkpoint-abort).
+# NOTE (2026-07-30): this pass existed in code and in the volume budget below for days
+# but was NEVER SCHEDULED — Task Scheduler had one scraper task running run_scraper.cmd
+# with no arguments. Measured result: median time-to-detect 8.4 h (n=44), only 7 of 44
+# listings seen within an hour. `update_schedule.cmd` finally wires it up; `stats.py`
+# prints the lag so the effect is measured rather than assumed.
 HOT_GROUP_COUNT = 3                # how many top-yield groups the hot path visits
 HOT_MIN_POSTS = 10                 # shallow: just the newest posts in each
 
@@ -427,7 +432,12 @@ SCRAPER_GROUP_DELAY = (20.0, 45.0)       # seconds between groups (randomized)
 SCRAPER_SCAN_ALL_GROUPS = True
 # groups per run when NOT scanning all: a RANDOM fraction of all groups (⅓–½).
 SCRAPER_GROUPS_FRACTION = (1 / 3, 1 / 2)
-SCRAPER_RUNS_PER_DAY = 7            # 08–20 every 2h (early-stops keep each run light)
+# 6 FULL runs (08/10/14/16/18/20) + 4 HOT runs (12/15/17/19) — see update_schedule.cmd.
+# Re-timed 2026-07-30 around where the listings actually are: 45 of 63 timed posts land
+# 14:00–20:00, and the old even 2-hourly spacing gave the busiest hours the same lag as
+# the empty ones. Between 14:00 and 20:00 something now runs every hour.
+# Volume went DOWN: 7×251 = 1757 reads/day → 6×251 + 4×30 = 1626 (−7.5%).
+SCRAPER_RUNS_PER_DAY = 6            # FULL runs only; the hot pass is counted separately
 SCRAPER_MIN_SCRAPES_PER_DAY = 3     # each group read at least this often per day
 
 # Each Telegram save/dismiss tap nudges a listing's score by this much, PER USER

@@ -311,6 +311,29 @@ OSRM Docker container isn't running — you just won't get walk minutes. The
 `osrm_bgu` container is set to restart with Docker Desktop; make sure Docker
 Desktop is set to start on login if you want walk times on scheduled runs.
 
+### Scrape timing — run `update_schedule.cmd` once, as Administrator
+
+Two problems, both measured on 2026-07-30 and both fixed by this script:
+
+- **`main.py --hot` had never been scheduled.** It exists to cut detection lag to
+  ~30–40 min and `CLAUDE.md` even counted it in the volume budget — but Task
+  Scheduler had one scraper task running `run_scraper.cmd` with no arguments.
+  Measured consequence: **median time-to-detect 8.4 hours (n=44)**, with only 7 of
+  44 listings seen within an hour of being posted.
+- **The schedule ignored the market.** Of 63 timed posts, **45 land 14:00–20:00**,
+  yet runs were spaced evenly 08/10/12/14/16/18/20 — the busiest hours got the same
+  two-hour lag as the empty ones, and 11:00–13:00 is nearly dead.
+
+After: **6 full runs** (08/10/14/16/18/20) **+ 4 hot runs** (12/15/17/19), so
+between 14:00 and 20:00 something runs *every hour*. **Total volume falls**:
+7 × 251 = 1757 → 6 × 251 + 4 × 30 = **1626 page-reads/day (−7.5%)**, because one
+expensive full run in an empty window pays for four cheap passes across the peak.
+Nothing else changes — same groups, same delays and jitter, daytime only, read-only.
+
+`python stats.py` now prints **time to detect** and **runs/day** (each with its `n`),
+so the effect is measured rather than assumed, and `doctor` gains a **`hot pass`** row
+so a feature that isn't running can't hide again.
+
 ### Keeping it always-on (run `setup_always_on.cmd` once, as Administrator)
 
 Scheduled runs are only as reliable as the machine being awake. Every `BGU *` task

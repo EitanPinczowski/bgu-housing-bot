@@ -141,6 +141,7 @@ def _task_wake_flags():
     import subprocess
     ps = ("Get-ScheduledTask | Where-Object {$_.TaskName -like 'BGU*'} | "
           "ForEach-Object { $_.TaskName + '=' + $_.Settings.WakeToRun }")
+    # (also used by _check_hot_scheduled below — one PowerShell round-trip, not two)
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
                            capture_output=True, text=True, timeout=25)
@@ -172,6 +173,21 @@ def _check_wake_timers():
     return ("wake timers", WARN,
             f"{len(asleep)}/{len(flags)} task(s) can't wake the PC: " + ", ".join(asleep[:3]),
             "run setup_always_on.cmd as Administrator (missed runs otherwise)")
+
+
+def _check_hot_scheduled():
+    """Is the fast `--hot` pass actually wired to the scheduler?
+
+    It was built, documented, and counted in the volume budget — and never scheduled,
+    for days. Nothing failed; detection was just quietly 8.4 h slow. A feature that
+    silently isn't running is worth a row of its own."""
+    flags = _task_wake_flags()
+    if flags is None:
+        return ("hot pass", SKIP, "can't query Task Scheduler", "")
+    if any("hot" in name.lower() for name in flags):
+        return ("hot pass", PASS, "scheduled", "")
+    return ("hot pass", WARN, "built but never scheduled — detection stays slow",
+            "run update_schedule.cmd as Administrator")
 
 
 def _check_last_run():
@@ -310,7 +326,7 @@ def checks() -> list:
     out += _check_data_files()
     out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
-            _check_wake_timers(), _check_geocode_placement()]
+            _check_wake_timers(), _check_hot_scheduled(), _check_geocode_placement()]
     return out
 
 
