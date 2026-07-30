@@ -426,3 +426,48 @@ def test_rekey_leaves_bare_address_rows_alone(temp_db):
     storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="phone:501234567",
                                         score=70, extract=e))
     assert storage.rekey_phone_listings() == 0
+
+
+def test_backfill_first_seen_restores_the_real_discovery_date(temp_db):
+    """replay --apply used to INSERT OR REPLACE, resetting first_seen to now on every
+    run, so the whole table read as "found today" and LISTING_STALE_DAYS, the /top
+    windows and the freshness factor all stopped meaning anything."""
+    import sqlite3
+    e = _ex("רגר 164", "050-1234567")
+    key = storage.make_dedup_key(e)
+    storage.record_post("sig-old", "טקסט", "", [], "g", None, e,
+                        PipelineResult(status=Status.MATCH, dedup_key=key))
+    with storage._conn() as c:                       # archive says it was found earlier
+        c.execute("UPDATE posts SET first_seen='2026-07-18 09:00:00' WHERE sig='sig-old'")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key=key, score=80,
+                                        extract=e))
+
+    assert storage.backfill_first_seen() == 1
+    got = sqlite3.connect(temp_db).execute(
+        "SELECT first_seen FROM listings WHERE dedup_key=?", (key,)).fetchone()[0]
+    assert got == "2026-07-18 09:00:00"
+    assert storage.backfill_first_seen() == 0        # idempotent
+
+
+def test_backfill_never_moves_a_date_forward(temp_db):
+    """Only ever backwards — that's what keeps a re-run a no-op and stops the repair
+    making a listing look newer than it is."""
+    import sqlite3
+    e = _ex("קדש 3", "052-7654321")
+    key = storage.make_dedup_key(e)
+    storage.record_post("sig-new", "טקסט", "", [], "g", None, e,
+                        PipelineResult(status=Status.MATCH, dedup_key=key))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key=key, score=70,
+                                        extract=e))
+    with storage._conn() as c:                       # listing is ALREADY older
+        c.execute("UPDATE listings SET first_seen='2020-01-01 00:00:00' WHERE dedup_key=?",
+                  (key,))
+    assert storage.backfill_first_seen() == 0
+    assert sqlite3.connect(temp_db).execute(
+        "SELECT first_seen FROM listings WHERE dedup_key=?", (key,)).fetchone()[0] \
+        == "2020-01-01 00:00:00"
+
+
+def test_backfill_ignores_listings_with_no_archived_post(temp_db):
+    storage.save_listing(_res("orphan:1"))
+    assert storage.backfill_first_seen() == 0

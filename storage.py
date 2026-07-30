@@ -654,6 +654,43 @@ def _group_key(dedup_key, address) -> str:
     return "addr:" + norm if norm else str(dedup_key)
 
 
+def backfill_first_seen() -> int:
+    """Restore each listing's real discovery date from the post archive.
+
+    `replay --apply` used to `INSERT OR REPLACE`, which reset `first_seen` to now on
+    every run — so the whole table reads as "found today" and LISTING_STALE_DAYS, the
+    /top time windows and the freshness score factor all mean nothing. The upsert no
+    longer does that, but the existing rows are already wrong. `posts.first_seen` was
+    never clobbered (record_post preserves it on conflict), so the archive can repair it.
+
+    Moves a date BACKWARDS only. That's what makes a re-run a no-op, and it means the
+    repair can never invent a listing that looks newer than it is. Returns rows moved.
+    """
+    earliest: dict = {}
+    with _conn() as c:
+        rows = c.execute("SELECT parsed_json, posted_at, first_seen FROM posts "
+                         "WHERE parsed_json IS NOT NULL").fetchall()
+    for pj, posted_at, first_seen in rows:
+        stamp = posted_at or first_seen
+        if not stamp:
+            continue
+        try:
+            e = ListingExtract.model_validate_json(pj)
+        except Exception:
+            continue
+        for key in dedup_keys(e):
+            if key and (key not in earliest or stamp < earliest[key]):
+                earliest[key] = stamp
+
+    moved = 0
+    with _conn() as c:
+        for key, stamp in earliest.items():
+            moved += c.execute(
+                "UPDATE listings SET first_seen=? WHERE dedup_key=? AND first_seen>?",
+                (stamp, key, stamp)).rowcount
+    return moved
+
+
 def rekey_phone_listings() -> int:
     """One-time migration for the phone|address dedup key (see make_dedup_key).
 
