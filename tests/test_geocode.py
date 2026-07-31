@@ -534,3 +534,45 @@ def test_a_projected_point_still_lies_on_the_street(monkeypatch):
     monkeypatch.setattr(geocode, "_street_axis", lambda st: (pts, 0))
     lat, lon = geocode.place_house("X", "20")[0]
     assert 31.2600 <= lat <= 31.2620 and abs(lon - 34.7900) < 1e-9
+
+
+# --- what we accept from the external geocoders ------------------------------------
+def test_an_external_hit_far_from_its_own_street_is_rejected(monkeypatch):
+    """The two worst errors in the hold-out were both this: ההגנה 89 placed 3,528 m out
+    by nominatim and רחבת יבנה 29 2,964 m out by overpass. A street-level point may sit
+    anywhere ALONG its street, so distance FROM that street is the honest test — median
+    offset across stored listings is 6 m, so this only catches "wrong street entirely"."""
+    monkeypatch.setattr(geocode.streets, "canonical", lambda t: ("רגר", "exact"))
+    monkeypatch.setattr(geocode.streets, "geometry",
+                        lambda st: [[(31.2600, 34.7900), (31.2610, 34.7900)]])
+    near = (31.2605, 34.7901)                       # ~56 m off the nearest vertex
+    far = (31.2900, 34.8300)                        # kilometres away
+    assert geocode._plausible_external("רגר 5", near, "overpass") is True
+    assert geocode._plausible_external("רגר 5", far, "nominatim") is False
+
+
+def test_an_unknown_street_is_not_judged(monkeypatch):
+    """No geometry means no opinion — we must not reject what we cannot check."""
+    monkeypatch.setattr(geocode.streets, "canonical", lambda t: (None, None))
+    monkeypatch.setattr(geocode.streets, "geometry", lambda st: [])
+    assert geocode._plausible_external("רגר 5", (31.29, 34.83), "nominatim") is True
+
+
+def test_nominatim_must_return_somewhere_to_live(monkeypatch):
+    """"ליד האוניברסיטה" matched the RAILWAY STATION named …אוניברסיטה, 783 m away, and
+    became a MATCH. We asked for a flat; a station, shop or bus stop is a wrong answer
+    however well the name overlaps."""
+    import types
+
+    def fake_get(url, **kw):
+        return types.SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: [{"lat": "31.265", "lon": "34.801",
+                           "class": kw["_cls"], "type": "x"}])
+
+    for cls, expected in (("railway", None), ("amenity", None), ("shop", None),
+                          ("highway", (31.265, 34.801)), ("place", (31.265, 34.801))):
+        monkeypatch.setattr(geocode.time, "sleep", lambda s: None)
+        monkeypatch.setattr("requests.get",
+                            lambda url, _cls=cls, **kw: fake_get(url, _cls=_cls, **kw))
+        assert geocode._nominatim("ליד האוניברסיטה") == expected, cls

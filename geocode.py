@@ -405,7 +405,7 @@ def geocode_detailed(location_text: Optional[str]):
     if coords is None and getattr(config, "USE_OVERPASS_FALLBACK", True):
         ocoords, osrc, responded = _overpass(location_text)
         authoritative = responded
-        if ocoords:
+        if ocoords and _plausible_external(location_text, ocoords, osrc):
             coords, source = ocoords, osrc          # 'osm_addr' (precise) or 'overpass'
     if coords is None and config.USE_NOMINATIM_FALLBACK:
         ncoords = _nominatim(location_text)
@@ -422,7 +422,7 @@ def geocode_detailed(location_text: Optional[str]):
                 ncoords = _nominatim(probe)
                 if ncoords:
                     break
-        if ncoords:
+        if ncoords and _plausible_external(location_text, ncoords, "nominatim"):
             coords, source = ncoords, "nominatim"
 
     cache = _load_cache()
@@ -881,6 +881,48 @@ def _overpass(location_text: str):
     return None, None, any_response
 
 
+# A point from an EXTERNAL geocoder that sits further than this from the street the
+# address actually names is a blunder, not imprecision. audit_geocode.py measures the
+# median offset across stored listings at 6 m, and a street-level hit legitimately sits
+# anywhere ALONG its street — so this only ever catches "that isn't the right street".
+# Measured examples it rejects: ההגנה 89 at 3,528 m (nominatim) and רחבת יבנה 29 at
+# 2,964 m (overpass), the two worst errors in the whole hold-out.
+MAX_EXTERNAL_OFFSET_M = 250.0
+
+# Nominatim answers with whatever it found. We asked for somewhere to LIVE, so a
+# railway station, a shop or a bus stop is a wrong answer even when the name overlaps —
+# "ליד האוניברסיטה" matched the station named  …אוניברסיטה 783 m away and became a MATCH.
+_NOMINATIM_OK_CLASSES = {"highway", "place", "building", "landuse", "boundary"}
+
+
+def _off_claimed_street_m(location_text: str, lat: float, lon: float):
+    """Metres from `(lat, lon)` to the geometry of the street the ADDRESS names, or
+    None when we don't know that street and so can't judge."""
+    for cand in _candidate_tokens(location_text)[:2]:
+        real, _how = streets.canonical(cand)
+        segs = streets.geometry(real) if real else []
+        if not segs:
+            continue
+        return min(_haversine_m(lat, lon, p[0], p[1]) for seg in segs for p in seg)
+    return None
+
+
+def _plausible_external(location_text: str, coords, source: str) -> bool:
+    """Is an external geocoder's answer consistent with the address we asked about?
+
+    Rejecting returns the listing to NEEDS_DATA, where a human sees it — strictly better
+    than placing it hundreds of metres away, where it silently gets a wrong tier, a wrong
+    walk time and possibly a wrong MATCH or DROP."""
+    if not coords:
+        return False
+    off = _off_claimed_street_m(location_text, coords[0], coords[1])
+    if off is not None and off > MAX_EXTERNAL_OFFSET_M:
+        print(f"[geocode] rejected {source} for {location_text!r}: {off:.0f} m from the "
+              f"street it names")
+        return False
+    return True
+
+
 def _overpass_pick(elements: list, name: str, housenumber: Optional[str] = None):
     """(coords, source) for the best in-box element, or (None, None). Prefers an exact
     ADDRESS NODE (street+number → precise, source 'osm_addr'), then an exact-name street
@@ -928,7 +970,16 @@ def _nominatim(location_text: str) -> Optional[Tuple[float, float]]:
         r.raise_for_status()
         data = r.json()
         if data:
-            return float(data[0]["lat"]), float(data[0]["lon"])
+            hit = data[0]
+            # We asked for somewhere to LIVE. Nominatim answers with whatever matched,
+            # so a railway station / shop / bus stop is a wrong answer even when the
+            # name overlaps — that is how "ליד האוניברסיטה" became a MATCH 783 m away.
+            cls = (hit.get("class") or "").lower()
+            if cls and cls not in _NOMINATIM_OK_CLASSES:
+                print(f"[geocode] rejected nominatim for {location_text!r}: "
+                      f"it is a {cls}/{hit.get('type')}, not a place to live")
+                return None
+            return float(hit["lat"]), float(hit["lon"])
     except Exception:
         pass
     return None
