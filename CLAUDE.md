@@ -87,7 +87,33 @@ SQLite + optional Google Sheets + Telegram alert`
 - `models.py` — `ListingExtract` (LLM schema, incl. `floor`) and `PipelineResult`.
 - `llm.py` — Gemini extraction + Ollama fallback (provider-abstracted); rate-limit;
   optional bounded OCR of image-only posts (one image, Gemini-only, capped per run).
-- `geocode.py` — static name table (primary) → cache → optional Google → Nominatim.
+- `geocode.py` — static name table (primary) → house-number placement → cache →
+  optional Google → Overpass → Nominatim.
+  - **`place_house()` projects, `interpolate_house()` only interpolates.** Between two
+    anchors → `interpolated`. Past them, or on a single-anchor street (using the city's
+    measured 11.2 m per house number) → `extrapolated`, capped at 150 m and clamped to
+    the street's real geometry. It exists because refusing sent the address to
+    Overpass/Nominatim, and those measured **3,528 m** out (ההגנה 89) and p90 595 m.
+  - **`extrapolated` is graded `high` but is NOT in `_PRECISE_SOURCES`** — it's a
+    projection, not a survey, so `pipeline._classify` keeps its boundary-street and
+    near-edge caution. Don't "tidy" it into the precise set.
+- `load_osm_addresses.py` — builds `house_anchors.json` from
+  `C:\osrm\israel-and-palestine-latest.osm.pbf`, **the extract already on disk for OSRM**.
+  Overpass (`load_house_numbers.py`) is the fallback, not the source: it was down on all
+  four mirrors all day, which is why the anchors were thin. The old query required
+  `addr:street`, so it structurally missed the 99 BS buildings tagged with a house number
+  and no street; those are bound here to the nearest centreline within 40 m and **dropped
+  beyond it** rather than guessed. 811 → 998 anchors, 97 → 115 usable streets.
+  Measured caveat: this converted only **1** of the 105 stranded listings — the extra
+  anchors landed on streets that already had them. Keep it for the data and the lost
+  dependency, not as the fix.
+- `geo_accuracy.py` — **the only thing that makes "more accurate" a fact.** Holds out
+  each of N addresses OSM knows exactly, hides its anchor, asks the geocoder, and reports
+  error in metres per tier. Without the hold-out it grades itself against its own answer
+  key. Baseline → after extrapolation: p50 **52→43 m**, p90 **192→170 m**, worst
+  **3528→2840 m**, imprecise tier **34→15**. Re-run it after any geocoding change.
+  Complements `audit_geocode.py`, which asks a different question (is the point ON its
+  street?).
 - `osrm.py` — local foot routing; min over gates (drives the 20-min amber boundary).
 - `zones.py` — green polygon + no-amber (ד') polygons; walk-time tier classification.
 - `amenities.py` / `load_amenities.py` — walk times to the bus/gym that matter
@@ -145,6 +171,12 @@ SQLite + optional Google Sheets + Telegram alert`
     just `.map` — it does NOT inherit, and the pointer handlers live on the svg. With
     `pan-y` there the browser scrolled the page *while* we panned the map: the
     "glitchy on phone" bug. Card buttons are 40px under `@media (pointer:coarse)`.
+  - **`click` must always be bound.** It lived in the `else` of `if (CAN_HOVER)`, so on
+    every desktop and many touch laptops clicking a dot did nothing — the "I can't press
+    on a listing" report. Hover is an addition for pointer devices, never the only way
+    in. Each dot also carries an invisible `.hit` circle sized in **real screen pixels**
+    (`HIT_RADIUS_PX * unitsPerPx`): a dot is 4px, and sizing the target in viewBox units
+    looked right but measured 8px, because the map renders ~0.36px per unit.
   - **A dot says how much to trust it.** `geocode_source` → `geocode.confidence()`;
     `street`/`none` draw HOLLOW. Only 45% of listings have a house number; 41% are a
     street/neighbourhood centroid. That is why 282 mapped listings sit on **105
@@ -283,6 +315,19 @@ the scraper MUST be conservative and the user must stay in control:
   (status/tier/score/walk) still overwrites — that part is meant to be fresh. It also
   no longer resets `first_seen`, which `INSERT OR REPLACE` silently did on every
   `replay --apply`, resetting the staleness clock on the whole table.
+- **Measured dead ends — don't re-try these without new evidence.** All checked
+  2026-07-31 against the real data: the **LLM is not losing house numbers** (0 of the
+  imprecise listings had one recoverable from the archived post text); **Nominatim has
+  no house numbers here** (`addresstype=road`, `place_rank=26` for every numbered
+  address, so grading its hits `street` is correct); **govmap.gov.il is not a usable
+  API** (serves HTML, its search host fails TLS); **order-insensitive street matching
+  recovers 1 listing**, not worth the ambiguity risk; **copying an address between one
+  landlord's listings would inject errors** (a single broker had flats on four different
+  streets); and `צקלג`/`פארן`/`יוטבתה`/`יודפת` are **absent from OSM entirely**, so no
+  free source will ever place them.
+- **The floor:** 122 of the 227 imprecise listings give no house number at all. Nothing
+  can place those to a building — the honest remedies are the 📍 manual pin or a Google
+  key (`GOOGLE_MAPS_API_KEY`; the tier already exists). Do not invent positions for them.
 - **Geocoding gaps:** listings whose location the LLM extracted but geocoding
   couldn't map are logged (`unknown_locations`) and surfaced by the daily DM
   digest — pin the frequent ones into `geocode.STATIC_TABLE`. The zone can be
