@@ -37,7 +37,7 @@ _SQL = """
            l.available_rooms, l.total_roommates, l.address, l.walk_minutes,
            l.lease_start, l.contact, l.source_url, l."group", l.floor, l.furnished,
            l.balcony, l.elevator, l.images, l.amenities, l.first_seen, l.summary,
-           l.price_from_comment
+           l.price_from_comment, l.geocode_source
     FROM listings l
 """
 
@@ -74,6 +74,10 @@ def _rows() -> list:
         # coordinates for the map dot — geocode is cached, so this is a dict lookup
         coords = geocode.geocode_cached(r["address"])
         r["lat"], r["lon"] = (coords if coords else (None, None))
+        # How much to trust that dot. 41% of listings resolve only to a street or
+        # neighbourhood centroid, which is why so many sit on top of each other; the
+        # map has to say so rather than drawing them all as if they were surveyed.
+        r["geo_confidence"] = geocode.confidence(r["geocode_source"])
         r["photos"] = _photo_hashes(r["images"])
         r["breakdown"] = _breakdown_for(r)
     rows.sort(key=lambda r: r["eff_score"], reverse=True)
@@ -117,7 +121,8 @@ def rows_for_api() -> list:
             "price_per_room", "available_rooms", "total_roommates", "address",
             "walk_minutes", "lease_start", "contact", "source_url", "group", "floor",
             "amenity_text", "first_seen", "summary", "saved", "contacted", "stale",
-            "broker", "note", "post_text", "lat", "lon", "photos", "breakdown")}
+            "broker", "note", "post_text", "lat", "lon", "photos", "breakdown",
+            "geocode_source", "geo_confidence")}
             | {"wa": _wa_link(r["contact"])})
     return out
 
@@ -251,6 +256,10 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 .wr{stroke:#7b1fa2;stroke-width:3}
 .dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
+.cl.stack{cursor:cell}                     /* a stack fans out, it doesn't zoom */
+.spider-leg{stroke:#8a94a6;stroke-width:1;stroke-opacity:.65;
+      vector-effect:non-scaling-stroke;pointer-events:none}
+.spider-hub{fill:#8a94a6;pointer-events:none}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
 .panel{border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0;
@@ -334,6 +343,7 @@ function passes(r){
   if ($('nobroker').checked && r.broker >= 4) return false;
   if ($('saved').checked && !r.saved) return false;
   if ($('onlynew').checked && !isNew(r)) return false;
+  if ($('approx').checked && !isApprox(r)) return false;
   if (!inBox(r)) return false;
   return true;
 }
@@ -567,10 +577,17 @@ function initMapGestures(){
     $('boxbtn').classList.toggle('on', boxPending);
   });
   $('boxclear').addEventListener('click', () => setBox(null));
-  // a cluster badge zooms to the flats hiding inside it
+  /* A badge either zooms or fans out, depending on which kind of pile it is.
+     Zooming a stack would do nothing at all — that is the "clusters don't open up"
+     report — so those fan instead. Clicking empty map closes an open fan. */
   svg.addEventListener('click', ev => {
     const grp = ev.target.closest('.cl');
-    if (grp && grp.__rows) fitTo(grp.__rows);
+    if (grp && grp.__rows){
+      if (grp.__sameSpot) setSpider({rows: grp.__rows, x: grp.__x, y: grp.__y});
+      else fitTo(grp.__rows);
+      return;
+    }
+    if (spider && !ev.target.closest('.dot')) setSpider(null);
   });
 }
 
@@ -631,8 +648,48 @@ function clusterOf(rows){
     if (!b){ b = {x: 0, y: 0, rows: []}; bins.set(id, b); }
     b.x += xy[0]; b.y += xy[1]; b.rows.push(r);
   }
-  for (const b of bins.values()){ b.x /= b.rows.length; b.y /= b.rows.length; }
+  for (const b of bins.values()){
+    b.x /= b.rows.length; b.y /= b.rows.length;
+    /* Does this group sit on ONE coordinate, or merely near each other? 138 of 338
+       listings geocode to a street or neighbourhood centroid, so 19 flats can share a
+       single point — and no zoom level can ever separate those. The two cases need
+       different answers: zoom in on a spread, fan out a stack. */
+    b.sameSpot = b.rows.every(r => Math.abs(r.lat - b.rows[0].lat) < 1e-5 &&
+                                   Math.abs(r.lon - b.rows[0].lon) < 1e-5);
+  }
   return [...bins.values()];
+}
+
+/* A stack that has been fanned open: {rows, x, y} in world coords, so it survives the
+   redraw that every zoom triggers. */
+let spider = null;
+
+function isApprox(r){
+  return r.geo_confidence === 'street' || r.geo_confidence === 'area' ||
+         r.geo_confidence === 'none' || !r.geo_confidence;
+}
+
+function mkDot(r, x, y, k, colour){
+  /* Hollow = we do not actually know where this flat is, only its street or
+     neighbourhood. Solid = a house number. Same tier colour either way, so the
+     precision reads as a separate axis rather than competing with the zone. */
+  const c = el('circle');
+  const approx = isApprox(r);
+  c.setAttribute('cx', x.toFixed(1));
+  c.setAttribute('cy', y.toFixed(1));
+  c.setAttribute('r', (5 / k).toFixed(2));         // constant on screen under zoom
+  c.setAttribute('class', 'dot' + (approx ? ' approx' : ''));
+  c.setAttribute('fill', approx ? 'var(--bg)' : colour);
+  c.setAttribute('fill-opacity', approx ? '0.95' : '0.85');
+  c.setAttribute('stroke', approx ? colour : '#fff');
+  c.setAttribute('stroke-width', (approx ? 2.2 / k : 1).toFixed(2));
+  c.dataset.key = r.dedup_key;
+  const t = el('title');
+  t.textContent = (r.address || '—') + ' | ' + r.location_tier + ' | ⭐' + r.eff_score +
+                  (r.price_per_room ? ' | ' + r.price_per_room + '₪' : '') +
+                  (approx ? ' | מיקום משוער' : '');
+  c.appendChild(t);
+  return c;
 }
 
 function drawDots(rows){
@@ -648,25 +705,12 @@ function drawDots(rows){
   const fill = r => byScore ? scoreColor(r.eff_score)
                             : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
   let n = 0, clusters = 0;
+  const fanned = spider ? new Set(spider.rows.map(r => r.dedup_key)) : null;
   for (const b of clusterOf(rows)){
     n += b.rows.length;
+    if (fanned && b.rows.every(r => fanned.has(r.dedup_key))) continue;   // drawn below
     if (b.rows.length === 1){
-      const r = b.rows[0];
-      const c = el('circle');
-      c.setAttribute('cx', b.x.toFixed(1));
-      c.setAttribute('cy', b.y.toFixed(1));
-      c.setAttribute('r', (5 / k).toFixed(2));       // constant on screen under zoom
-      c.setAttribute('class', 'dot');
-      c.setAttribute('fill', fill(r));
-      c.setAttribute('fill-opacity', '0.85');
-      c.setAttribute('stroke', '#fff');
-      c.setAttribute('stroke-width', '1');
-      c.dataset.key = r.dedup_key;
-      const t = el('title');
-      t.textContent = (r.address || '—') + ' | ' + r.location_tier + ' | ⭐' + r.eff_score +
-                      (r.price_per_room ? ' | ' + r.price_per_room + '₪' : '');
-      c.appendChild(t);
-      g.appendChild(c);
+      g.appendChild(mkDot(b.rows[0], b.x, b.y, k, fill(b.rows[0])));
       continue;
     }
     clusters++;
@@ -674,10 +718,12 @@ function drawDots(rows){
     // strong match doesn't read as background noise
     const best = b.rows.reduce((a, r) => (r.eff_score > a.eff_score ? r : a), b.rows[0]);
     const grp = el('g');
-    grp.setAttribute('class', 'cl');
+    grp.setAttribute('class', 'cl' + (b.sameSpot ? ' stack' : ''));
     // the rows themselves, not a joined list of keys — a dedup_key is phone|address
     // and an address may contain a comma, which a split(',') would tear in half
     grp.__rows = b.rows;
+    grp.__sameSpot = b.sameSpot;
+    grp.__x = b.x; grp.__y = b.y;
     const c = el('circle');
     c.setAttribute('cx', b.x.toFixed(1));
     c.setAttribute('cy', b.y.toFixed(1));
@@ -696,13 +742,59 @@ function drawDots(rows){
     t.setAttribute('font-weight', 'bold');
     t.textContent = b.rows.length;
     const ttl = el('title');
-    ttl.textContent = b.rows.length + ' דירות כאן — לחיצה מתקרבת';
+    // Say WHICH kind of pile this is, because the two behave differently and the
+    // difference is not the map's fault: a stack is what the posts didn't tell us.
+    ttl.textContent = b.sameSpot
+      ? b.rows.length + ' דירות באותה נקודה בדיוק — הפוסטים לא נתנו מספר בית. ' +
+        'לחיצה פורשת אותן'
+      : b.rows.length + ' דירות באזור הזה — לחיצה מתקרבת';
     grp.append(c, t, ttl);
     g.appendChild(grp);
   }
+  if (spider) drawSpider(g, k, fill);
   svg.appendChild(g);
   $('mapcount').textContent = n + ' על המפה' +
     (clusters ? ' · ' + clusters + ' קבוצות' : '');
+}
+
+/* ---------- fan a stack open ----------
+   Zoom cannot separate dots that share a coordinate, so the only honest way to reach
+   them is to move them off it deliberately, on leader lines that show where they
+   really came from. */
+function drawSpider(g, k, fill){
+  const R = 34 / k;                                   // constant on screen
+  const rows = spider.rows;
+  const grp = el('g');
+  grp.setAttribute('class', 'spider');
+  const hub = el('circle');
+  hub.setAttribute('cx', spider.x.toFixed(1));
+  hub.setAttribute('cy', spider.y.toFixed(1));
+  hub.setAttribute('r', (2.5 / k).toFixed(2));
+  hub.setAttribute('class', 'spider-hub');
+  grp.appendChild(hub);
+  rows.forEach((r, i) => {
+    // a second ring past 12 so the dots never overlap each other either
+    const ring = i < 12 ? 0 : 1;
+    const inRing = ring ? rows.length - 12 : Math.min(rows.length, 12);
+    const idx = ring ? i - 12 : i;
+    const rad = R * (1 + ring * 0.85);
+    const a = (idx / inRing) * Math.PI * 2 - Math.PI / 2;
+    const x = spider.x + Math.cos(a) * rad, y = spider.y + Math.sin(a) * rad;
+    const leg = el('line');
+    leg.setAttribute('x1', spider.x.toFixed(1));
+    leg.setAttribute('y1', spider.y.toFixed(1));
+    leg.setAttribute('x2', x.toFixed(1));
+    leg.setAttribute('y2', y.toFixed(1));
+    leg.setAttribute('class', 'spider-leg');
+    grp.appendChild(leg);
+    grp.appendChild(mkDot(r, x, y, k, fill(r)));
+  });
+  g.appendChild(grp);
+}
+
+function setSpider(next){
+  spider = next;
+  drawDots(lastRows);
 }
 
 /* ---------- fit the view to what is showing ---------- */
@@ -787,7 +879,7 @@ function afterFilter(){
   if (cb && cb.checked) fitTo(visible());
 }
 
-['q', 'st', 'tier', 'maxp', 'minr', 'stale', 'nobroker', 'saved', 'onlynew']
+['q', 'st', 'tier', 'maxp', 'minr', 'stale', 'nobroker', 'saved', 'onlynew', 'approx']
   .forEach(id => {
     const node = $(id);
     if (!node) return;
@@ -888,11 +980,19 @@ function cardHtml(r){
     ? '<button data-card="save" title="שמור">⭐</button>' +
       '<button data-card="dismiss" title="הסתר">🗑</button>' +
       '<button data-card="contacted" title="יצרתי קשר">📵</button>' : '';
+  // How much to trust the dot you just tapped. Silent on an exact hit — the point is
+  // to flag the 41% that are a street or neighbourhood centroid, not to nag.
+  const PRECISION = {street: '📍 מרכז הרחוב — הפוסט לא נתן מספר בית',
+                     area: '📍 מרכז השכונה — מיקום מקורב',
+                     none: '📍 לא זוהה מיקום מדויק'};
+  const precision = PRECISION[r.geo_confidence]
+    ? '<div class="am">' + esc(PRECISION[r.geo_confidence]) + '</div>' : '';
   return '<div class="hd">' + photo + '<div><div class="ttl">' + esc(r.address || '—') +
       ' <span class="pill ' + esc(r.location_tier || 'UNKNOWN') + '">' +
       esc(r.location_tier || '?') + '</span></div>' +
     '<div class="kv">⭐' + fmt(r.eff_score) + ' · ' + esc(bits) +
       (flags ? ' · ' + esc(flags) : '') + '</div></div></div>' +
+    precision +
     (r.amenity_text ? '<div class="am">' + esc(r.amenity_text) + '</div>' : '') +
     '<div class="btns">' + btn(r.wa, '💬', 'וואטסאפ') + btn(r.source_url, '🔗', 'הפוסט') +
       dirs + walk + votes + '</div>';
@@ -1196,6 +1296,7 @@ def render(live: bool, snapshot: bool = False) -> str:
   <label><input id="nobroker" type="checkbox"> ללא מתווכים</label>
   <label><input id="saved" type="checkbox"> ⭐ בלבד</label>
   <label><input id="onlynew" type="checkbox"> חדשות בלבד</label>
+  <label><input id="approx" type="checkbox"> מיקום משוער בלבד</label>
   <label>צבע <select id="bycolor"><option value="tier">אזור</option>
     <option value="score">ציון</option></select></label>
 </div>
@@ -1281,6 +1382,12 @@ def _legend_html() -> str:
 {sw(tc["RED"], "RED — מחוץ לטווח")}
 {sw(tc["UNKNOWN"], "לא זוהה מיקום")}
 <div class="li muted">בבחירת צבע לפי ציון: אדום=0 → ירוק=100</div>
+<div class="li"><span class="sw" style="background:{tc["GREEN"]}"></span>
+  עיגול מלא — מספר בית מדויק</div>
+<div class="li"><span class="sw" style="background:transparent;border:2px solid
+  {tc["GREEN"]}"></span> עיגול חלול — מיקום משוער (מרכז רחוב/שכונה)</div>
+<div class="li muted">מספר בעיגול = כמה דירות שם. באותה נקודה בדיוק — לחיצה פורשת
+  אותן, כי זום לא יפריד ביניהן.</div>
 <h4>רקע</h4>
 {ln("border-top-width:3px;border-color:#1b5e20", "האזור הירוק (מצויר ביד)")}
 {ln("border-top-width:1.6px;border-color:#1a237e;border-top-style:dashed", "שכונות ב/ג/ד — הקבילות")}

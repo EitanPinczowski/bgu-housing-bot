@@ -207,6 +207,44 @@ def test_map_interrogation_controls_are_wired(temp_db, monkeypatch, tmp_path):
     assert "$('bycolor').addEventListener('change', render);" in page
 
 
+def test_payload_carries_how_much_to_trust_the_dot(temp_db, monkeypatch, tmp_path):
+    """138 of 338 listings resolve only to a street centroid, which is why so many
+    stack on one point. The page can't say so unless the confidence travels with the
+    row — geocode_source was in the table but never in the query."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    row = _boot(dashboard.build())[0]
+    assert "geocode_source" in row and "geo_confidence" in row
+    assert row["geo_confidence"] in ("exact", "high", "street", "area", "none")
+
+
+def test_approximate_dots_are_drawn_hollow_and_filterable(temp_db, monkeypatch,
+                                                          tmp_path):
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "function isApprox(r)" in page
+    assert "'dot' + (approx ? ' approx' : '')" in page
+    assert 'id="approx"' in page                       # the needs-a-location filter
+    assert "$('approx').checked && !isApprox(r)" in page
+    assert "עיגול חלול" in page                        # explained in the legend
+
+
+def test_a_stack_fans_out_because_zoom_can_never_split_it(temp_db, monkeypatch,
+                                                          tmp_path):
+    """Dots sharing one coordinate are the "clusters don't open up" report. Zooming a
+    stack does nothing by definition, so a stack fans instead — and the code has to
+    tell the two cases apart to pick the right one."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "b.sameSpot = b.rows.every(" in page         # the discriminator
+    assert "if (grp.__sameSpot) setSpider(" in page     # stack -> fan
+    assert "else fitTo(grp.__rows);" in page            # spread -> zoom
+    assert "function drawSpider(" in page and "spider-leg" in page
+    assert "באותה נקודה בדיוק" in page                 # the badge says which it is
+
+
 def test_touch_action_is_set_on_the_svg_not_only_the_container(temp_db, monkeypatch,
                                                                tmp_path):
     """touch-action does NOT inherit, and the pointer handlers live on the <svg>.
