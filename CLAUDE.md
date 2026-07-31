@@ -187,6 +187,21 @@ SQLite + optional Google Sheets + Telegram alert`
   `zones.in_allowed_neighborhood` passes a point inside **any** polygon in that file, so
   adding שכונה ו there to label the map would silently widen the ב/ג/ד gate. A
   `test_zones.py` guard proves it doesn't.
+- **A hung run must not block the day.** `scraper.start_self_watchdog()` (started by
+  `main.py` right after the lock) aborts a run that makes no progress for
+  `STALL_MINUTES`. Before it existed, `is_wedged()` was only consulted by the NEXT run,
+  so a run that hung at group 4 of 15 held the lock for **six hours** and every
+  scheduled run logged "another scraper session is running" — 3 starts, 0 completions
+  in a day. Recovery has three parts, all needed:
+  - `_kill()` does **not** use `taskkill /T` (walking a Chromium tree blew past the
+    30 s budget, and the timeout was treated as total failure) and judges success by
+    whether the pid is actually gone.
+  - `reap_orphan_browsers()` closes browsers a dead run left behind. **Scoped by the
+    profile path on the command line, never by process name** — most `chrome.exe` on
+    this machine is the user's own browser (36 of 39 when measured).
+  - Windows can leave a process `TerminateProcess` accepts but never reaps; those are
+    unkillable until a reboot. Measured: the profile still opens with them present, so
+    the reaper says so and continues rather than refusing to run.
 - `setup_always_on.cmd` — run ONCE as Administrator. The `BGU *` tasks ship with
   "wake the computer" OFF, so a run due while the PC sleeps is silently skipped —
   the real cause of "why didn't it run". Also fixes battery wake timers/sleep.

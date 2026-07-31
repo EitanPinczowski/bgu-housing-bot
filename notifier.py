@@ -207,7 +207,19 @@ def _try_send(token: str, method: str, body: dict, timeout: int):
         r.raise_for_status()
         return r.json(), r.status_code
     except Exception as exc:
-        return None, getattr(getattr(exc, "response", None), "status_code", None)
+        resp = getattr(exc, "response", None)
+        # Telegram explains every 400 in the body ("message is too long", "can't parse
+        # entities at byte N", "BUTTON_URL_INVALID"). Throwing that away left a lost
+        # alert looking like an unexplained 400 — including one that the plain-text
+        # retry also failed, which means the formatting was never the problem.
+        if resp is not None:
+            try:
+                why = (resp.json() or {}).get("description")
+                if why:
+                    print(f"[notifier] telegram said: {why}")
+            except Exception:
+                pass
+        return None, getattr(resp, "status_code", None)
 
 
 def _post_to_all(method: str, payload: dict, timeout: int, target: str = "all"):

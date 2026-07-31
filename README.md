@@ -416,9 +416,12 @@ pushes the same snapshot to **GitHub Pages**. It is already set up and live at
 **https://eitanpinczowski.github.io/bgu-housing-dashboard/**
 
 from the dedicated repo `EitanPinczowski/bgu-housing-dashboard` (Pages: `main` / root),
-with `SITE_REPO_URL` in `.env`. `BGU Dashboard Publish` refreshes it at 09:00/13:00/17:00
-and `BGU Dashboard Share` does it again at 21:00 with the Telegram post. Without
-`SITE_REPO_URL` the publish step prints one line and does nothing.
+with `SITE_REPO_URL` in `.env`. `BGU Dashboard Publish` refreshes it **hourly at :30
+from 08:30 to 20:30**, and `BGU Dashboard Share` does it once more at 21:00 with the
+Telegram post — 14 refreshes a day against 10 scrapes, so the URL is never more than
+about an hour behind. Publishing costs ~2 s and touches nothing outside this machine
+(no Facebook), which is why it can be this frequent. Without `SITE_REPO_URL` the
+publish step prints one line and does nothing.
 
 To point it at a different repo, change `SITE_REPO_URL` and delete `data/site` — the
 next publish re-clones.
