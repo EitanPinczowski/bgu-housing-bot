@@ -1743,6 +1743,9 @@ def build_share():
 if __name__ == "__main__":
     if "--share" in sys.argv:
         shared = build_share()
+        if "--publish" in sys.argv:
+            import publish
+            publish.publish(shared)
         if "--send" in sys.argv:
             import notifier
             ok = notifier.send_document(

@@ -21,4 +21,7 @@ cd /d "%~dp0"
 set PY=%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe
 if not exist "%PY%" set PY=python
 
-"%PY%" -u dashboard.py --share --send
+REM --publish also pushes it to the always-on public URL (GitHub Pages), which is
+REM the only copy that survives this PC being switched off. Needs SITE_REPO_URL in
+REM .env; without it that step prints one line and does nothing.
+"%PY%" -u dashboard.py --share --publish --send

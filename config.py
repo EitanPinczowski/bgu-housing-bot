@@ -281,6 +281,17 @@ DASHBOARD_POLL_SECONDS = 45        # how often an open page checks /api/version
 # Cached listing images live here so Facebook URL expiry stops destroying them: only
 # 8 of 349 listings have permanent Telegram file_ids, the rest are FB URLs that rot.
 DASHBOARD_IMAGE_DIR = DATA_DIR / "images"
+
+# --- publishing the snapshot to an always-on URL ---------------------------------
+# The live server needs this PC awake; the scraper needs it too, so a hosted copy is
+# always a SNAPSHOT, never live. publish.py pushes the dated self-contained page to a
+# DEDICATED GitHub Pages repo — never the code repo, whose public git history would
+# then hold landlords' phone numbers permanently.
+# SITE_REPO_URL and PUBLISH_NOINDEX are read from the environment in publish.py, not
+# here: .env is loaded per entry point, so a module-level getenv in config would run
+# before load_dotenv and silently see nothing. Same reason notifier reads its token
+# lazily. Unset -> `--publish` prints one line and does nothing, like the Sheets sink.
+SITE_DIR = DATA_DIR / "site"          # local checkout of the published-site repo
 DASHBOARD_MAX_IMAGE_BYTES = 4 * 1024 * 1024
 # Only consider stops/POIs within this straight-line distance before routing —
 # keeps the OSRM table small and stops us reporting a "nearby" stop that isn't.
