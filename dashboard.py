@@ -269,6 +269,8 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 .wr-cas{stroke:#fff;stroke-width:6}
 .wr{stroke:#7b1fa2;stroke-width:3}
 .dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
+.hit{fill:transparent;cursor:pointer}
+.map svg.placing .hit{pointer-events:none}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
 .cl.stack{cursor:cell}                     /* a stack fans out, it doesn't zoom */
 .spider-leg{stroke:#8a94a6;stroke-width:1;stroke-opacity:.65;
@@ -658,6 +660,10 @@ function initLayers(){
    never lies about how much is there. Clustering runs over the FILTERED rows, so
    the badges always add up to the counter above the map. */
 const CLUSTER_PX = 19;
+// Invisible tap target around each dot, in REAL screen pixels. Sizing it in viewBox
+// units looked right until measured: the map renders ~0.36 px per unit in a narrow
+// pane, so an 11-unit radius came out as an 8px target. unitsPerPx converts.
+const HIT_RADIUS_PX = window.matchMedia('(pointer:coarse)').matches ? 22 : 14;
 const el = t => document.createElementNS('http://www.w3.org/2000/svg', t);
 
 function clusterOf(rows){
@@ -694,6 +700,19 @@ function isApprox(r){
          r.geo_confidence === 'none' || !r.geo_confidence;
 }
 
+/* A dot is 5/zoom units — about 4px on screen, which is not a target anyone can hit,
+   least of all on a phone. Each one gets an invisible companion circle carrying the
+   same key, so the thing you aim at is ~22px while the thing you SEE stays small. */
+function mkHit(r, x, y, unitsPerPx){
+  const h = el('circle');
+  h.setAttribute('cx', x.toFixed(1));
+  h.setAttribute('cy', y.toFixed(1));
+  h.setAttribute('r', (HIT_RADIUS_PX * unitsPerPx).toFixed(2));
+  h.setAttribute('class', 'hit');
+  h.dataset.key = r.dedup_key;
+  return h;
+}
+
 function mkDot(r, x, y, k, colour){
   /* Hollow = we do not actually know where this flat is, only its street or
      neighbourhood. Solid = a house number. Same tier colour either way, so the
@@ -727,6 +746,8 @@ function drawDots(rows){
   g.id = 'dots';
   const byScore = $('bycolor').value === 'score';
   const k = zoomFactor();
+  const svgBox = svg.getBoundingClientRect();
+  const unitsPerPx = view.w / (svgBox.width || 1);
   const fill = r => byScore ? scoreColor(r.eff_score)
                             : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
   let n = 0, clusters = 0;
@@ -735,6 +756,7 @@ function drawDots(rows){
     n += b.rows.length;
     if (fanned && b.rows.every(r => fanned.has(r.dedup_key))) continue;   // drawn below
     if (b.rows.length === 1){
+      g.appendChild(mkHit(b.rows[0], b.x, b.y, unitsPerPx));
       g.appendChild(mkDot(b.rows[0], b.x, b.y, k, fill(b.rows[0])));
       continue;
     }
@@ -776,7 +798,7 @@ function drawDots(rows){
     grp.append(c, t, ttl);
     g.appendChild(grp);
   }
-  if (spider) drawSpider(g, k, fill);
+  if (spider) drawSpider(g, k, fill, unitsPerPx);
   svg.appendChild(g);
   $('mapcount').textContent = n + ' על המפה' +
     (clusters ? ' · ' + clusters + ' קבוצות' : '');
@@ -786,7 +808,7 @@ function drawDots(rows){
    Zoom cannot separate dots that share a coordinate, so the only honest way to reach
    them is to move them off it deliberately, on leader lines that show where they
    really came from. */
-function drawSpider(g, k, fill){
+function drawSpider(g, k, fill, unitsPerPx){
   const R = 34 / k;                                   // constant on screen
   const rows = spider.rows;
   const grp = el('g');
@@ -812,6 +834,7 @@ function drawSpider(g, k, fill){
     leg.setAttribute('y2', y.toFixed(1));
     leg.setAttribute('class', 'spider-leg');
     grp.appendChild(leg);
+    grp.appendChild(mkHit(r, x, y, unitsPerPx));
     grp.appendChild(mkDot(r, x, y, k, fill(r)));
   });
   g.appendChild(grp);
@@ -1256,9 +1279,20 @@ function initPlacing(){
 function initCard(){
   const svg = document.querySelector('.map svg');
   if (!svg) return;
+  /* CLICK IS ALWAYS BOUND. It used to live in the `else` of this branch, so on any
+     device that reports hover — every desktop, and plenty of touch laptops and mobile
+     browsers — clicking a dot did nothing at all. Hover is an ADDITION for pointer
+     devices, never the only way in. */
+  svg.addEventListener('click', ev => {
+    if (placing) return;                       // place-mode owns the next tap
+    const dot = ev.target.closest('.dot, .hit');
+    if (!dot){ if (!ev.target.closest('.cl')) hideCard(); return; }
+    const r = rowByKey(dot.dataset.key);
+    if (r) showCard(r, dot);
+  });
   if (CAN_HOVER){
     svg.addEventListener('mouseover', ev => {
-      const dot = ev.target.closest('.dot');
+      const dot = ev.target.closest('.dot, .hit');
       if (!dot) return;
       const r = rowByKey(dot.dataset.key);
       if (r) showCard(r, dot);
@@ -1269,13 +1303,6 @@ function initCard(){
     });
     $('card').addEventListener('mouseenter', () => clearTimeout(hideTimer));
     $('card').addEventListener('mouseleave', hideCard);
-  } else {
-    svg.addEventListener('click', ev => {
-      const dot = ev.target.closest('.dot');
-      if (!dot){ hideCard(); return; }
-      const r = rowByKey(dot.dataset.key);
-      if (r) showCard(r, dot);
-    });
   }
   $('card').querySelector('.x').addEventListener('click', hideCard);
   $('card').addEventListener('click', async ev => {

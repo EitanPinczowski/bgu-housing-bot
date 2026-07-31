@@ -350,3 +350,29 @@ def test_an_unconfigured_publisher_leaves_no_broken_link(temp_db, monkeypatch, t
     _save("k1", "רגר 5")
     page = dashboard.build_share().read_text(encoding="utf-8")
     assert "צילום מצב" in page and "לגרסה המתעדכנת" not in page
+
+
+def test_click_opens_a_listing_on_every_device(temp_db, monkeypatch, tmp_path):
+    """The bug: click lived in the `else` of `if (CAN_HOVER)`, so on every desktop and
+    many touch laptops clicking a dot did nothing at all. Verified live before the fix
+    (cardOpenedByClick: false). Hover is an ADDITION for pointer devices, never the
+    only way in."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    click_at = page.index("svg.addEventListener('click'")
+    hover_at = page.index("if (CAN_HOVER){")
+    assert click_at < hover_at, "click must be bound unconditionally, before the hover branch"
+    assert ".dot, .hit" in page                 # the enlarged target counts as the dot
+
+
+def test_the_tap_target_is_sized_in_screen_pixels(temp_db, monkeypatch, tmp_path):
+    """A dot is ~4px. Sizing the hit area in viewBox units *looked* right and measured
+    8px, because the map renders ~0.36px per unit in a narrow pane."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "HIT_RADIUS_PX" in page
+    assert "const unitsPerPx = view.w / (svgBox.width || 1);" in page
+    assert "HIT_RADIUS_PX * unitsPerPx" in page
+    assert ".hit{fill:transparent" in page      # invisible, but hittable
