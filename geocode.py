@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import statistics
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -66,6 +67,10 @@ _PRECISE_SOURCES = {"static", "google", "osm_addr", "interpolated", "manual"}
 #   area   — a whole neighborhood centroid
 _CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
                "osm_addr": "exact", "interpolated": "high",
+               # a projection past/around the known anchors: much better than the
+               # street centroid it replaces, but deliberately absent from
+               # _PRECISE_SOURCES so the boundary-street caution still applies
+               "extrapolated": "high",
                "overpass": "street", "nominatim": "street"}
 
 
@@ -172,7 +177,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 3      # 3: Hebrew gershayim folded before the external tiers
+GEOCODE_LOGIC_VERSION = 4      # 4: house-number extrapolation + PBF anchors
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -309,7 +314,7 @@ def geocode_cached(location_text: Optional[str]):
     if hn:                                    # local interpolation, no network
         for cand in _candidate_tokens(location_text)[:2]:
             real, _how = streets.canonical(cand)
-            pt = interpolate_house(real or cand, hn)
+            pt, _how = place_house(real or cand, hn)
             if pt:
                 return pt
 
@@ -380,9 +385,9 @@ def geocode_detailed(location_text: Optional[str]):
     if hn:
         for cand in _candidate_tokens(location_text)[:2]:
             real, _how = streets.canonical(cand)
-            pt = interpolate_house(real or cand, hn)
+            pt, how = place_house(real or cand, hn)
             if pt:
-                return pt, "interpolated"
+                return pt, how
 
     # 2) cache of earlier lookups (success or a still-fresh miss)
     kind, coords, source = _cache_lookup(norm)
@@ -653,6 +658,98 @@ def _haversine_m(lat1, lon1, lat2, lon2) -> float:
     dphi, dlmb = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
     return 2 * 6371000.0 * math.asin(math.sqrt(a))
+
+
+# How far past the last known anchor we will project a house number. Measured against
+# OSM ground truth, interpolation between anchors lands p50 53 m / p90 101 m out; the
+# external street-level fallbacks it replaces land p90 595 m and as much as 3.5 km out
+# (ההגנה 89 via Nominatim). So a bounded projection is far better than falling through —
+# but only bounded: past ~150 m the numbering assumption stops being evidence.
+MAX_EXTRAPOLATE_M = 150.0
+
+_median_gap: Optional[float] = None
+
+
+def _median_metres_per_number() -> float:
+    """Typical metres between consecutive house numbers, across every street that has
+    enough anchors to measure. Used only for a street with a SINGLE anchor, where there
+    is no local gradient to read — the city's own typical spacing is a far better guess
+    than the street's midpoint."""
+    global _median_gap
+    if _median_gap is not None:
+        return _median_gap
+    gaps = []
+    for street, known in _load_anchors().items():
+        pts, idx = _street_axis(street)
+        if len(known) < 2 or len(pts) < 2:
+            continue
+        anchors = sorted((int(k), v[idx]) for k, v in known.items() if str(k).isdigit())
+        for (n0, p0), (n1, p1) in zip(anchors, anchors[1:]):
+            if n1 == n0:
+                continue
+            # the axis is a degree coordinate; convert to metres the same way the
+            # projection does elsewhere
+            metres = abs(p1 - p0) * 111320.0
+            per = metres / (n1 - n0)
+            if 0.5 <= per <= 40:                   # ignore absurd pairs (bad tagging)
+                gaps.append(per)
+    _median_gap = statistics.median(gaps) if gaps else 8.0
+    return _median_gap
+
+
+def place_house(street: Optional[str], number: Optional[str]):
+    """((lat, lon), source) for a house number on a street, or (None, None).
+
+    Three cases, in descending order of evidence:
+      • the number sits between two known anchors  -> "interpolated"
+      • it sits past them, within MAX_EXTRAPOLATE_M -> "extrapolated"
+      • the street has ONE anchor, and the number is within MAX_EXTRAPOLATE_M of it at
+        the city's typical spacing                 -> "extrapolated"
+
+    "extrapolated" is deliberately NOT in _PRECISE_SOURCES: it is a projection, not a
+    survey, so `pipeline._classify` keeps applying its boundary-street and near-edge
+    caution to it. It is graded `high` for display because it is still far better than
+    the street centroid it replaces."""
+    pt = interpolate_house(street, number)
+    if pt:
+        return pt, "interpolated"
+    if not street or not number:
+        return None, None
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return None, None
+
+    known = _load_anchors().get(street) or {}
+    pts, idx = _street_axis(street)
+    anchors = sorted((int(k), v[idx]) for k, v in known.items() if str(k).isdigit())
+    if not anchors or len(pts) < 2:
+        return None, None
+
+    if len(anchors) >= 2:
+        # project past whichever end we fell off, using THIS street's own gradient
+        lo, hi = anchors[0], anchors[-1]
+        span_n, span_p = hi[0] - lo[0], hi[1] - lo[1]
+        if span_n <= 0:
+            return None, None
+        per = span_p / span_n
+        edge = hi if n > hi[0] else lo
+        target = edge[1] + (n - edge[0]) * per
+        overshoot = abs(target - edge[1]) * 111320.0
+    else:
+        one = anchors[0]
+        # no local gradient with a single anchor — use the city's typical spacing, and
+        # the street's own direction so we move ALONG it rather than across it
+        per = _median_metres_per_number() / 111320.0
+        lo_p, hi_p = min(p[idx] for p in pts), max(p[idx] for p in pts)
+        direction = 1.0 if (one[1] - lo_p) < (hi_p - one[1]) else -1.0
+        target = one[1] + direction * (n - one[0]) * per
+        overshoot = abs(target - one[1]) * 111320.0
+
+    if overshoot > MAX_EXTRAPOLATE_M:
+        return None, None                          # too far to still be evidence
+    # never leave the street: clamp to its real geometry
+    return min(pts, key=lambda p: abs(p[idx] - target)), "extrapolated"
 
 
 def interpolate_house(street: Optional[str], number: Optional[str]):

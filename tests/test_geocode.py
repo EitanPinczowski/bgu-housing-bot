@@ -467,3 +467,47 @@ def test_a_hand_placed_point_outranks_every_geocoder():
     assert geocode.is_precise_source("manual") is True
     assert geocode.confidence(None) == "none"
     assert geocode.confidence("overpass") == "street"
+
+
+# --- projecting past / around the anchors ------------------------------------------
+def _anchored(monkeypatch, anchors, pts):
+    monkeypatch.setattr(geocode, "_anchors", anchors)
+    monkeypatch.setattr(geocode, "_street_axis", lambda st: (pts, 0))
+    monkeypatch.setattr(geocode, "_median_gap", 10.0)
+
+
+def test_a_number_past_the_last_anchor_is_projected_not_abandoned(monkeypatch):
+    """Refusing entirely sent the listing to the street centroid, which measured up to
+    3.5 km out via the external fallbacks. A bounded projection is real evidence."""
+    pts = [(31.2600 + i * 0.0002, 34.79) for i in range(20)]
+    _anchored(monkeypatch, {"X": {"2": [31.2600, 34.79], "10": [31.2608, 34.79]}}, pts)
+    pt, how = geocode.place_house("X", "6")
+    assert how == "interpolated"                       # in range: unchanged
+    pt, how = geocode.place_house("X", "14")
+    assert how == "extrapolated" and pt is not None    # just past: projected
+    assert pt[0] > 31.2608                             # …in the right direction
+
+
+def test_extrapolation_is_bounded(monkeypatch):
+    """Past the cap the numbering assumption stops being evidence and we say so."""
+    pts = [(31.2600 + i * 0.0002, 34.79) for i in range(200)]
+    _anchored(monkeypatch, {"X": {"2": [31.2600, 34.79], "10": [31.2608, 34.79]}}, pts)
+    assert geocode.place_house("X", "9999")[0] is None
+
+
+def test_a_single_anchor_street_is_usable(monkeypatch):
+    """24 streets have exactly one anchor. With the city's typical spacing that still
+    beats the centroid, and it stays bounded."""
+    pts = [(31.2600 + i * 0.0002, 34.79) for i in range(20)]
+    _anchored(monkeypatch, {"X": {"10": [31.2604, 34.79]}}, pts)
+    pt, how = geocode.place_house("X", "16")
+    assert how == "extrapolated" and pt is not None
+    assert geocode.place_house("X", "900")[0] is None   # still capped
+
+
+def test_extrapolated_is_high_but_never_counts_as_precise():
+    """It is a projection, not a survey: pipeline._classify must keep applying its
+    boundary-street and near-edge caution, which keys on is_precise_source."""
+    assert geocode.confidence("extrapolated") == "high"
+    assert geocode.is_precise_source("extrapolated") is False
+    assert geocode.is_precise_source("interpolated") is True
