@@ -163,7 +163,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, dashboard.render_live().encode("utf-8"),
                               "text/html; charset=utf-8")
         if route == "/api/version":
-            return self._json(200, storage.dashboard_version())
+            # osrm.alive() is a once-per-process probe, so this costs nothing on the
+            # poll. It rides along here so a dead router shows in the status line
+            # BEFORE you tap 🚶 and get a message.
+            import osrm
+            return self._json(200, storage.dashboard_version() | {"osrm": osrm.alive()})
         if route == "/api/listings.json":
             return self._json(200, {"listings": dashboard.rows_for_api(),
                                     "version": storage.dashboard_version()})
@@ -221,7 +225,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/walk":
             # POST, not GET /api/walk/<key>, because a dedup_key is phone|address —
             # a GET would write a landlord's phone number into the URL and the log.
-            return self._json(200, dashboard.walk_route(key))
+            dest = payload.get("dest")
+            return self._json(200, dashboard.walk_route(
+                key, dest if isinstance(dest, dict) else None))
         return self._send(404, b"not found")
 
     def _route_plan(self, payload):

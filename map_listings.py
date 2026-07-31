@@ -153,6 +153,14 @@ STREET_CSS = """
 .ring{fill:none;stroke:#2e7d32;stroke-opacity:.30;stroke-width:1;stroke-dasharray:4,4;
       vector-effect:non-scaling-stroke}
 .ring-max{stroke:#e08e0b;stroke-opacity:.55;stroke-width:1.6;stroke-dasharray:none}
+.amen-bg{fill:#fff;fill-opacity:.72;stroke:#8a94a6;stroke-opacity:.5;stroke-width:1;
+      vector-effect:non-scaling-stroke}
+/* the amenities of the listing whose card is open — drawn brighter than the fixed
+   pins, with a hairline back to the flat, because they answer "from HERE" */
+.myamen-leg{stroke:#7b1fa2;stroke-width:1.4;stroke-opacity:.75;stroke-dasharray:4,3;
+      vector-effect:non-scaling-stroke;pointer-events:none}
+.myamen-bg{fill:#7b1fa2;fill-opacity:.16;stroke:#7b1fa2;stroke-width:1.6;
+      vector-effect:non-scaling-stroke}
 /* layer switches — one class on the <svg> hides a whole layer. Each layer has its
    own marker class rather than a :not() chain, so adding a label somewhere else on
    the map can't accidentally join a layer it has nothing to do with. */
@@ -283,8 +291,15 @@ _MAX_PINS_PER_TARGET = 12
 
 
 def _amenity_pins():
-    """(lat, lon, icon, label) for the transit stops and places in amenities.json, so the
-    map can show WHY a listing's amenity line says what it says. Missing file -> none."""
+    """(lat, lon, icon, label) for the FIXED landmarks in amenities.json — the 669 stops
+    and the gym — so the map shows the handful of places worth always seeing.
+
+    A target with more candidates than _MAX_PINS_PER_TARGET is skipped, which in
+    practice drops the "a stop with a bus to the train station" target: it legitimately
+    matches 428 of the city's stops, and pinning any subset of them says nothing.
+    The train-bound stop that MATTERS is the one a given listing would actually use, and
+    that is drawn per-listing when its card opens (see amenities.locate) rather than
+    scattered over the whole map. Missing file -> none."""
     try:
         data = json.loads(config.AMENITIES_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -353,9 +368,12 @@ def build_base_svg(placed=None):
     # amenity pins (the 669 stops, the bus to the train, the gym)
     for la, lo, icon, name in pins:
         px, py = xy(la, lo)
+        # 11px was a ~11px tap target and easy to miss entirely; 15 with a soft disc
+        # behind it reads as a thing you can point at.
+        svg.append(f'<circle class="amen amen-bg" cx="{px:.1f}" cy="{py:.1f}" r="9"/>')
         svg.append(f'<text class="slabel amen" data-minzoom="1" x="{px:.1f}" '
-                   f'y="{py:.1f}" font-size="11" text-anchor="middle" '
-                   f'dominant-baseline="central" opacity="0.75">{html.escape(icon)}'
+                   f'y="{py:.1f}" font-size="15" text-anchor="middle" '
+                   f'dominant-baseline="central">{html.escape(icon)}'
                    f'<title>{html.escape(name)}</title></text>')
     svg += walk_rings_svg(xy)
     svg += street_labels_svg(street_labels)      # names last, so they're never buried

@@ -205,24 +205,59 @@ def test_walk_route_says_so_when_osrm_is_down(temp_db, monkeypatch):
     assert code == 200 and out == {"ok": False, "reason": "osrm_down"}
 
 
-def test_walk_route_returns_the_nearest_gate_not_the_first(temp_db, monkeypatch):
+def test_walk_route_asks_which_gate_once_then_fetches_only_that_path(temp_db,
+                                                                     monkeypatch):
+    """It used to fetch a full geometry from every gate and keep the shortest: four
+    sequential calls, so a sick router took four 15-second timeouts to admit it. One
+    table call picks the gate, one route call draws it."""
+    import config
     import dashboard
     monkeypatch.setattr(dashboard, "_rows",
                         lambda: [{"dedup_key": "k1", "lat": 31.26, "lon": 34.80}])
-    seen = []
+    gates = list(config.GATES.values())
+    table_calls, geom_calls = [], []
 
-    def fake(lat, lon, gate):
-        seen.append(gate)
-        far = len(seen) != 2
-        return {"minutes": 30.0 if far else 4.0, "metres": 900 if far else 300,
-                "coords": [[lat, lon], [gate["lat"], gate["lon"]]]}
+    def fake_table(lat, lon, dests):
+        table_calls.append(dests)
+        return [30.0, 4.0] + [30.0] * (len(dests) - 2)      # the 2nd gate is nearest
 
-    monkeypatch.setattr(dashboard.osrm, "foot_geometry", fake)
+    def fake_geom(lat, lon, target):
+        geom_calls.append(target)
+        return {"minutes": 4.0, "metres": 300,
+                "coords": [[lat, lon], [target["lat"], target["lon"]]]}
+
+    monkeypatch.setattr(dashboard.osrm, "table_minutes", fake_table)
+    monkeypatch.setattr(dashboard.osrm, "foot_geometry", fake_geom)
     out = json.loads(_post("/api/walk?token=s3cret", {"key": "k1"})[1])
-    assert out["ok"] and out["minutes"] == 4.0 and out["metres"] == 300
-    assert out["gate"] == seen[1].get("name")
+    assert len(table_calls) == 1 and len(geom_calls) == 1    # 2 calls, not len(GATES)
+    assert geom_calls[0] == gates[1]                         # …and the nearest one
+    assert out["ok"] and out["minutes"] == 4.0 and out["gate"] == gates[1].get("name")
     # lat,lon for the projector — OSRM's own lon,lat order would put the line in Egypt
     assert out["coords"][0] == [31.26, 34.80]
+
+
+def test_walk_route_can_target_an_amenity_instead_of_a_gate(temp_db, monkeypatch):
+    """"18 דק׳ to the 669" is worth being able to check rather than trust. With a dest
+    the gate lookup is skipped entirely — no table call at all."""
+    import dashboard
+    monkeypatch.setattr(dashboard, "_rows",
+                        lambda: [{"dedup_key": "k1", "lat": 31.26, "lon": 34.80}])
+    called = []
+    monkeypatch.setattr(dashboard.osrm, "table_minutes",
+                        lambda *a, **k: called.append("table") or [1.0])
+    monkeypatch.setattr(dashboard.osrm, "foot_geometry",
+                        lambda lat, lon, t: {"minutes": 7.5, "metres": 610,
+                                             "coords": [[lat, lon], [t["lat"], t["lon"]]]})
+    out = json.loads(_post("/api/walk?token=s3cret",
+                           {"key": "k1", "dest": {"lat": 31.271, "lon": 34.798,
+                                                  "label": "מרכז אורן"}})[1])
+    assert out["ok"] and out["gate"] == "מרכז אורן" and out["minutes"] == 7.5
+    assert called == []                                      # no gate lookup
+    assert out["coords"][-1] == [31.271, 34.798]
+
+    bad = json.loads(_post("/api/walk?token=s3cret",
+                           {"key": "k1", "dest": {"lat": "here"}})[1])
+    assert bad == {"ok": False, "reason": "bad_destination"}
 
 
 # --- correcting a location ----------------------------------------------------------

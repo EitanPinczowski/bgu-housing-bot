@@ -69,9 +69,10 @@ def _rows() -> list:
         r["note"] = notes.get(key, "")
         r["post_text"] = post_text.get(key, "")
         try:
-            r["amenity_text"] = " · ".join(amenities.describe(json.loads(r["amenities"] or "{}")))
+            am = json.loads(r["amenities"] or "{}")
+            r["amenity_text"] = " · ".join(amenities.describe(am))
         except Exception:
-            r["amenity_text"] = ""
+            am, r["amenity_text"] = {}, ""
         # coordinates for the map dot — geocode is cached, so this is a dict lookup.
         # A hand-placed listing wins, exactly as it does in pipeline._classify; the
         # map must show where the user PUT the flat, not where the geocoder guessed.
@@ -83,6 +84,9 @@ def _rows() -> list:
             coords = geocode.geocode_cached(r["address"])
             r["lat"], r["lon"] = (coords if coords else (None, None))
         r["manual_location"] = bool(pinned)
+        # where THIS listing's bus stops and gym actually are, so the map can point at
+        # them and the card can offer a walking route to each
+        r["amenity_points"] = amenities.locate(am, r["lat"], r["lon"])
         # How much to trust that dot. 41% of listings resolve only to a street or
         # neighbourhood centroid, which is why so many sit on top of each other; the
         # map has to say so rather than drawing them all as if they were surveyed.
@@ -131,7 +135,8 @@ def rows_for_api() -> list:
             "walk_minutes", "lease_start", "contact", "source_url", "group", "floor",
             "amenity_text", "first_seen", "summary", "saved", "contacted", "stale",
             "broker", "note", "post_text", "lat", "lon", "photos", "breakdown",
-            "geocode_source", "geo_confidence", "manual_location")}
+            "geocode_source", "geo_confidence", "manual_location",
+            "amenity_points")}
             | {"wa": _wa_link(r["contact"])})
     return out
 
@@ -972,6 +977,16 @@ $('tb').addEventListener('mouseover', ev => {
 const CAN_HOVER = window.matchMedia('(hover: hover)').matches;
 let cardKey = null, hideTimer = null;
 
+/* One 🚶 per transport item, so "18 דק׳ to the 669" can be checked rather than
+   trusted. Live-only: it's a real OSRM call. */
+function amenityWalks(r){
+  if (!window.__LIVE__ || !r.amenity_points || !r.amenity_points.length) return '';
+  const bits = r.amenity_points.map((a, i) =>
+    '<button data-card="amwalk" data-i="' + i + '" title="מסלול הליכה אל ' +
+    esc(a.name) + '">' + a.icon + '🚶</button>').join('');
+  return '<div class="btns amwalks">' + bits + '</div>';
+}
+
 function cardHtml(r){
   /* Only what decides a click. The note and the full metric list live in the row
      expander — repeating them here is what made the card cover the map. */
@@ -1022,6 +1037,7 @@ function cardHtml(r){
       (flags ? ' · ' + esc(flags) : '') + '</div></div></div>' +
     precision +
     (r.amenity_text ? '<div class="am">' + esc(r.amenity_text) + '</div>' : '') +
+    amenityWalks(r) +
     '<div class="btns">' + btn(r.wa, '💬', 'וואטסאפ') + btn(r.source_url, '🔗', 'הפוסט') +
       dirs + walk + place + votes + '</div>';
 }
@@ -1030,6 +1046,7 @@ function showCard(r, dot){
   clearTimeout(hideTimer);
   cardKey = r.dedup_key;
   $('cardbody').innerHTML = cardHtml(r);
+  drawMyAmenities(r);                     // point at THIS flat's stops and gym
   const card = $('card');
   card.classList.add('on');
   /* Below 700px the CSS turns the card into a bottom sheet; positioning it beside
@@ -1063,34 +1080,46 @@ function showCard(r, dot){
   }
 }
 
-function hideCard(){ $('card').classList.remove('on'); cardKey = null; }
+function hideCard(){
+  $('card').classList.remove('on');
+  cardKey = null;
+  const am = document.getElementById('myamen');
+  if (am) am.remove();
+}
 
 /* ---------- the real walking route ----------
    The walk column is a number; this draws the line it came from. Straight-line would
    be a lie here — the railway and Soroka are both in the way — so this is OSRM or
    nothing, and "nothing" says so rather than falling back to a fiction. */
-async function drawWalk(key, btn){
+async function drawWalk(key, btn, dest){
   const svg = document.querySelector('.map svg');
   const old = document.getElementById('walkroute');
   const note = $('walknote');
+  const tag = key + '|' + (dest ? dest.label : '');
   if (old){
-    const same = old.dataset.key === key;
+    const same = old.dataset.key === tag;
     old.remove();
     note.style.display = 'none';
-    if (same) return;                             // clicking 🚶 again clears the line
+    if (same) return;                             // clicking the same 🚶 again clears it
   }
+  const label = btn ? btn.textContent : '';
   if (btn) btn.textContent = '…';
-  const out = await post('/api/walk', {key: key});
-  if (btn) btn.textContent = '🚶';
+  const out = await post('/api/walk', dest ? {key: key, dest: dest} : {key: key});
+  if (btn) btn.textContent = label || '🚶';
   if (!out || !out.ok){
-    note.textContent = out && out.reason === 'no_location'
-      ? 'אין מיקום לדירה הזו' : 'OSRM כבוי — אין מסלול אמיתי להראות';
+    // Name the actual failure. One message for everything meant a dead Docker
+    // container and a listing with no coordinates looked identical.
+    const WHY = {no_location: 'לדירה הזו אין מיקום על המפה',
+                 bad_destination: 'יעד לא תקין',
+                 osrm_down: 'שרת המסלולים (OSRM) לא זמין — הפעילו את Docker'};
+    note.textContent = (out && WHY[out.reason]) ||
+      'לא התקבל מסלול — בדקו ש-serve_dashboard ו-OSRM רצים';
     note.style.display = '';
     return;
   }
   const g = el('g');
   g.id = 'walkroute';
-  g.dataset.key = key;
+  g.dataset.key = tag;                    // so the same button toggles it off
   const d = out.coords.map((c, i) => (i ? 'L' : 'M') + project(c[0], c[1])
                                        .map(v => v.toFixed(1)).join(' ')).join(' ');
   for (const cls of ['wr-cas', 'wr']){            // casing + line, so it reads over streets
@@ -1100,10 +1129,49 @@ async function drawWalk(key, btn){
     g.appendChild(p);
   }
   svg.appendChild(g);
-  note.textContent = '🚶 ' + out.minutes + ' דק׳ · ' + out.metres + ' מ׳ אל ' + out.gate +
-                     ' — לחצו שוב לניקוי';
+  note.textContent = '🚶 ' + out.minutes + ' דק׳ · ' + out.metres + ' מ׳ אל ' +
+                     (out.gate || (dest && dest.label) || 'היעד') + ' — לחצו שוב לניקוי';
   note.style.display = '';
   fitTo(out.coords.map(c => ({lat: c[0], lon: c[1]})));
+}
+
+/* ---------- the open listing's own transport ----------
+   The global layer can only show fixed landmarks (the 669 stops, the gym). The stop
+   that matters is the one THIS flat would use, and that is per-listing — so it is
+   drawn when its card opens, with a hairline back to the flat. */
+function drawMyAmenities(r){
+  const svg = document.querySelector('.map svg');
+  const old = document.getElementById('myamen');
+  if (old) old.remove();
+  if (!svg || !r || !r.amenity_points || !r.amenity_points.length || !r.lat) return;
+  const k = zoomFactor();
+  const g = el('g');
+  g.id = 'myamen';
+  const home = project(r.lat, r.lon);
+  for (const a of r.amenity_points){
+    const p = project(a.lat, a.lon);
+    const leg = el('line');
+    leg.setAttribute('x1', home[0].toFixed(1)); leg.setAttribute('y1', home[1].toFixed(1));
+    leg.setAttribute('x2', p[0].toFixed(1));    leg.setAttribute('y2', p[1].toFixed(1));
+    leg.setAttribute('class', 'myamen-leg');
+    g.appendChild(leg);
+    const bg = el('circle');
+    bg.setAttribute('cx', p[0].toFixed(1)); bg.setAttribute('cy', p[1].toFixed(1));
+    bg.setAttribute('r', (11 / k).toFixed(2));
+    bg.setAttribute('class', 'myamen-bg');
+    const t = el('text');
+    t.setAttribute('x', p[0].toFixed(1)); t.setAttribute('y', p[1].toFixed(1));
+    t.setAttribute('font-size', (15 / k).toFixed(2));
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'central');
+    t.textContent = a.icon;
+    const ttl = el('title');
+    ttl.textContent = a.icon + ' ' + a.name +
+      (a.minutes != null ? ' · ' + Math.round(a.minutes) + ' דק׳ הליכה' : '');
+    t.appendChild(ttl);
+    g.append(bg, t);
+  }
+  svg.appendChild(g);
 }
 
 /* ---------- place-mode: tap the map to correct a location ----------
@@ -1215,6 +1283,12 @@ function initCard(){
     if (!b || !cardKey) return;
     const act = b.dataset.card;
     if (act === 'walk'){ await drawWalk(cardKey, b); return; }
+    if (act === 'amwalk'){
+      const r = rowByKey(cardKey);
+      const a = r && r.amenity_points[+b.dataset.i];
+      if (a) await drawWalk(cardKey, b, {lat: a.lat, lon: a.lon, label: a.name});
+      return;
+    }
     if (act === 'place'){ setPlacing(cardKey); return; }
     if (act === 'unplace'){
       const out = await post('/api/locate', {key: cardKey, clear: true});
@@ -1307,6 +1381,9 @@ function drawCompare(){
 async function poll(){
   try {
     const v = await (await fetch('/api/version?token=' + encodeURIComponent(TOKEN))).json();
+    // Surface a dead router before it's needed, rather than after a failed tap.
+    $('osrmstate').textContent = v.osrm === false
+      ? ' · ⚠️ שרת המסלולים כבוי (Docker) — 🚶 לא יעבוד' : '';
     const sig = JSON.stringify(v);
     if (sig !== window.__VER__){
       window.__VER__ = sig;
@@ -1413,7 +1490,8 @@ def render(live: bool, snapshot: bool = False) -> str:
 <h1>לוח דירות — BGU</h1>
 {banner}
 <p class="sub">{len(rows)} רשומות · {matches} התאמות · {len(placed)} על המפה ·
-  <span id="newcount"></span><span class="live">{mode}</span></p>
+  <span id="newcount"></span><span class="live">{mode}</span><span id="osrmstate"
+  class="live"></span></p>
 <div class="bar">
   <input id="q" type="search" placeholder="חיפוש — כולל טקסט הפוסט המקורי…">
   <label>סטטוס <select id="st"><option value="">הכל</option>
@@ -1468,8 +1546,9 @@ window.__POLL__ = {config.DASHBOARD_POLL_SECONDS};
 </html>"""
 
 
-def walk_route(key: str) -> dict:
-    """The real walking path from one listing to its nearest campus gate.
+def walk_route(key: str, dest: dict | None = None) -> dict:
+    """The real walking path from one listing to a campus gate — or, with `dest`, to
+    its bus stop or the gym.
 
     The walk column is a number; this is the line it came from — whether you cross
     the railway, go round Soroka, or walk straight down רגר. OSRM only: there is no
@@ -1478,15 +1557,30 @@ def walk_route(key: str) -> dict:
     row = next((r for r in _rows() if r["dedup_key"] == key), None)
     if not row or row["lat"] is None:
         return {"ok": False, "reason": "no_location"}
-    best = None
-    for gate in config.GATES.values():
-        got = osrm.foot_geometry(row["lat"], row["lon"], gate)
-        if got and (best is None or got["minutes"] < best["minutes"]):
-            best = got | {"gate": gate.get("name", "")}
-    if not best:
+
+    if dest:
+        try:
+            target = {"lat": float(dest["lat"]), "lon": float(dest["lon"]),
+                      "name": str(dest.get("label") or "")}
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "reason": "bad_destination"}
+    else:
+        # Ask which gate is nearest with ONE table call, then fetch only that path.
+        # Four sequential route calls meant four 15-second timeouts to discover the
+        # router was down — long past when someone on a phone gives up.
+        gates = list(config.GATES.values())
+        mins = osrm.table_minutes(row["lat"], row["lon"],
+                                  [(g["lat"], g["lon"]) for g in gates])
+        pairs = [(m, g) for m, g in zip(mins or [], gates) if m is not None]
+        if not pairs:
+            return {"ok": False, "reason": "osrm_down"}
+        target = min(pairs, key=lambda p: p[0])[1]
+
+    got = osrm.foot_geometry(row["lat"], row["lon"], target)
+    if not got:
         return {"ok": False, "reason": "osrm_down"}
-    return {"ok": True, "gate": best["gate"], "coords": best["coords"],
-            "minutes": round(best["minutes"], 1), "metres": round(best["metres"])}
+    return {"ok": True, "gate": target.get("name", ""), "coords": got["coords"],
+            "minutes": round(got["minutes"], 1), "metres": round(got["metres"])}
 
 
 def relocate(key: str, lat: float, lon: float, scope: str = "listing") -> dict:

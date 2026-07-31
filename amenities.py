@@ -145,6 +145,49 @@ def _nearby(lat, lon) -> dict:
     return ordered
 
 
+def locate(am: Optional[dict], lat: Optional[float], lon: Optional[float]) -> list:
+    """Where a listing's OWN amenities are, as
+    [{icon, label, name, lat, lon, minutes, route, headway_min}, …].
+
+    The stored per-listing amenity blob keeps the stop NAME and the walk time but not
+    the coordinate, so the map had nothing to point at. Rather than recomputing 292
+    listings (an OSRM table call each) just to add two numbers, the name is looked up
+    against amenities.json here — the same file the blob came from. Where a name is
+    shared by several stops (both directions of one junction), the one nearest the
+    listing is the one it was measured against.
+
+    Returns [] on anything missing, exactly like nearby()."""
+    if not am or lat is None or lon is None:
+        return []
+    try:
+        targets = _load_data().get("targets") or {}
+        out = []
+        for tkey, t in am.items():
+            pts = _points(targets.get(tkey) or {})
+            by_name = {}
+            for p in pts:
+                by_name.setdefault(p.get("name", ""), []).append(p)
+            for opt in t.get("options") or []:
+                cands = by_name.get(opt.get("name", ""))
+                if not cands:
+                    continue
+                # Both directions of a junction share one name, so name alone would
+                # put the "there" and "back" pins on the same spot — which is exactly
+                # the distinction a bus_route target exists to make.
+                if opt.get("direction_id") is not None:
+                    same_dir = [q for q in cands
+                                if q.get("direction_id") == opt["direction_id"]]
+                    cands = same_dir or cands
+                p = min(cands, key=lambda q: _haversine_m(lat, lon, q["lat"], q["lon"]))
+                out.append({"icon": t.get("icon", ""), "label": t.get("label", tkey),
+                            "name": opt.get("name", ""), "lat": p["lat"], "lon": p["lon"],
+                            "minutes": opt.get("minutes"), "route": opt.get("route"),
+                            "headway_min": opt.get("headway_min")})
+        return out
+    except Exception:
+        return []
+
+
 def describe(am: Optional[dict]) -> list:
     """Plain-text fragments for display, e.g.
         ["🚌 669 מרגר · 6 דק׳ (כל ~20 דק׳) ↔ 8 דק׳",

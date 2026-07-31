@@ -275,3 +275,56 @@ def test_describe_renders_one_fragment_per_target(wired):
 
 def test_describe_of_nothing_is_nothing():
     assert amenities.describe(None) == [] and amenities.describe({}) == []
+
+
+# --- where a listing's own amenities actually are ----------------------------------
+_DATA = {"targets": {
+    "bus669": {"icon": "🚌", "label": "669 מרגר", "kind": "bus_route", "stops": [
+        {"name": "מרכז אורן", "lat": 31.2711, "lon": 34.7979, "direction_id": 0},
+        {"name": "מרכז אורן", "lat": 31.2720, "lon": 34.7981, "direction_id": 1}]},
+    "gym": {"icon": "🏋️", "label": "חדר כושר", "kind": "place", "points": [
+        {"name": "קניון הנגב", "lat": 31.2437, "lon": 34.7951}]},
+}}
+
+
+def _with_data(monkeypatch, tmp_path, data=_DATA):
+    import json
+    import config
+    f = tmp_path / "amenities.json"
+    f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(config, "AMENITIES_PATH", f)
+    monkeypatch.setattr(amenities, "_data", None)
+
+
+def test_locate_finds_coordinates_for_a_stored_amenity_blob(monkeypatch, tmp_path):
+    """The stored blob keeps the stop NAME and the walk time but no coordinate, so the
+    map had nothing to point at. Looking the name back up beats recomputing 292
+    listings (an OSRM table call each) just to add two numbers."""
+    _with_data(monkeypatch, tmp_path)
+    am = {"gym": {"icon": "🏋️", "label": "חדר כושר",
+                  "options": [{"name": "קניון הנגב", "minutes": 26.6}]}}
+    got = amenities.locate(am, 31.26, 34.80)
+    assert len(got) == 1
+    assert (got[0]["lat"], got[0]["lon"]) == (31.2437, 34.7951)
+    assert got[0]["icon"] == "🏋️" and got[0]["minutes"] == 26.6
+
+
+def test_the_two_directions_of_a_stop_do_not_collapse(monkeypatch, tmp_path):
+    """Both directions of a junction share one name. Matching on the name alone put
+    the "there" and "back" pins on the same spot — erasing the very distinction a
+    bus_route target exists to make."""
+    _with_data(monkeypatch, tmp_path)
+    am = {"bus669": {"icon": "🚌", "label": "669", "options": [
+        {"name": "מרכז אורן", "minutes": 18.0, "direction_id": 0},
+        {"name": "מרכז אורן", "minutes": 19.3, "direction_id": 1}]}}
+    got = amenities.locate(am, 31.26, 34.80)
+    assert len(got) == 2
+    assert {(p["lat"], p["lon"]) for p in got} == {(31.2711, 34.7979), (31.2720, 34.7981)}
+
+
+def test_locate_is_never_fatal(monkeypatch, tmp_path):
+    _with_data(monkeypatch, tmp_path)
+    assert amenities.locate(None, 31.26, 34.80) == []
+    assert amenities.locate({"gym": {}}, None, None) == []
+    # a name that isn't in the data any more simply yields no pin
+    assert amenities.locate({"gym": {"options": [{"name": "נעלם"}]}}, 31.26, 34.80) == []
