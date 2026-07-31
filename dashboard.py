@@ -1478,8 +1478,17 @@ def render(live: bool, snapshot: bool = False) -> str:
     mode = ("מתעדכן אוטומטית" if live
             else "קובץ סטטי — הרץ serve_dashboard.py לעדכון חי ולגישה מהנייד")
     stamp = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
+    # A sent file has no way to tell you a fresher copy exists. Put the live URL in the
+    # banner so whoever is holding a three-day-old download can get today's.
+    live_url = ""
+    try:
+        import publish
+        live_url = publish.pages_url()
+    except Exception:
+        pass
+    link = (f' <a href="{html.escape(live_url)}">לגרסה המתעדכנת ←</a>' if live_url else "")
     banner = (f'<p class="snap">📸 צילום מצב מ־{stamp} — הנתונים לא מתעדכנים בקובץ הזה. '
-              f'דירה שנמצאה אחרי המועד הזה לא תופיע כאן.</p>' if snapshot else "")
+              f'דירה שנמצאה אחרי המועד הזה לא תופיע כאן.{link}</p>' if snapshot else "")
 
     head = "".join(f'<th data-k="{k}">{html.escape(h)}</th>' for h, k in _HEAD)
     return f"""<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
@@ -1748,8 +1757,16 @@ if __name__ == "__main__":
             publish.publish(shared)
         if "--send" in sys.argv:
             import notifier
-            ok = notifier.send_document(
-                shared, caption=f"לוח הדירות — צילום מצב {dt.date.today().isoformat()}")
+            import publish
+            # Carry the LIVE URL in the caption, not just the file. The file is a
+            # snapshot of one moment; the URL refreshes hourly and works from any
+            # device with this PC off — and without this nothing ever told anyone it
+            # exists.
+            url = publish.pages_url()
+            caption = f"לוח הדירות — צילום מצב {dt.date.today().isoformat()}"
+            if url:
+                caption += f"\n🔗 גרסה מתעדכנת: {url}"
+            ok = notifier.send_document(shared, caption=caption)
             print("sent to Telegram" if ok else "NOT sent (check the token/chat id)")
         if "--open" in sys.argv:
             webbrowser.open(shared.as_uri())

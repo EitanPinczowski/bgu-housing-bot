@@ -152,3 +152,16 @@ def test_a_fresh_clone_inherits_this_repo_s_git_identity(tmp_path, monkeypatch):
     assert ["config", "user.name", "Eitan Pinczowski"] in written
     assert ["config", "user.email", "eitanp2701@gmail.com"] in written
     assert all(cwd == str(dest) for a, cwd in calls if a[:1] == ["config"] and "--get" not in a)
+
+
+def test_pages_url_is_derived_from_the_repo_we_actually_publish_to(monkeypatch):
+    """One source of truth for the address, so the Telegram caption and the snapshot
+    banner can never point somewhere the publisher isn't pushing."""
+    monkeypatch.setenv("SITE_REPO_URL",
+                       "https://github.com/EitanPinczowski/bgu-housing-dashboard.git")
+    assert publish.pages_url() ==         "https://eitanpinczowski.github.io/bgu-housing-dashboard/"
+    monkeypatch.setenv("SITE_REPO_URL",
+                       "https://github.com/EitanPinczowski/bgu-housing-dashboard")
+    assert publish.pages_url().endswith("/bgu-housing-dashboard/")   # .git optional
+    monkeypatch.delenv("SITE_REPO_URL")
+    assert publish.pages_url() == ""             # unconfigured -> no broken link

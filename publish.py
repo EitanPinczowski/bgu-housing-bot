@@ -59,6 +59,24 @@ def noindex() -> bool:
     return (os.getenv("PUBLISH_NOINDEX") or "").lower() in ("1", "true", "yes")
 
 
+def pages_url() -> str:
+    """The public GitHub Pages URL implied by SITE_REPO_URL, or "" if unconfigured.
+
+    Derived rather than stored so there is exactly one place the address comes from:
+    the repo you actually publish to. Callers use it to put the link in front of
+    people — the Telegram caption said "here is today's file" and never mentioned
+    that a self-updating URL existed at all."""
+    url = site_repo_url()
+    if not url:
+        return ""
+    try:
+        parts = url.rstrip("/").removesuffix(".git").split("/")
+        owner, name = parts[-2], parts[-1]
+        return f"https://{owner.lower()}.github.io/{name}/"
+    except Exception:
+        return ""
+
+
 def _git(args, cwd, check=True):
     """Run git and return its stdout. Kept behind one function so the tests can stub
     every git call at a single point and never touch the network."""
@@ -166,10 +184,8 @@ def publish(snapshot: Path | None = None) -> int:
     branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=site, check=False) or "main"
     _git(["push", "--force", "origin", branch], cwd=site)
 
-    name = _repo_name(url)
-    owner = url.rstrip("/").removesuffix(".git").rsplit("/", 2)[-2]
     print(f"published {snapshot.name} ({len(page) // 1024} KB)")
-    print(f"  https://{owner}.github.io/{name}/")
+    print(f"  {pages_url()}")
     if not noindex():
         print("  public and indexable — set PUBLISH_NOINDEX=1 to keep it out of search")
     return 0

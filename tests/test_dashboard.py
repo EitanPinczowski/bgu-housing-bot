@@ -328,3 +328,25 @@ def test_normal_build_keeps_the_write_controls(temp_db, monkeypatch, tmp_path):
     page = dashboard.build()
     assert "window.__SNAPSHOT__ = false;" in page
     assert "צילום מצב" not in page
+
+
+def test_a_sent_snapshot_points_at_the_live_url(temp_db, monkeypatch, tmp_path):
+    """A downloaded file has no way to tell you a fresher copy exists — which is
+    exactly how the live URL went unnoticed after it was set up."""
+    import publish
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(publish, "pages_url",
+                        lambda: "https://example.github.io/dash/")
+    _save("k1", "רגר 5")
+    page = dashboard.build_share().read_text(encoding="utf-8")
+    assert "https://example.github.io/dash/" in page
+    assert "לגרסה המתעדכנת" in page
+
+
+def test_an_unconfigured_publisher_leaves_no_broken_link(temp_db, monkeypatch, tmp_path):
+    import publish
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(publish, "pages_url", lambda: "")
+    _save("k1", "רגר 5")
+    page = dashboard.build_share().read_text(encoding="utf-8")
+    assert "צילום מצב" in page and "לגרסה המתעדכנת" not in page
