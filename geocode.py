@@ -54,15 +54,19 @@ def is_bare_street(s: Optional[str]) -> bool:
 # Which geocoders give a PRECISE point (a specific place / house number) vs a
 # street-LEVEL point that only says "somewhere on this street". A street-level point
 # can't be trusted as GREEN on a boundary-crossing street (see pipeline).
-_PRECISE_SOURCES = {"static", "google", "osm_addr", "interpolated"}
+# "manual" = placed by hand on the dashboard map. It outranks everything: a person
+# looked at the map and said "the flat is here", which is strictly better evidence
+# than any tier below.
+_PRECISE_SOURCES = {"static", "google", "osm_addr", "interpolated", "manual"}
 
 # How much to trust a point, by the tier that produced it:
 #   exact  — a specific pinned place or an OSM house node
 #   high   — interpolated between known house numbers on the street
 #   street — somewhere on the right street (a line, not a point)
 #   area   — a whole neighborhood centroid
-_CONFIDENCE = {"static": "exact", "google": "exact", "osm_addr": "exact",
-               "interpolated": "high", "overpass": "street", "nominatim": "street"}
+_CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
+               "osm_addr": "exact", "interpolated": "high",
+               "overpass": "street", "nominatim": "street"}
 
 
 def confidence(source: Optional[str]) -> str:

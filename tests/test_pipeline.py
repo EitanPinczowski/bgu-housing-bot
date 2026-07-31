@@ -514,3 +514,32 @@ def test_a_no_amber_area_is_never_graced_into_green():
         assert pipeline._classify(e, "", None, None, [], None, commit=False).location_tier == "RED"
     finally:
         mp.undo()
+
+
+# --- a location corrected by hand is authoritative --------------------------------
+def test_a_hand_placed_listing_beats_the_geocoder(temp_db, monkeypatch):
+    """The whole point of the dashboard's place-mode. _classify is also what
+    replay.py re-runs, so if the override were consulted anywhere else instead, every
+    re-apply would silently drag the dot back to the geocoder's guess."""
+    import geocode
+    import storage
+    e = ListingExtract(is_apartment_ad=True,
+                       street_address_or_neighborhood="אוניברסיטת בן גוריון",
+                       price_per_room_ils=1500, available_rooms_count=2,
+                       contact_phone_or_link="050-1234567")
+    key = storage.make_dedup_key(e)
+    monkeypatch.setattr(geocode, "geocode_detailed",
+                        lambda t: ((31.2631, 34.8022), "cache"))   # the campus
+    plain = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert (round(plain.lat, 4), plain.geo_source) == (31.2631, "cache")
+
+    storage.set_manual_location(key, 31.2605, 34.7965)             # a real street
+    fixed = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert (round(fixed.lat, 4), round(fixed.lon, 4)) == (31.2605, 34.7965)
+    assert fixed.geo_source == "manual"
+    # and the geography that follows from it is recomputed, not carried over
+    assert fixed.walk_minutes != plain.walk_minutes
+
+    storage.clear_manual_location(key)
+    assert round(pipeline._classify(e, "", None, None, [], None,
+                                    commit=False).lat, 4) == 31.2631

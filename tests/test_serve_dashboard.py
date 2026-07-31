@@ -70,7 +70,8 @@ def test_every_get_route_requires_the_token(path):
     assert _get(path + "?token=wrong")[0] == 403                 # wrong one
 
 
-@pytest.mark.parametrize("path", ["/api/mark", "/api/note", "/api/route", "/api/walk"])
+@pytest.mark.parametrize("path", ["/api/mark", "/api/note", "/api/route",
+                                  "/api/walk", "/api/locate"])
 def test_every_write_route_requires_the_token(path, temp_db):
     code, _ = _post(path, {"key": "k", "mark": "saved"})
     assert code == 403
@@ -222,3 +223,36 @@ def test_walk_route_returns_the_nearest_gate_not_the_first(temp_db, monkeypatch)
     assert out["gate"] == seen[1].get("name")
     # lat,lon for the projector — OSRM's own lon,lat order would put the line in Egypt
     assert out["coords"][0] == [31.26, 34.80]
+
+
+# --- correcting a location ----------------------------------------------------------
+def test_locate_is_a_post_and_validates_its_coordinates(temp_db):
+    assert _get("/api/locate?token=s3cret")[0] == 404             # no GET route
+    assert _post("/api/locate?token=s3cret", {"key": "k1"})[0] == 400          # no lat/lon
+    assert _post("/api/locate?token=s3cret",
+                 {"key": "k1", "lat": "north", "lon": 34.8})[0] == 400
+    code, body = _post("/api/locate?token=s3cret",
+                       {"key": "k1", "lat": 999, "lon": 34.8})
+    assert code == 200 and json.loads(body) == {"ok": False, "reason": "bad_coordinates"}
+
+
+def test_locate_refuses_a_key_it_does_not_know(temp_db):
+    """Better a plain no than writing a manual_locations row for a listing that
+    doesn't exist, which nothing would ever read or clean up."""
+    code, body = _post("/api/locate?token=s3cret",
+                       {"key": "never-seen", "lat": 31.26, "lon": 34.80})
+    assert code == 200 and json.loads(body)["reason"] == "unknown_key"
+
+
+def test_locate_clear_takes_the_undo_path(temp_db, monkeypatch):
+    import dashboard
+    seen = {}
+
+    def fake_unrelocate(k):
+        seen["key"] = k
+        return {"ok": True, "existed": True, "after": None, "regraded": False}
+
+    monkeypatch.setattr(dashboard, "unrelocate", fake_unrelocate)
+    code, body = _post("/api/locate?token=s3cret", {"key": "k1", "clear": True})
+    assert code == 200 and json.loads(body)["ok"] is True
+    assert seen["key"] == "k1"

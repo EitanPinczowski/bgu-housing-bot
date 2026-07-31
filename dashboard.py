@@ -55,6 +55,7 @@ def _rows() -> list:
     contacted = storage.contacted_keys()
     stale = storage.stale_keys()
     notes = storage.all_notes()
+    manual = storage.all_manual_locations()
     keys = [r["dedup_key"] for r in rows]
     post_text = storage.post_text_for(keys)          # one pass over the archive, not N
     for r in rows:
@@ -71,9 +72,17 @@ def _rows() -> list:
             r["amenity_text"] = " · ".join(amenities.describe(json.loads(r["amenities"] or "{}")))
         except Exception:
             r["amenity_text"] = ""
-        # coordinates for the map dot — geocode is cached, so this is a dict lookup
-        coords = geocode.geocode_cached(r["address"])
-        r["lat"], r["lon"] = (coords if coords else (None, None))
+        # coordinates for the map dot — geocode is cached, so this is a dict lookup.
+        # A hand-placed listing wins, exactly as it does in pipeline._classify; the
+        # map must show where the user PUT the flat, not where the geocoder guessed.
+        pinned = manual.get(key)
+        if pinned:
+            r["lat"], r["lon"] = pinned
+            r["geocode_source"] = "manual"
+        else:
+            coords = geocode.geocode_cached(r["address"])
+            r["lat"], r["lon"] = (coords if coords else (None, None))
+        r["manual_location"] = bool(pinned)
         # How much to trust that dot. 41% of listings resolve only to a street or
         # neighbourhood centroid, which is why so many sit on top of each other; the
         # map has to say so rather than drawing them all as if they were surveyed.
@@ -122,7 +131,7 @@ def rows_for_api() -> list:
             "walk_minutes", "lease_start", "contact", "source_url", "group", "floor",
             "amenity_text", "first_seen", "summary", "saved", "contacted", "stale",
             "broker", "note", "post_text", "lat", "lon", "photos", "breakdown",
-            "geocode_source", "geo_confidence")}
+            "geocode_source", "geo_confidence", "manual_location")}
             | {"wa": _wa_link(r["contact"])})
     return out
 
@@ -260,6 +269,14 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 .spider-leg{stroke:#8a94a6;stroke-width:1;stroke-opacity:.65;
       vector-effect:non-scaling-stroke;pointer-events:none}
 .spider-hub{fill:#8a94a6;pointer-events:none}
+/* place-mode: an armed, obvious state, because the next tap moves a flat */
+.map svg.placing{cursor:crosshair}
+.map svg.placing .dot,.map svg.placing .cl{pointer-events:none}
+#placebar{position:absolute;inset-inline:8px;top:8px;z-index:18;font-size:12.5px;
+      background:var(--accent);color:#fff;border-radius:8px;padding:7px 10px;
+      display:flex;gap:8px;align-items:center;flex-wrap:wrap;box-shadow:0 3px 12px #0003}
+#placebar button{background:#fff3;border:1px solid #fff6;color:#fff;font-size:12px}
+#placebar .live{color:#fff}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
 .panel{border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0;
@@ -321,6 +338,9 @@ const isNew = r => LAST && r.first_seen && r.first_seen > LAST;
 const P = window.__PROJ__ || null;
 const project = (la, lo) => [P.pad + (lo - P.min_lon) * P.kx * P.scale,
                              P.pad + (P.max_lat - la) * P.scale];
+// the exact inverse of project(), for turning a tap on the map back into lat/lon
+const unproject = (x, y) => [P.max_lat - (y - P.pad) / P.scale,
+                             (x - P.pad) / (P.kx * P.scale) + P.min_lon];
 const TIER_COLOR = {GREEN: '#2e7d32', AMBER: '#e08e0b', RED: '#c0392b', UNKNOWN: '#7f8c8d'};
 function scoreColor(s){
   const t = Math.max(0, Math.min(100, s || 0)) / 100;
@@ -976,6 +996,14 @@ function cardHtml(r){
   // the real OSRM route needs the server; in a shared snapshot there's nothing to ask
   const walk = (window.__LIVE__ && r.lat)
     ? '<button data-card="walk" title="מסלול הליכה לשער">🚶</button>' : '';
+  // correcting a location writes to the DB, so it needs the server too
+  const place = window.__LIVE__
+    ? '<button data-card="place" title="' +
+      (r.manual_location ? 'מיקום ידני — הקישו לתקן שוב' : 'תקנו את המיקום על המפה') +
+      '">' + (r.manual_location ? '📌' : '📍') + '</button>' +
+      (r.manual_location
+        ? '<button data-card="unplace" title="בטלו את המיקום הידני">↩</button>' : '')
+    : '';
   const votes = window.__LIVE__
     ? '<button data-card="save" title="שמור">⭐</button>' +
       '<button data-card="dismiss" title="הסתר">🗑</button>' +
@@ -995,7 +1023,7 @@ function cardHtml(r){
     precision +
     (r.amenity_text ? '<div class="am">' + esc(r.amenity_text) + '</div>' : '') +
     '<div class="btns">' + btn(r.wa, '💬', 'וואטסאפ') + btn(r.source_url, '🔗', 'הפוסט') +
-      dirs + walk + votes + '</div>';
+      dirs + walk + place + votes + '</div>';
 }
 
 function showCard(r, dot){
@@ -1078,6 +1106,85 @@ async function drawWalk(key, btn){
   fitTo(out.coords.map(c => ({lat: c[0], lon: c[1]})));
 }
 
+/* ---------- place-mode: tap the map to correct a location ----------
+   Chosen over dragging the dot: a 5px dot is a coin-flip to grab on a phone, and an
+   accidental drag would silently move a flat. Place-mode makes the intent explicit —
+   you arm it, you tap, you confirm, and you see what it did to the grade. */
+let placing = null;                       // the dedup_key being placed, or null
+
+function setPlacing(key){
+  placing = key;
+  const svg = document.querySelector('.map svg');
+  svg.classList.toggle('placing', !!key);
+  const bar = $('placebar');
+  bar.style.display = key ? '' : 'none';
+  if (key){
+    const r = rowByKey(key);
+    $('placewhat').textContent = (r && r.address) || '';
+    hideCard();
+  }
+}
+
+async function commitPlace(key, lat, lon, scope){
+  const out = await post('/api/locate', {key: key, lat: lat, lon: lon, scope: scope});
+  if (!out || !out.ok){
+    $('placemsg').textContent = 'לא נשמר' + (out && out.reason ? ' (' + out.reason + ')' : '');
+    return;
+  }
+  const r = rowByKey(key);
+  if (r){
+    r.lat = lat; r.lon = lon;
+    r.manual_location = true;
+    r.geocode_source = 'manual';
+    r.geo_confidence = 'exact';
+    if (out.regraded){
+      r.location_tier = out.after.location_tier;
+      r.walk_minutes = out.after.walk_minutes;
+      r.eff_score = out.after.eff_score;
+      r.status = out.after.status;
+    }
+  }
+  setPlacing(null);
+  setSpider(null);
+  render();
+  // Say what the move DID. A corrected location re-grades the flat — it can move
+  // RED->GREEN — and that consequence should never be silent.
+  const b = out.before, a = out.after;
+  const chg = out.regraded && (b.location_tier !== a.location_tier ||
+                               Math.round(b.eff_score) !== Math.round(a.eff_score))
+    ? ' · ' + b.location_tier + '→' + a.location_tier +
+      ' · ⭐' + fmt(b.eff_score) + '→' + fmt(a.eff_score)
+    : (out.regraded ? ' · הדירוג לא השתנה' : ' · הדירוג לא חושב מחדש (הפוסט לא נשמר)');
+  $('walknote').textContent = '📍 המיקום עודכן' +
+    (out.pinned_address ? ' לכל הכתובת "' + out.pinned_address + '"' : '') + chg;
+  $('walknote').style.display = '';
+}
+
+function initPlacing(){
+  const svg = document.querySelector('.map svg');
+  if (!svg) return;
+  svg.addEventListener('click', ev => {
+    if (!placing) return;
+    ev.stopPropagation();
+    const b = svg.getBoundingClientRect();
+    const wx = view.x + ((ev.clientX - b.left) / b.width) * view.w;
+    const wy = view.y + ((ev.clientY - b.top) / b.height) * view.h;
+    const ll = unproject(wx, wy);
+    const key = placing;
+    const r = rowByKey(key);
+    const addr = (r && r.address) || '';
+    // Two scopes, because the two failures are different: one flat in the wrong spot
+    // vs an ADDRESS that always resolves wrongly (אוניברסיטת בן גוריון, שכונה ד).
+    const both = addr && confirm('לתקן את המיקום של כל הדירות בכתובת "' + addr +
+      '"?\n\nאישור = כל הכתובת (גם דירות עתידיות)\nביטול = רק הדירה הזו');
+    commitPlace(key, ll[0], ll[1], both ? 'address' : 'listing');
+  }, true);                                // capture: beat the cluster/spider handler
+  $('placecancel').addEventListener('click', () => setPlacing(null));
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && placing) setPlacing(null);
+  });
+}
+
 function initCard(){
   const svg = document.querySelector('.map svg');
   if (!svg) return;
@@ -1108,6 +1215,29 @@ function initCard(){
     if (!b || !cardKey) return;
     const act = b.dataset.card;
     if (act === 'walk'){ await drawWalk(cardKey, b); return; }
+    if (act === 'place'){ setPlacing(cardKey); return; }
+    if (act === 'unplace'){
+      const out = await post('/api/locate', {key: cardKey, clear: true});
+      if (out && out.ok){
+        const r = rowByKey(cardKey);
+        if (r){
+          r.manual_location = false;
+          if (out.regraded){
+            // including lat/lon: the dot has to go back to wherever the geocoder
+            // says, not sit at the point we just cleared
+            r.lat = out.after.lat; r.lon = out.after.lon;
+            r.geocode_source = out.after.geocode_source;
+            r.geo_confidence = out.after.geo_confidence;
+            r.location_tier = out.after.location_tier;
+            r.walk_minutes = out.after.walk_minutes;
+            r.eff_score = out.after.eff_score;
+          }
+        }
+        hideCard();
+        render();
+      }
+      return;
+    }
     const mark = act === 'save' ? 'saved' : act === 'dismiss' ? 'dismissed' : 'contacted';
     const out = await post('/api/mark', {key: cardKey, mark: mark});
     if (out){
@@ -1197,6 +1327,7 @@ render();
 initMapGestures();
 initLayers();
 initCard();
+initPlacing();
 const focusKey = new URLSearchParams(location.search).get('key');
 if (focusKey){
   const r = rowByKey(focusKey);
@@ -1311,6 +1442,9 @@ def render(live: bool, snapshot: bool = False) -> str:
   <div id="boxchip" style="display:none">אזור מסומן
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
   <div id="walknote" style="display:none"></div>
+  <div id="placebar" style="display:none">📍 הקישו על המיקום הנכון של
+    <b id="placewhat"></b> <span id="placemsg" class="live"></span>
+    <button id="placecancel">ביטול</button></div>
   {_legend_html()}
   <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה/אצבע להזזה ·
     ריחוף/נגיעה בנקודה לפרטים</div>
@@ -1353,6 +1487,84 @@ def walk_route(key: str) -> dict:
         return {"ok": False, "reason": "osrm_down"}
     return {"ok": True, "gate": best["gate"], "coords": best["coords"],
             "minutes": round(best["minutes"], 1), "metres": round(best["metres"])}
+
+
+def relocate(key: str, lat: float, lon: float, scope: str = "listing") -> dict:
+    """Place one listing by hand and re-grade it.
+
+    Moving a dot changes the truth, not just the picture: the zone tier, the walk to a
+    gate and therefore the fit score all follow from where the flat is, so a listing
+    can legitimately move RED→GREEN here. The response carries before→after so the
+    page can show that rather than changing it silently.
+
+    scope='address' also pins the ADDRESS TEXT (geocode.add_pin), which fixes every
+    listing at that address and every future one — the right scope for the two flats
+    whose address is literally `אוניברסיטת בן גוריון`, or for a bare `שכונה ד`.
+
+    The re-grade goes through pipeline._classify, the same function the live pipeline
+    and replay.py use, so a corrected listing can never be graded by different rules
+    than everything else."""
+    if not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180):
+        return {"ok": False, "reason": "bad_coordinates"}
+    before = next((r for r in _rows() if r["dedup_key"] == key), None)
+    if not before:
+        return {"ok": False, "reason": "unknown_key"}
+
+    storage.set_manual_location(key, lat, lon)
+    pinned_address = None
+    if scope == "address" and (before["address"] or "").strip():
+        pinned_address = geocode.add_pin(before["address"].strip(), lat, lon)
+        geocode.uncache(before["address"].strip())     # drop the wrong cached hit
+
+    after = _regrade(key)
+    out = {"ok": True, "lat": lat, "lon": lon, "pinned_address": pinned_address,
+           "before": {k: before.get(k) for k in ("location_tier", "walk_minutes",
+                                                 "eff_score", "status")}}
+    out["after"] = after or out["before"]
+    out["regraded"] = after is not None
+    return out
+
+
+def unrelocate(key: str) -> dict:
+    """Drop a hand-placed location and let the geocoder decide again."""
+    existed = storage.clear_manual_location(key)
+    after = _regrade(key)
+    return {"ok": True, "existed": existed, "after": after, "regraded": after is not None}
+
+
+def _regrade(key: str):
+    """Re-run the real classifier on one stored listing and persist the new verdict.
+
+    Returns the new {tier, walk, score, status}, or None when the archived post isn't
+    available to re-classify from (an old listing archived before post capture) — in
+    which case the coordinates still stand, the grade is simply left alone rather
+    than guessed at."""
+    post = storage.post_for(key)
+    if not post or not post.get("parsed_json"):
+        return None
+    try:
+        import pipeline
+        from models import ListingExtract
+        e = ListingExtract.model_validate_json(post["parsed_json"])
+        e = pipeline._postprocess_extract(e, post.get("raw_text") or "",
+                                          post.get("comments") or "")
+        images = json.loads(post["images"]) if post.get("images") else []
+        # commit=False: persist and re-sort here, but never re-alert — the user is
+        # looking at the listing, they don't need a Telegram message about it.
+        res = pipeline._classify(e, post.get("raw_text") or "", post.get("source_url"),
+                                 post.get("group"), images, None, commit=False)
+        storage.save_listing(res)
+    except Exception as exc:
+        print(f"[dashboard] regrade of {key!r} failed: {exc}")
+        return None
+    # lat/lon travel back too: after an undo the page has to move the dot to wherever
+    # the geocoder now says, or the map keeps showing the cleared manual point until
+    # something else happens to refresh it.
+    return {"location_tier": res.location_tier, "walk_minutes": res.walk_minutes,
+            "eff_score": storage.effective_score(key, res.score or 0),
+            "status": getattr(res.status, "value", str(res.status)),
+            "lat": res.lat, "lon": res.lon, "geocode_source": res.geo_source,
+            "geo_confidence": geocode.confidence(res.geo_source)}
 
 
 def _legend_html() -> str:

@@ -554,7 +554,14 @@ def _classify(e, raw_text: str, source_url, group, images: list,
 
     # 5) locate it: geocode -> tier (GREEN/AMBER/RED/UNKNOWN). OSRM minutes are
     #    informational only now; your green zone + 500m buffer make the call.
-    coords, geo_source = geocode.geocode_detailed(e.street_address_or_neighborhood)
+    #    A hand-placed listing wins outright. This one line is what makes a correction
+    #    made in the dashboard permanent: _classify is also what replay.py re-runs, so
+    #    without it every re-apply would drag the dot back to the geocoder's guess.
+    pinned = storage.manual_location(key)
+    if pinned:
+        coords, geo_source = pinned, "manual"
+    else:
+        coords, geo_source = geocode.geocode_detailed(e.street_address_or_neighborhood)
     # A name we HAVE but couldn't map -> log it so the daily DM digest can suggest
     # pinning it to the static table (this is exactly how "הבלוק" was missed).
     if commit and coords is None and e.street_address_or_neighborhood:

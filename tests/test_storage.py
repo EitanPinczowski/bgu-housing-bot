@@ -471,3 +471,28 @@ def test_backfill_never_moves_a_date_forward(temp_db):
 def test_backfill_ignores_listings_with_no_archived_post(temp_db):
     storage.save_listing(_res("orphan:1"))
     assert storage.backfill_first_seen() == 0
+
+
+# --- hand-placed coordinates -------------------------------------------------------
+def test_manual_location_round_trips_and_clears(temp_db):
+    assert storage.manual_location("k1") is None
+    storage.set_manual_location("k1", 31.2605, 34.7965)
+    assert storage.manual_location("k1") == (31.2605, 34.7965)
+    storage.set_manual_location("k1", 31.2610, 34.7970)          # replaces, not duplicates
+    assert storage.manual_location("k1") == (31.2610, 34.7970)
+    assert storage.all_manual_locations() == {"k1": (31.2610, 34.7970)}
+    assert storage.clear_manual_location("k1") is True
+    assert storage.manual_location("k1") is None
+    assert storage.clear_manual_location("k1") is False          # already gone
+
+
+def test_saving_a_listing_does_not_disturb_its_manual_location(temp_db):
+    """save_listing rewrites the verdict on every re-read. The hand-placed point lives
+    in its own table precisely so a later scrape can't quietly undo the correction."""
+    from models import ListingExtract, PipelineResult, Status
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 5",
+                       price_per_room_ils=1500, available_rooms_count=2)
+    storage.set_manual_location("k1", 31.2605, 34.7965)
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k1", score=80,
+                                        location_tier="GREEN", extract=e))
+    assert storage.manual_location("k1") == (31.2605, 34.7965)

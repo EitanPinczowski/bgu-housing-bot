@@ -295,6 +295,11 @@ def test_snapshot_removes_write_controls_and_dates_itself(temp_db, monkeypatch, 
     assert "צילום מצב" in page and dt.date.today().strftime("%d/%m/%Y") in page
     # the flag is what every write control is gated on
     assert "const SNAP = !!window.__SNAPSHOT__;" in page
+    # Correcting a location writes to the DB, so it is gated on __LIVE__ (which is
+    # false here) rather than on SNAP — the template string still ships, but the
+    # button is never rendered. Assert the gate, not the absence of the source.
+    assert "const place = window.__LIVE__" in page
+    assert "window.__LIVE__ = false;" in page
     for gated in ("(SNAP ? '' : '<button data-act=\"save\">⭐</button>'",
                   "? (r.note ? '<div class=\"raw\">📝 '",     # note read-only
                   "if (SNAP) return;"):                       # no route planner

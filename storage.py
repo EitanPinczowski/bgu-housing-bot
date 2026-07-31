@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS notes (
     text TEXT,
     ts TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- Coordinates set by hand from the dashboard, when the geocoder put a flat in the
+-- wrong place (there are no apartments inside the university). Keyed by dedup_key so
+-- it corrects ONE listing; the "same address everywhere" case goes to user_pins.json
+-- via geocode.add_pin instead. pipeline._classify prefers this over the geocoder, so
+-- a correction survives replay --apply and every later re-read.
+CREATE TABLE IF NOT EXISTS manual_locations (
+    dedup_key TEXT PRIMARY KEY,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    ts TEXT DEFAULT CURRENT_TIMESTAMP,
+    note TEXT
+);
 CREATE TABLE IF NOT EXISTS unknown_locations (
     location TEXT PRIMARY KEY,
     count INTEGER DEFAULT 0,
@@ -709,6 +721,50 @@ def all_notes() -> dict:
         return {k: t for k, t in c.execute("SELECT dedup_key, text FROM notes") if t}
 
 
+def set_manual_location(dedup_key: str, lat: float, lon: float,
+                        note: Optional[str] = None) -> None:
+    """Pin ONE listing's coordinates by hand, overriding the geocoder for good.
+
+    `pipeline._classify` prefers this, so the correction survives `replay --apply`
+    and every later re-read — which is the whole point. To fix an ADDRESS rather than
+    a listing (`אוניברסיטת בן גוריון` resolving to the campus, `שכונה ד` to a
+    centroid), use `geocode.add_pin` instead: that fixes every listing there, now and
+    in the future."""
+    if not dedup_key:
+        return
+    with _conn() as c:
+        c.execute("INSERT INTO manual_locations(dedup_key, lat, lon, ts, note) "
+                  "VALUES (?,?,?,CURRENT_TIMESTAMP,?) "
+                  "ON CONFLICT(dedup_key) DO UPDATE SET lat=excluded.lat, "
+                  "lon=excluded.lon, ts=CURRENT_TIMESTAMP, note=excluded.note",
+                  (dedup_key, float(lat), float(lon), note))
+
+
+def manual_location(dedup_key: str):
+    """(lat, lon) if this listing has been placed by hand, else None."""
+    if not dedup_key:
+        return None
+    with _conn() as c:
+        row = c.execute("SELECT lat, lon FROM manual_locations WHERE dedup_key=?",
+                        (dedup_key,)).fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def clear_manual_location(dedup_key: str) -> bool:
+    """Drop the override so the geocoder decides again. Returns whether one existed."""
+    with _conn() as c:
+        cur = c.execute("DELETE FROM manual_locations WHERE dedup_key=?", (dedup_key,))
+        return cur.rowcount > 0
+
+
+def all_manual_locations() -> dict:
+    """{dedup_key: (lat, lon)} — one query, so the dashboard doesn't do N of them."""
+    with _conn() as c:
+        return {k: (la, lo)
+                for k, la, lo in c.execute("SELECT dedup_key, lat, lon "
+                                           "FROM manual_locations")}
+
+
 def post_text_for(keys) -> dict:
     """{dedup_key: original post text} for the given listings.
 
@@ -731,6 +787,28 @@ def post_text_for(keys) -> dict:
             if key in wanted and key not in out:
                 out[key] = raw
     return out
+
+
+def post_for(dedup_key: str):
+    """The archived post behind one listing, as a dict, or None.
+
+    Same key-recomputation as post_text_for. Used to re-run the classifier on a
+    single listing (after its location is corrected by hand) instead of replaying the
+    whole archive — the verdict then comes from the real pipeline rather than a
+    parallel reimplementation that could drift from it."""
+    if not dedup_key:
+        return None
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute("SELECT * FROM posts WHERE parsed_json IS NOT NULL").fetchall()
+    for row in rows:
+        try:
+            e = ListingExtract.model_validate_json(row["parsed_json"])
+        except Exception:
+            continue
+        if dedup_key in dedup_keys(e):
+            return dict(row)
+    return None
 
 
 def search_post_text(term: str, limit: int = 400) -> set:

@@ -457,3 +457,13 @@ def test_landmark_points_are_treated_as_imprecise():
     must stay cautious about it."""
     import geocode
     assert not geocode.is_precise_source("landmark")
+
+
+def test_a_hand_placed_point_outranks_every_geocoder():
+    """'manual' means a person looked at the map and said "the flat is here", which is
+    strictly better evidence than any automatic tier — so it must not be treated as a
+    low-confidence source and capped from GREEN to AMBER by the precision rules."""
+    assert geocode.confidence("manual") == "exact"
+    assert geocode.is_precise_source("manual") is True
+    assert geocode.confidence(None) == "none"
+    assert geocode.confidence("overpass") == "street"

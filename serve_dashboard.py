@@ -207,6 +207,17 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/note":
             storage.set_note(key, payload.get("text") or "")
             return self._json(200, {"ok": True, "text": storage.get_note(key)})
+        if route == "/api/locate":
+            # POST for the same reason as /api/walk: a dedup_key is phone|address and
+            # must not land in a URL or an access log.
+            if payload.get("clear"):
+                return self._json(200, dashboard.unrelocate(key))
+            try:
+                lat, lon = float(payload["lat"]), float(payload["lon"])
+            except (KeyError, TypeError, ValueError):
+                return self._json(400, {"error": "lat/lon required"})
+            scope = "address" if payload.get("scope") == "address" else "listing"
+            return self._json(200, dashboard.relocate(key, lat, lon, scope))
         if route == "/api/walk":
             # POST, not GET /api/walk/<key>, because a dedup_key is phone|address —
             # a GET would write a landlord's phone number into the URL and the log.
