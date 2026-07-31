@@ -46,6 +46,12 @@ OUT_PATH = config.ROOT / "house_anchors.json"
 # coin-flip between two roads and the anchor would be worse than no anchor at all.
 MAX_BIND_METRES = 40.0
 
+# An anchor tagged with a street name must actually BE near that street. Street names
+# repeat inside the bounding box (two different ההגנה), and binding on the name alone
+# merged them. Generous, because a street's own geometry can be a partial fragment:
+# this is a "that is a different street" test, not a precision one.
+MAX_ANCHOR_OFFSET_M = 200.0
+
 
 def _pbf() -> Path | None:
     files = sorted(PBF_DIR.glob("*.osm.pbf"))
@@ -130,12 +136,25 @@ def build(dry_run: bool = False) -> dict:
 
     street_pts = _street_points()
     anchors: dict = {}
-    bound_by_name = bound_by_distance = dropped = 0
+    bound_by_name = bound_by_distance = dropped = far_from_named = 0
     for lat, lon, hn, street in raw:
         name = None
         if street:
             real, _how = streets.canonical(street)
             name = real or street
+            # A street name is not unique inside the bounding box, and binding on the
+            # name ALONE silently merged two different streets: ההגנה ended up with
+            # anchors 10 m from its geometry AND anchors 2,887 m away, which then
+            # placed ההגנה 89 some 3.5 km from the real address — the single worst
+            # error in the hold-out. An anchor has to be near the street it claims.
+            pts = street_pts.get(name)
+            if pts:
+                off = min(math.hypot((p[0] - lat) * 111320.0,
+                                     (p[1] - lon) * 111320.0
+                                     * math.cos(math.radians(lat))) for p in pts)
+                if off > MAX_ANCHOR_OFFSET_M:
+                    far_from_named += 1
+                    continue
             bound_by_name += 1
         else:
             cand, dist = _nearest_street(lat, lon, street_pts)
@@ -150,6 +169,8 @@ def build(dry_run: bool = False) -> dict:
     usable = sum(1 for v in anchors.values() if len(v) >= 2)
     was_usable = sum(1 for v in before.values() if len(v) >= 2)
     print(f"  bound by addr:street       : {bound_by_name}")
+    print(f"  rejected, far from that name: {far_from_named}  (a different street "
+          f"sharing the name)")
     print(f"  bound to the nearest street: {bound_by_distance}  (<= {MAX_BIND_METRES:.0f} m)")
     print(f"  dropped, too far from any  : {dropped}")
     print()

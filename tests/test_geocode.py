@@ -576,3 +576,23 @@ def test_nominatim_must_return_somewhere_to_live(monkeypatch):
         monkeypatch.setattr("requests.get",
                             lambda url, _cls=cls, **kw: fake_get(url, _cls=_cls, **kw))
         assert geocode._nominatim("ליד האוניברסיטה") == expected, cls
+
+
+def test_anchors_from_a_same_named_street_do_not_get_merged(tmp_path, monkeypatch):
+    """Street names repeat inside the bounding box. Binding anchors on the NAME alone
+    gave ההגנה a set containing points 10 m from its geometry AND points 2,887 m away,
+    which then placed ההגנה 89 about 3.5 km from the real address — every multi-kilometre
+    error in the hold-out came from five anchors like these."""
+    import load_osm_addresses as loader
+    monkeypatch.setattr(loader, "_collect",
+                        lambda path: [(31.2381, 34.7854, "14", "ההגנה"),
+                                      (31.2385, 34.7858, "18", "ההגנה"),
+                                      (31.2601, 34.8067, "82", "ההגנה")])  # the impostor
+    monkeypatch.setattr(loader, "_street_points",
+                        lambda: {"ההגנה": [(31.2380, 34.7850), (31.2390, 34.7860)]})
+    monkeypatch.setattr(loader.streets, "canonical", lambda t: ("ההגנה", "exact"))
+    monkeypatch.setattr(loader, "_pbf", lambda: tmp_path / "fake.osm.pbf")
+    (tmp_path / "fake.osm.pbf").write_bytes(b"")
+    monkeypatch.setattr(loader.geocode, "_load_anchors", lambda: {})
+    out = loader.build(dry_run=True)
+    assert set(out["ההגנה"]) == {"14", "18"}, "the far same-named anchor was kept"
