@@ -107,6 +107,18 @@ SQLite + optional Google Sheets + Telegram alert`
   Measured caveat: this converted only **1** of the 105 stranded listings — the extra
   anchors landed on streets that already had them. Keep it for the data and the lost
   dependency, not as the fix.
+  - **An anchor must be NEAR the street it names** (`MAX_ANCHOR_OFFSET_M`). Street names
+    repeat inside the bbox: binding by name alone gave `ההגנה` anchors 10 m from its
+    geometry *and* anchors 2,887 m away from a different street of the same name, so
+    `ההגנה 89` interpolated between two unrelated streets and landed 3.5 km out. **Five
+    anchors out of 998 were the entire multi-kilometre error tail.** Don't relax this.
+- **What we accept from Overpass/Nominatim** (`_plausible_external`, `_NOMINATIM_OK_CLASSES`):
+  a point >250 m from the street the address names is a blunder, not imprecision
+  (`audit_geocode` measures the median at 6 m), and Nominatim must return somewhere to
+  LIVE — it answered `ליד האוניברסיטה` with the railway station 783 m away, and `אצ"ל 6`
+  with a **stadium**. Both gates ABSTAIN when the street is unknown: no opinion beats a
+  wrong rejection. Rejecting sends the listing to NEEDS_DATA, where a human sees it —
+  strictly better than a silent wrong tier and walk time.
 - `geo_accuracy.py` — **the only thing that makes "more accurate" a fact.** Holds out
   each of N addresses OSM knows exactly, hides its anchor, asks the geocoder, and reports
   error in metres per tier. Without the hold-out it grades itself against its own answer
