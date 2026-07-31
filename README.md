@@ -411,15 +411,17 @@ Tailscale and every tunnel still need the machine awake. For a link that doesn't
 python dashboard.py --share --publish
 ```
 
-pushes the same snapshot to **GitHub Pages**. Set it up once:
+pushes the same snapshot to **GitHub Pages**. It is already set up and live at
 
-1. Create an empty **public** GitHub repo — suggested name `bgu-housing-dashboard` —
-   and turn Pages on for `main`, root folder.
-2. Put its clone URL in `.env` as `SITE_REPO_URL`.
+**https://eitanpinczowski.github.io/bgu-housing-dashboard/**
 
-`update_schedule.cmd` then refreshes it at 09:00/13:00/17:00 (`BGU Dashboard Publish`)
-and again at 21:00 with the Telegram post (`BGU Dashboard Share`). Without
+from the dedicated repo `EitanPinczowski/bgu-housing-dashboard` (Pages: `main` / root),
+with `SITE_REPO_URL` in `.env`. `BGU Dashboard Publish` refreshes it at 09:00/13:00/17:00
+and `BGU Dashboard Share` does it again at 21:00 with the Telegram post. Without
 `SITE_REPO_URL` the publish step prints one line and does nothing.
+
+To point it at a different repo, change `SITE_REPO_URL` and delete `data/site` — the
+next publish re-clones.
 
 Three things to know:
 
