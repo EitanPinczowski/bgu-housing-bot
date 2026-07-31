@@ -95,6 +95,20 @@ def _ensure_checkout(url: str, path: Path) -> None:
         shutil.rmtree(path)
     print(f"cloning {url} -> {path}")
     _git(["clone", "--depth", "1", url, str(path)], cwd=path.parent)
+    _inherit_identity(path)
+
+
+def _inherit_identity(path: Path) -> None:
+    """Give the fresh clone the same git identity as this repo.
+
+    Found the hard way: user.email is set LOCALLY in the code repo and not globally,
+    so a brand-new clone cannot commit at all ("unable to auto-detect email address")
+    and the very first scheduled publish would fail. Copy whatever the code repo uses;
+    if that is unset too, git's own global config still applies."""
+    for field in ("user.name", "user.email"):
+        value = _git(["config", "--get", field], cwd=config.ROOT, check=False)
+        if value:
+            _git(["config", field, value], cwd=path)
 
 
 def _latest_snapshot() -> Path | None:

@@ -130,3 +130,25 @@ def test_it_publishes_the_newest_snapshot_when_not_told_which(site):
     _snapshot(data, "NEWEST")
     publish.publish()
     assert (d / "index.html").read_text(encoding="utf-8") == "NEWEST"
+
+
+def test_a_fresh_clone_inherits_this_repo_s_git_identity(tmp_path, monkeypatch):
+    """Found by publishing for real: user.email is set LOCALLY in the code repo and
+    not globally, so a brand-new clone could not commit at all ("unable to auto-detect
+    email address") — the very first scheduled publish would have failed."""
+    calls = []
+
+    def fake_git(args, cwd, check=True):
+        calls.append((list(args), str(cwd)))
+        if args[:2] == ["config", "--get"]:
+            return {"user.name": "Eitan Pinczowski",
+                    "user.email": "eitanp2701@gmail.com"}[args[2]]
+        return ""
+
+    monkeypatch.setattr(publish, "_git", fake_git)
+    dest = tmp_path / "site"
+    publish._ensure_checkout("https://github.com/me/site.git", dest)
+    written = [a for a, cwd in calls if a[:1] == ["config"] and "--get" not in a]
+    assert ["config", "user.name", "Eitan Pinczowski"] in written
+    assert ["config", "user.email", "eitanp2701@gmail.com"] in written
+    assert all(cwd == str(dest) for a, cwd in calls if a[:1] == ["config"] and "--get" not in a)
