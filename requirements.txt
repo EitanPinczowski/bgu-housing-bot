@@ -16,3 +16,4 @@ gspread>=6.2.1,<7            # append listings to a shared Google Sheet
 
 # --- auto-scraper ---
 playwright>=1.61.0,<2
+osmium>=4.3
