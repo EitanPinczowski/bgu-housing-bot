@@ -33,6 +33,8 @@ import datetime as dt
 import os
 import random
 import re
+import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -99,6 +101,111 @@ _LOCK_PATH = config.DATA_DIR / "scraper.lock"
 _lock_fh = None
 
 
+def start_self_watchdog() -> None:
+    """Make a hung run kill ITSELF instead of blocking every later one.
+
+    is_wedged() was only ever consulted by the NEXT run, so a run that stopped making
+    progress just sat there holding the lock. Measured: a run started 08:34, hung
+    partway through group 4 of 15, and was still holding the lock at 14:53 — six hours
+    in which every scheduled run logged "another scraper session is running".
+
+    os._exit is deliberate. The hang is typically inside a blocking Playwright driver
+    call, so a normal exception or sys.exit would never be reached; and the browsers
+    are killed first, because an orphaned Chromium left behind is how three
+    unkillable processes ended up sitting on the profile for four days."""
+    def loop():
+        while True:
+            time.sleep(60)
+            age = heartbeat_age()
+            if age is None or age <= config.STALL_MINUTES * 60:
+                continue
+            print(f"[scraper] no progress for {age / 60:.0f} min "
+                  f"(limit {config.STALL_MINUTES}) — aborting this run so the next "
+                  f"one can start", flush=True)
+            try:
+                reap_orphan_browsers()
+            finally:
+                os._exit(2)
+
+    threading.Thread(target=loop, daemon=True, name="scraper-watchdog").start()
+
+
+def _profile_browser_pids() -> list:
+    """PIDs of Chromium processes driving OUR scraper profile.
+
+    Scoped by the profile path on the command line, NEVER by process name. The user's
+    own Chrome is normally running — when this was written, 36 of the 39 chrome.exe
+    processes on the machine were theirs and only 3 were the scraper's. Killing by
+    name would close their browser.
+
+    Returns [] on any failure: never guess, and never fall back to something broader.
+    """
+    marker = str(config.SCRAPER_PROFILE_DIR)
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR "
+        "Name='chromium.exe' OR Name='msedge.exe'\" | "
+        f"Where-Object {{ $_.CommandLine -like '*{marker}*' }} | "
+        "ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
+                              "-Command", ps],
+                             capture_output=True, text=True, timeout=30)
+        return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+    except Exception as exc:
+        print(f"[scraper] could not list profile browsers: {exc}")
+        return []
+
+
+def _kill(pid: int, timeout: int = 20) -> bool:
+    """Kill one process and report whether it is ACTUALLY gone.
+
+    Without /T: walking a Chromium tree is what made the old call exceed its 30 s
+    budget. Each process is killed individually instead, and the result is judged by
+    whether the pid still exists rather than by taskkill's exit code — a timeout used
+    to be treated as total failure even when the kill had in fact worked."""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       capture_output=True, timeout=timeout)
+    except Exception:
+        pass                                    # verify below regardless
+    try:
+        probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                               capture_output=True, text=True, timeout=15)
+        return str(pid) not in (probe.stdout or "")
+    except Exception:
+        return False
+
+
+def reap_orphan_browsers() -> int:
+    """Close scraper browsers that no live run owns. Returns how many were killed.
+
+    Call this only while HOLDING the lock: at that moment nothing else may legitimately
+    be driving the profile, so anything still on it is a leftover.
+
+    This is the gap that broke scraping for a day. The wedge-clearing below only ever
+    targeted the recorded PYTHON pid; when a run died without taking its browser with
+    it, the orphaned Chromium kept an exclusive handle on auth/chrome_profile and every
+    later run failed in launch_persistent_context with "Connection closed while reading
+    from the driver". Three such orphans, four days old, were sitting there."""
+    pids = _profile_browser_pids()
+    if not pids:
+        return 0
+    killed = sum(1 for pid in pids if _kill(pid))
+    if killed:
+        print(f"[scraper] reaped {killed} orphaned browser process(es) still holding "
+              f"{config.SCRAPER_PROFILE_DIR.name} — a dead run left them behind")
+    if killed < len(pids):
+        # Windows can leave a process that TerminateProcess accepted but the kernel
+        # can't reap (taskkill then says "no running instance" while it is still
+        # listed). Three such have sat here since 2026-07-27. Measured: the profile
+        # still opens fine with them present, so this is a note, not a blocker — only
+        # a reboot clears them.
+        print(f"[scraper] note: {len(pids) - killed} browser process(es) could not be "
+              f"reaped (unkillable until a reboot); continuing")
+    return killed
+
+
 def _clear_wedged_holder() -> bool:
     """The lock is held by a live process. If it has made no progress for
     STALL_MINUTES, it's hung — kill it so scraping can resume, and say so loudly.
@@ -111,18 +218,20 @@ def _clear_wedged_holder() -> bool:
     pid = heartbeat_pid()
     if not pid or pid == os.getpid():
         return False
-    try:
-        import subprocess
-        # /T kills its Chromium children too, which are what actually wedge the profile
-        subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
-                       capture_output=True, timeout=30)
-        age = heartbeat_age()
+    age = heartbeat_age()
+    # Kill the python process first, then its browsers — NOT `taskkill /T`, which walks
+    # the whole Chromium tree and blew past its 30 s budget. On timeout the old code
+    # returned False, so the lock was never taken over and every later run logged
+    # "another scraper session is running" indefinitely: 3 starts and 0 completions in
+    # a day. Judge by whether the pid is actually gone, not by taskkill's exit.
+    gone = _kill(pid)
+    reap_orphan_browsers()
+    if gone:
         print(f"[scraper] previous run (pid {pid}) made no progress for "
               f"{(age or 0) / 60:.0f} min — killed it as wedged")
-        return True
-    except Exception as exc:
-        print(f"[scraper] could not clear wedged pid {pid}: {exc}")
-        return False
+    else:
+        print(f"[scraper] could not kill wedged pid {pid} — leaving the lock alone")
+    return gone
 
 
 def acquire_lock() -> bool:
@@ -152,6 +261,10 @@ def acquire_lock() -> bool:
             return False
         _lock_fh = fh
         beat("lock acquired")
+        # We hold the exclusive lock, so nothing else may legitimately be driving the
+        # profile — anything still on it is a leftover that would otherwise make
+        # launch_persistent_context fail. Clean up BEFORE opening a browser.
+        reap_orphan_browsers()
         return True
     return False
 

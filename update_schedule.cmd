@@ -62,9 +62,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$a = New-ScheduledTaskAction -Execute '%HERE%run_dashboard_share.cmd' -WorkingDirectory '%HERE%'; $t = New-ScheduledTaskTrigger -Daily -At '21:00'; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Dashboard Share' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Dashboard Share -> 21:00 daily (after the last scrape)'"
 
 echo.
-echo === 4/4  Refresh the public copy 3x more per day (no Telegram post) ===
+echo === 4/4  Refresh the public copy hourly (no Telegram post) ===
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$a = New-ScheduledTaskAction -Execute '%HERE%run_dashboard_publish.cmd' -WorkingDirectory '%HERE%'; $t = @('09:00','13:00','17:00') | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Dashboard Publish' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Dashboard Publish -> 09:00 13:00 17:00 (21:00 is the Share task)'"
+  "$a = New-ScheduledTaskAction -Execute '%HERE%run_dashboard_publish.cmd' -WorkingDirectory '%HERE%'; $t = @('08:30','09:30','10:30','11:30','12:30','13:30','14:30','15:30','16:30','17:30','18:30','19:30','20:30') | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Dashboard Publish' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Dashboard Publish -> hourly :30, 08:30-20:30 (21:00 Share is the last)'"
 
 echo.
 echo === done ===

@@ -171,6 +171,9 @@ def run(dry_run: bool, hot: bool = False) -> None:
         _log_search("SKIP", "another scraper session is running (lock held)")
         print("[main] another scraper/browser session is already running — skipping this run")
         return
+    # …and give up on ourselves if we stop making progress, rather than sitting on the
+    # lock and starving every later run (measured: one hang blocked six hours of them).
+    scraper.start_self_watchdog()
     if hot:
         # Fast shallow pass over only the best groups — see config.HOT_* (net volume is
         # LOWER than before, because yield-scaling trimmed the normal runs).

@@ -56,10 +56,91 @@ def test_clear_wedged_holder_kills_a_stalled_run(tmp_path, monkeypatch):
     _hb(tmp_path, monkeypatch)
     (tmp_path / "scraper.heartbeat").write_text(
         f"4242 {time.time() - (config.STALL_MINUTES + 5) * 60:.0f} stuck", encoding="utf-8")
-    calls = {}
-    import subprocess
-    monkeypatch.setattr(subprocess, "run",
-                        lambda cmd, **k: calls.update(cmd=cmd) or None)
+    cmds = []
+
+    def fake_run(cmd, **k):
+        cmds.append(cmd)
+
+        class R:
+            # tasklist finds nothing -> the pid really is gone
+            stdout = "" if cmd[0] != "powershell" else ""
+        return R()
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
     assert scraper._clear_wedged_holder() is True
-    assert calls["cmd"][:2] == ["taskkill", "/PID"] and "4242" in calls["cmd"]
-    assert "/T" in calls["cmd"]                        # kills its Chromium children too
+    kill = next(c for c in cmds if c[0] == "taskkill")
+    assert kill[:2] == ["taskkill", "/PID"] and "4242" in kill
+    # NOT /T any more: walking a Chromium tree is what blew past the 30 s budget and
+    # made the takeover fail, so the children are reaped separately instead.
+    assert "/T" not in kill
+    assert any(c[0] == "tasklist" for c in cmds)        # death is verified, not assumed
+
+
+# --- recovering from a hung run ----------------------------------------------------
+def test_browser_reaping_is_scoped_to_our_own_profile(monkeypatch):
+    """The user's own Chrome is normally running — 36 of 39 chrome.exe processes when
+    this was written. Reaping by process name would close their browser, so the query
+    must filter on the scraper's profile path."""
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        class R:
+            stdout = "111\n222\n"
+        return R()
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    assert scraper._profile_browser_pids() == [111, 222]
+    joined = " ".join(seen["cmd"])
+    assert str(config.SCRAPER_PROFILE_DIR) in joined      # scoped to OUR profile
+    assert "CommandLine -like" in joined                  # …by command line, not name
+
+
+def test_listing_browsers_never_guesses_on_failure(monkeypatch):
+    """Returning a broader set on error would mean killing the user's Chrome."""
+    def boom(*a, **k):
+        raise OSError("powershell missing")
+
+    monkeypatch.setattr(scraper.subprocess, "run", boom)
+    assert scraper._profile_browser_pids() == []
+
+
+def test_a_kill_is_judged_by_whether_the_process_is_gone(monkeypatch):
+    """taskkill /T on a Chromium tree exceeded its 30 s budget, and the timeout was
+    treated as total failure — so the lock was never taken over and every later run
+    skipped. What matters is whether the pid still exists afterwards."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[0])
+        if cmd[0] == "taskkill":
+            raise scraper.subprocess.TimeoutExpired(cmd, 20)   # the old fatal case
+        class R:
+            stdout = "INFO: No tasks are running which match the specified criteria."
+        return R()
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    assert scraper._kill(4242) is True          # timed out, but the process IS gone
+    assert "tasklist" in calls                  # …because we verified rather than assumed
+    assert "/T" not in " ".join(str(c) for c in calls)
+
+
+def test_a_kill_that_really_failed_reports_false(monkeypatch):
+    def fake_run(cmd, **kw):
+        class R:
+            stdout = "chrome.exe   4242 Console   1   120,000 K" if cmd[0] == "tasklist" else ""
+        return R()
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    assert scraper._kill(4242) is False
+
+
+def test_the_wedge_takeover_does_not_depend_on_taskkills_exit_code(monkeypatch):
+    monkeypatch.setattr(scraper, "is_wedged", lambda: True)
+    monkeypatch.setattr(scraper, "heartbeat_pid", lambda: 9999)
+    monkeypatch.setattr(scraper, "heartbeat_age", lambda: 3600.0)
+    monkeypatch.setattr(scraper, "reap_orphan_browsers", lambda: 0)
+    monkeypatch.setattr(scraper, "_kill", lambda pid, timeout=20: True)
+    assert scraper._clear_wedged_holder() is True
+    monkeypatch.setattr(scraper, "_kill", lambda pid, timeout=20: False)
+    assert scraper._clear_wedged_holder() is False    # still alive -> leave the lock
