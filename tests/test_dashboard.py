@@ -207,6 +207,22 @@ def test_map_interrogation_controls_are_wired(temp_db, monkeypatch, tmp_path):
     assert "$('bycolor').addEventListener('change', render);" in page
 
 
+def test_touch_action_is_set_on_the_svg_not_only_the_container(temp_db, monkeypatch,
+                                                               tmp_path):
+    """touch-action does NOT inherit, and the pointer handlers live on the <svg>.
+    With `pan-y` on .map only, the svg computed to `auto`: the browser scrolled the
+    page while our handler panned the map, so one finger did both — the "glitchy on
+    phone" report."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert ".map,.map svg{touch-action:none}" in page
+    assert "touch-action:pan-y" not in page          # the bug, gone
+    # finger-sized targets wherever the pointer is coarse
+    assert "@media (pointer:coarse){" in page
+    assert "min-height:40px" in page
+
+
 def test_legend_explains_the_map_without_javascript(temp_db, monkeypatch, tmp_path):
     """A partner opens the shared file cold; the key to the symbols has to be in the
     markup, not assembled by a script that a downloaded file may never run."""

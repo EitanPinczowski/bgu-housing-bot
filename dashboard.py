@@ -174,7 +174,13 @@ tr.row.cursor td{box-shadow:inset 2px 0 0 var(--accent)}
 .note{width:100%;min-height:46px;font:inherit}
 /* The map IS the page now — where a flat is, is the first question. */
 .map{margin:10px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;
-     position:relative;height:min(78vh,900px);background:#f6f7f9;touch-action:pan-y}
+     position:relative;height:min(78vh,900px);background:#f6f7f9}
+/* touch-action must sit on the SVG, because that is where the pointer handlers are —
+   it does NOT inherit from .map. With pan-y here the browser scrolled the page while
+   our own handler panned the map, and one finger did both at once: the "glitchy on
+   phone" report. `none` hands every gesture to us; the page is scrolled from the
+   header, the filter bar and the list, all of which sit outside the map. */
+.map,.map svg{touch-action:none}
 .map svg{display:block;width:100%;height:100%;cursor:grab}
 .map svg.drag{cursor:grabbing}
 .maphint{position:absolute;inset-inline-start:8px;bottom:6px;font-size:11px;
@@ -220,6 +226,16 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
       border:1px solid var(--line);border-radius:5px;text-decoration:none;
       color:var(--fg);background:var(--bg);cursor:pointer}
 #card .x{display:none}
+/* Finger-sized targets wherever the pointer is coarse. 13px text with 3px of padding
+   is a ~19px target; the guidance is 44px, and a missed tap on 🚶 is indistinguishable
+   from a broken button. Not tied to the width media query — a tablet is coarse too. */
+@media (pointer:coarse){
+  #card .btns a,#card .btns button{min-width:40px;min-height:40px;font-size:18px;
+        display:inline-flex;align-items:center;justify-content:center}
+  .mapbtns button{min-height:36px;padding:6px 12px}
+  #legend label.lay{line-height:2.4}
+  #legend>summary{padding:9px}
+}
 #boxchip{position:absolute;inset-inline-start:8px;top:8px;z-index:15;font-size:12px;
        background:var(--accent);color:#fff;border-radius:99px;padding:2px 6px 2px 10px}
 #boxchip button{background:none;border:0;color:#fff;cursor:pointer;font-size:12px;
@@ -449,8 +465,9 @@ function initMapGestures(){
   /* Zoom on Ctrl/⌘+wheel only. A plain wheel must scroll the PAGE: the map is 78vh
      tall, so grabbing every scroll event means you can't reach the list below it —
      and a casual scroll silently zooms the map, which is exactly what happened the
-     first time this was tried. Same reason `touch-action: pan-y` in the CSS: one
-     finger scrolls the page, two fingers work the map. */
+     first time this was tried.
+     TOUCH is different: one finger pans the map and two pinch to zoom, the normal
+     maps convention. The page is scrolled from outside the map. */
   svg.addEventListener('wheel', ev => {
     if (!ev.ctrlKey && !ev.metaKey) return;          // let the page scroll
     ev.preventDefault();
@@ -1194,7 +1211,8 @@ def render(live: bool, snapshot: bool = False) -> str:
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
   <div id="walknote" style="display:none"></div>
   {_legend_html()}
-  <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה להזזה · ריחוף/נגיעה בנקודה לפרטים</div>
+  <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה/אצבע להזזה ·
+    ריחוף/נגיעה בנקודה לפרטים</div>
   <div id="card"><button class="x" aria-label="סגור">✕</button><div id="cardbody"></div></div>
 </div>
 <details class="list" id="list"><summary id="listsum">רשימה</summary>
