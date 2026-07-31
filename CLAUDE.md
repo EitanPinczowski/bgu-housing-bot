@@ -135,9 +135,46 @@ SQLite + optional Google Sheets + Telegram alert`
     `notifier.send_document` defaults to the **group**, never `all`. `--send` posts it;
     `BGU Dashboard Share` runs it daily at 21:00.
   - `POST /api/walk` (not `GET /api/walk/<key>`): a `dedup_key` is `phone|address`, so
-    a GET would put a landlord's phone number in the URL and the access log. Draws the
-    real OSRM path (`osrm.foot_geometry`, GeoJSON — no polyline decoding). **No
-    straight-line fallback**: there is no honest estimate of *which way* you walk.
+    a GET would put a landlord's phone number in the URL and the access log. Same for
+    `POST /api/locate`. Draws the real OSRM path (`osrm.foot_geometry`, GeoJSON — no
+    polyline decoding). **No straight-line fallback**: there is no honest estimate of
+    *which way* you walk. One `table_minutes` call picks the gate, then ONE geometry
+    call — it used to be one geometry call per gate, i.e. 4× 15 s of timeouts to
+    discover the router was down. Optional `dest` routes to an amenity instead.
+  - **Touch: one finger pans, two pinch.** `touch-action` must be on `.map svg`, not
+    just `.map` — it does NOT inherit, and the pointer handlers live on the svg. With
+    `pan-y` there the browser scrolled the page *while* we panned the map: the
+    "glitchy on phone" bug. Card buttons are 40px under `@media (pointer:coarse)`.
+  - **A dot says how much to trust it.** `geocode_source` → `geocode.confidence()`;
+    `street`/`none` draw HOLLOW. Only 45% of listings have a house number; 41% are a
+    street/neighbourhood centroid. That is why 282 mapped listings sit on **105
+    distinct coordinates** — so a badge over a *stack* (one shared point, up to 19
+    flats) **fans out** rather than zooming, because zoom can never separate identical
+    coordinates. A badge over a genuine spread still zooms. Don't "simplify" these
+    back into one behaviour.
+  - **📍 place-mode corrects a location, and it is authoritative.**
+    `storage.manual_locations` (keyed by dedup_key) is preferred by
+    `pipeline._classify` — the same funnel `replay.py` re-runs — so a correction
+    survives `replay --apply`. `"manual"` is registered in `geocode._PRECISE_SOURCES`
+    as `exact`. Saving re-grades the listing through the real classifier and reports
+    tier/walk/score before→after: moving a dot changes the verdict, and that must not
+    be silent. Scope "this address" instead calls the existing `geocode.add_pin` +
+    `uncache`, which fixes every current and future listing there.
+  - **Amenity pins are PER-LISTING.** The map-wide layer can only carry fixed
+    landmarks; "a stop with a bus to the train station" matches 428 stops, so it is
+    skipped by the `_MAX_PINS_PER_TARGET` guard and has no useful map-wide form.
+    Opening a card pins that flat's own stops via `amenities.locate`, which resolves
+    coordinates by (name, direction_id) out of `amenities.json` — matching on name
+    alone put both directions of a junction on one pin. Still display-only.
+- `publish.py` — pushes the dated snapshot to **GitHub Pages** so a URL exists when the
+  PC is off (Tailscale and tunnels all need it awake; the scraper does too, so the
+  hosted copy is a SNAPSHOT, never live). `SITE_REPO_URL` in `.env`, read at call time
+  because `.env` is loaded per entry point. **It refuses to publish into the code repo**
+  — that repo is public and git history is permanent, so ~350 landlords' phone numbers
+  could never be taken back. One always-amended commit, force-pushed: a ~1 MB generated
+  page four times a day would otherwise add ~365 MB/year of unread history. The page is
+  public and unauthenticated by the user's explicit decision (2026-07-31);
+  `PUBLISH_NOINDEX=1` only hides it from search. Unset `SITE_REPO_URL` = silent no-op.
 - `map_listings.py` — the shared map renderer (dashboard + `area_map.py`): projection
   (`_projector`/`xy_from`), street geometry as **4 combined `<path>`s** not ~2,800
   polylines, zoom-revealed street labels (`data-minzoom`), landmarks, display-only

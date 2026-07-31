@@ -348,17 +348,37 @@ are findable even though the bot never extracts them — "new since your last vi
 badges, side-by-side compare with an OSRM-planned viewing route, and `j`/`k`/`s`/`x`
 keyboard triage. On a phone the table becomes cards.
 
-**The map is the page.** It zooms (Ctrl/⌘+wheel, or pinch — a plain wheel scrolls the
-page on purpose) and pans by dragging. Dots too close together collapse into a numbered
-badge that splits as you zoom, so a street holding two dozen listings never reads as
-one. Hovering a dot opens a small card beside it; tapping does the same on a phone.
-Street names appear as they become legible. **Shift+drag** (or the `▭ אזור` button)
-rubber-bands an area and filters to it. The legend panel — collapsed, top corner —
-explains every symbol and switches layers off: streets, neighborhood outlines, transit
-pins, and **walk-time rings** at 5/10/15/20 min around each gate, which is the
-`MAX_WALK_MINUTES` rule behind every AMBER made visible. 🚶 on a card draws the **real
-OSRM walking route** to the nearest gate (live server only — a static file has no
-router to ask).
+**The map is the page.** On a desktop it zooms with Ctrl/⌘+wheel (a plain wheel scrolls
+the page on purpose) and pans by dragging; on a phone **one finger pans and two pinch**,
+and you scroll the page from outside the map. Hovering a dot opens a small card beside
+it; tapping does the same on a phone. Street names appear as they become legible.
+**Shift+drag** (or the `▭ אזור` button) rubber-bands an area and filters to it. The
+legend panel — collapsed, top corner — explains every symbol and switches layers off:
+streets, neighborhood outlines, transit pins, and **walk-time rings** at 5/10/15/20 min
+around each gate, which is the `MAX_WALK_MINUTES` rule behind every AMBER made visible.
+
+**How much to trust a dot.** Only 45% of listings resolve to a house number; 41% land
+on a street or neighbourhood centroid because the post never gave one. Those draw
+**hollow** instead of solid, the card says which it is, and `מיקום משוער בלבד` filters
+to just them. This is also why "the clusters don't open up": 282 mapped listings sit on
+**105 distinct coordinates**, 19 of them on a single point, and no zoom level can
+separate identical coordinates. A badge over a genuine spread zooms; a badge over a
+*stack* **fans out** on leader lines so you can reach each flat.
+
+**Fixing a wrong location.** 📍 on a card arms place-mode; the next tap on the map puts
+the flat where it really is, and asks whether that applies to this listing only or to
+**every listing at that address** (the right answer for the two flats whose address is
+literally `אוניברסיטת בן גוריון`, and for a bare `שכונה ד`). The correction goes through
+`pipeline._classify`, so it survives `replay --apply`, and the card reports what it did
+to the tier, walk and score — moving a dot changes the verdict, and that shouldn't be
+silent. `↩` undoes it.
+
+**Transport.** Opening a card pins *that listing's* 669 stops (both directions), its
+train-bound stop and the gym, each on a hairline back to the flat and each with its own
+🚶 that draws the real OSRM path. The map-wide layer only shows fixed landmarks: "a stop
+with a bus to the train station" matches 428 of the city's stops, so there is no useful
+map-wide version of it. 🚶 without a destination routes to the nearest campus gate. All
+of it is display-only and never enters the fit score.
 
 ### Sharing it with the people flat-hunting with you
 
@@ -381,7 +401,37 @@ the last scrape; `run_dashboard_share.cmd` is the same thing by hand.
 **Live**, if they need to vote and see new listings as they land: `tailscale share`, or
 invite their own Tailscale account to this one machine, and give them the token URL.
 That needs their account and this PC awake, which is why the daily file is the default
-rather than the only route. Still no public tunnel — the reasoning above hasn't changed.
+rather than the only route.
+
+### A public URL that works when this PC is off
+
+Tailscale and every tunnel still need the machine awake. For a link that doesn't:
+
+```bash
+python dashboard.py --share --publish
+```
+
+pushes the same snapshot to **GitHub Pages**. Set it up once:
+
+1. Create an empty **public** GitHub repo — suggested name `bgu-housing-dashboard` —
+   and turn Pages on for `main`, root folder.
+2. Put its clone URL in `.env` as `SITE_REPO_URL`.
+
+`update_schedule.cmd` then refreshes it at 09:00/13:00/17:00 (`BGU Dashboard Publish`)
+and again at 21:00 with the Telegram post (`BGU Dashboard Share`). Without
+`SITE_REPO_URL` the publish step prints one line and does nothing.
+
+Three things to know:
+
+- **It is a snapshot, never live.** The scraper needs this PC and OSRM runs in local
+  Docker, so the URL is only as fresh as the last push. The dated banner on the page
+  says so — a URL looks permanently current in a way a dated file doesn't.
+- **It is public and unauthenticated.** Anyone with the link reads every listing,
+  contact and address, and search engines will index it. `PUBLISH_NOINDEX=1` in `.env`
+  keeps it out of search results; it does not restrict access.
+- **It must be its own repo.** Publishing into this code repo would write those phone
+  numbers into public git history permanently, where deleting the file wouldn't remove
+  them. `publish.py` refuses to do it.
 
 ### Scrape timing — run `update_schedule.cmd` once, as Administrator
 
