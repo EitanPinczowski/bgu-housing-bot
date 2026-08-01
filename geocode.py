@@ -380,11 +380,45 @@ def geocode_cached(location_text: Optional[str]):
     return skipped_street                     # street-level, better than no dot at all
 
 
+# A hand-curated point is a decision, not a guess: the static table is maintained by
+# hand and `user_pins.json` is written by the 📍 button, so if either says a flat is on
+# campus, someone meant it. Everything else is computed or fetched and gets masked.
+_NO_MASK_SOURCES = {"static", "static_area", "static_street", "manual"}
+
+
 def geocode_detailed(location_text: Optional[str]):
     """(coords, source) or (None, None). source ∈
     static/cache/google/overpass/nominatim — which tier resolved the name, so a
     lower-confidence hit (overpass/nominatim) can be flagged for a human check.
-    Order: static table -> cache -> Google -> Overpass -> Nominatim."""
+    Order: static table -> cache -> Google -> Overpass -> Nominatim.
+
+    Whatever tier answers, the point must be somewhere a flat can exist. See
+    `_reject_no_housing`."""
+    coords, source = _resolve_detailed(location_text)
+    return _reject_no_housing(location_text, coords, source)
+
+
+def _reject_no_housing(location_text, coords, source):
+    """Drop a computed point that landed on a campus or in a hospital.
+
+    Nobody rents in the middle of Ben-Gurion University, so such a point is a data error
+    every time — and they were reaching the map from several directions at once: the old
+    `אוניברסיטה` landmark WAS the campus centre, 13 house-number anchors sat on
+    institutional buildings, and an external geocoder can always answer with a lecture
+    hall. Rejecting sends the address to NEEDS_DATA, where a person sees it; that is the
+    same trade `_plausible_external` already makes for a point 250 m off its street."""
+    if not coords or source in _NO_MASK_SOURCES:
+        return coords, source
+    import zones
+    where = zones.no_housing_here(coords[0], coords[1])
+    if where:
+        print(f"[geocode] rejected {source} for {location_text!r}: inside {where} — "
+              f"not a place anyone rents")
+        return None, None
+    return coords, source
+
+
+def _resolve_detailed(location_text: Optional[str]):
     if not location_text:
         return None, None
     # Fold Hebrew abbreviation marks once, here, so every tier below — the static
@@ -661,11 +695,14 @@ def _candidate_tokens(location_text: Optional[str]) -> list:
 # Only places whose surroundings are unambiguously in the search area belong here — a
 # point is emitted for the LANDMARK, not the flat, so it must be a good approximation
 # of "somewhere around here".
+# The university and Soroka USED to be here, pointing at the campus centre and the
+# hospital. Both points test INSIDE their own no-housing polygon, so every listing whose
+# address was only `ליד האוניברסיטה` got a dot in the middle of a campus nobody can rent
+# in — 8 of them. "Near the university" is not a location; those now resolve to nothing
+# and land in NEEDS_DATA, where a human sees them (user's decision, 2026-08-01).
+# `הבלוק` stays: it is a real residential quarter, and it is graded `static_area` so it
+# already draws as the area it is rather than as a building.
 _LANDMARKS = (
-    (("אוניברסיטת בן גוריון", "אוניברסיטה", "האוניברסיטה", "בן גוריון", "בן-גוריון"),
-     (31.2622, 34.8015)),                                  # campus centre
-    (("סורוקה", "בית החולים סורוקה", "המרכז הרפואי סורוקה"),
-     (31.2585, 34.8005)),                                  # Soroka
     (("הבלוק", "בבלוק"), (31.259386, 34.796130)),
 )
 # "near / next to / opposite / close to" — the phrasings that make a landmark the
@@ -747,6 +784,19 @@ def _load_anchors() -> dict:
                 _anchors.setdefault(street, {}).update(nums)
         except Exception:
             pass
+        # An anchor on institutional land is wrong wherever it came from, and it poisons
+        # its neighbours: `יוסף בן מתיתיהו 97` sits inside the campus, and interpolating
+        # between it and 77 put number 90 on the university lawn. 13 anchors across six
+        # streets were like this.
+        import zones
+        dropped = 0
+        for street, nums in list(_anchors.items()):
+            for num, pt in list(nums.items()):
+                if zones.no_housing_here(pt[0], pt[1]):
+                    del nums[num]
+                    dropped += 1
+        if dropped:
+            print(f"[geocode] dropped {dropped} anchor(s) inside a campus/hospital")
     return _anchors
 
 

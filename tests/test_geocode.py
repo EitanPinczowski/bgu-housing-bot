@@ -130,9 +130,9 @@ def test_overpass_way_center_and_box_guard(monkeypatch, tmp_path):
     # a way carries a computed `center`; a first hit outside the BS box is skipped
     monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp({"elements": [
         {"type": "way", "center": {"lat": 32.08, "lon": 34.78}},   # Tel Aviv — rejected
-        {"type": "way", "center": {"lat": 31.257, "lon": 34.80}},  # BS — used
+        {"type": "way", "center": {"lat": 31.257, "lon": 34.795}}, # BS — used
     ]}))
-    assert geocode.geocode("כתובת מרחוב כלשהו") == (31.257, 34.80)
+    assert geocode.geocode("כתובת מרחוב כלשהו") == (31.257, 34.795)
 
 
 def test_overpass_skipped_when_disabled(monkeypatch, tmp_path):
@@ -227,15 +227,15 @@ def _user_anchor_file(monkeypatch, tmp_path):
 def test_a_pin_becomes_an_anchor_and_places_the_rest_of_the_street(monkeypatch, tmp_path):
     """The point of Part 4: a 📍 on ONE numbered flat has to place the others too.
     Without it the 18 streets OSM has no addresses for can never be fixed at all."""
-    line = [[31.260 + i * 0.0002, 34.800] for i in range(11)]
+    line = [[31.260 + i * 0.0002, 34.795] for i in range(11)]
     monkeypatch.setattr(geocode.streets, "geometry", lambda s: [line])
     monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
     _user_anchor_file(monkeypatch, tmp_path)
     _no_buildings(monkeypatch)
     assert geocode.interpolate_house("X", "6") is None          # nothing known yet
 
-    assert geocode.add_anchor("X", "1", 31.2600, 34.800) is True
-    assert geocode.add_anchor("X", "11", 31.2620, 34.800) is True
+    assert geocode.add_anchor("X", "1", 31.2600, 34.795) is True
+    assert geocode.add_anchor("X", "11", 31.2620, 34.795) is True
     mid = geocode.interpolate_house("X", "5")
     assert mid is not None and 31.2600 < mid[0] < 31.2620       # a DIFFERENT flat
 
@@ -244,13 +244,13 @@ def test_a_user_anchor_beats_osm_and_survives_a_pbf_rebuild(monkeypatch, tmp_pat
     """User anchors live in their own file so load_osm_addresses.py cannot wipe them,
     and they win: a person looked at the map, OSM did not."""
     (tmp_path / "house_anchors.json").write_text(
-        '{"X": {"1": [31.2000, 34.8000]}}', encoding="utf-8")
+        '{"X": {"1": [31.2000, 34.7950]}}', encoding="utf-8")
     monkeypatch.setattr(geocode.streets, "geometry",
-                        lambda s: [[[31.2600, 34.800], [31.2620, 34.800]]])
+                        lambda s: [[[31.2600, 34.795], [31.2620, 34.795]]])
     monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
     _user_anchor_file(monkeypatch, tmp_path)
-    assert geocode.add_anchor("X", "1", 31.2601, 34.800) is True
-    assert geocode._load_anchors()["X"]["1"] == [31.2601, 34.8]
+    assert geocode.add_anchor("X", "1", 31.2601, 34.795) is True
+    assert geocode._load_anchors()["X"]["1"] == [31.2601, 34.795]
 
 
 def test_a_mistap_far_from_the_street_is_refused_as_an_anchor(monkeypatch, tmp_path):
@@ -258,13 +258,13 @@ def test_a_mistap_far_from_the_street_is_refused_as_an_anchor(monkeypatch, tmp_p
     guards OSM's own data guards a hand-placed point. The listing's own manual location
     is stored separately and is unaffected."""
     monkeypatch.setattr(geocode.streets, "geometry",
-                        lambda s: [[[31.2600, 34.800], [31.2620, 34.800]]])
+                        lambda s: [[[31.2600, 34.795], [31.2620, 34.795]]])
     monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
     _user_anchor_file(monkeypatch, tmp_path)
     assert geocode.add_anchor("X", "7", 31.2900, 34.8400) is False   # ~4 km away
     assert not (tmp_path / "user_anchors.json").exists()
     # and nothing that isn't a house number ever becomes an anchor
-    assert geocode.add_anchor("X", "ב", 31.2610, 34.800) is False
+    assert geocode.add_anchor("X", "ב", 31.2610, 34.795) is False
 
 
 def test_snap_moves_a_point_onto_a_building_but_only_a_near_one(monkeypatch):
@@ -413,7 +413,7 @@ def test_geocode_detailed_reports_source(monkeypatch, tmp_path):
     _overpass_on(monkeypatch, tmp_path)
     import requests
     monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp(
-        {"elements": [{"type": "node", "lat": 31.257, "lon": 34.80}]}))
+        {"elements": [{"type": "node", "lat": 31.257, "lon": 34.795}]}))
     assert geocode.geocode_detailed("גר בשכונה ג")[1] == "static_area"   # static table
     assert geocode.geocode_detailed("רחוב חדש כלשהו 5")[1] == "overpass"
 
@@ -526,13 +526,17 @@ def test_word_prefixes_are_stripped_from_street_names():
     assert streets.canonical("גמל")[0] == "גמל"        # sanity: the index works
 
 
-def test_a_described_position_near_a_landmark_resolves():
-    """'ליד האוניברסיטה וסורוקה' names no street but is unambiguously campus-adjacent;
-    it used to come back UNKNOWN and get dropped."""
+def test_near_the_university_is_not_a_location():
+    """`ליד האוניברסיטה` used to resolve to the campus CENTRE, which is inside the
+    campus polygon — 8 listings got a dot in the middle of a university nobody can rent
+    in. "Near the university" is not a location, so it now resolves to nothing and the
+    listing lands in NEEDS_DATA where a person sees it. A real residential quarter is
+    still a landmark."""
     import geocode
     for text in ("ליד האוניברסיטה וסורוקה", "קרוב לאוניברסיטת בן גוריון",
                  "מול שער האוניברסיטה", "בסמוך לסורוקה"):
-        assert geocode._descriptive_landmark(text) is not None, text
+        assert geocode._descriptive_landmark(text) is None, text
+    assert geocode._descriptive_landmark("ליד הבלוק") is not None
 
 
 def test_a_landmark_mentioned_in_passing_never_hijacks_a_real_address(monkeypatch):
@@ -545,11 +549,14 @@ def test_a_landmark_mentioned_in_passing_never_hijacks_a_real_address(monkeypatc
     monkeypatch.setattr(geocode, "_save_cache", lambda: None)
     coords, src = geocode.geocode_detailed("רגר 5, 5 דקות מהאוניברסיטה")
     assert coords and src == "overpass"
-    # only when every real tier fails does the description answer
+    # …and mentioning the campus no longer contributes a position at all, so it cannot
+    # hijack anything even as a last resort
     monkeypatch.setattr(geocode, "_overpass", lambda t: (None, None, True))
     monkeypatch.setattr(geocode, "_nominatim", lambda t: None)
-    coords, src = geocode.geocode_detailed("ליד האוניברסיטה וסורוקה")
-    assert src == "landmark"
+    assert geocode.geocode_detailed("ליד האוניברסיטה")[0] is None
+    # the one landmark left is a residential quarter, and it is ALSO a static key, so
+    # the static tier answers it first — as an area, which is what it is
+    assert geocode.geocode_detailed("ליד הבלוק")[1] == "static_area"
 
 
 def test_landmark_needs_both_a_proximity_word_and_a_landmark():

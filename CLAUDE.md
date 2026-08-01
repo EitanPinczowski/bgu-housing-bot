@@ -135,6 +135,26 @@ SQLite + optional Google Sheets + Telegram alert`
 - `load_osm_buildings.py` — `buildings.json`: 19,110 footprint CENTRES on a coarse grid
   index, from the same PBF. Only 3.7% of them carry a house number, which is why nothing
   in the pipeline had ever seen a building.
+- **NOBODY LIVES ON THE CAMPUS OR IN THE HOSPITAL** (`zones.no_housing_here`, from the
+  `university`/`hospital` polygons already in `area_features.json`). A coordinate landing
+  there is a data error every time, and they were arriving from three directions at once:
+  the `אוניברסיטה` landmark point **was** the campus centre (8 listings would have got a
+  dot in the middle of the university on the next replay), **13 house-number anchors** sat
+  on institutional buildings — `יוסף בן מתיתיהו 97` dragged number 90 onto the lawn — and
+  an external geocoder can always answer with a lecture hall.
+  - `_load_anchors()` drops masked anchors; `seed_anchors._accept` refuses them at source;
+    `geocode_detailed` rejects any masked result → NEEDS_DATA, where a person sees it.
+  - **Hand-placed points are exempt** (`_NO_MASK_SOURCES`): the static table is curated and
+    a 📍 pin is deliberate, so if a human says a flat is on campus, they meant it.
+  - **The mask is safe because the polygon is tight**: measured, NO street geometry runs
+    inside the campus (0 of 23 vertices on `יוסף בן מתיתיהו`, 0 of 231 on `רגר`), and real
+    perimeter addresses like `רגר 104` fall outside it. Don't widen it to a bounding box.
+  - Only kinds we hold a surveyed outline for. Guessing the extent of the mall or the
+    industrial zone would be inventing, which is what this exists to stop.
+  - `ליד האוניברסיטה` / `בסמוך לסורוקה` now resolve to **nothing**. "Near the university"
+    is not a location (user's decision, 2026-08-01); the listing stays in the list and in
+    search, it just stops claiming a position. `הבלוק` remains a landmark — it is a real
+    residential quarter — though the static tier answers it first, as `static_area`.
 - **The geocode cache CANNOT be shrunk by more than half** (`_save_cache`). It was wiped
   from ~300 entries to 1 twice in one day: any process holding a small `_cache` — a
   hold-out harness using it as scratch, a long-lived server whose copy predates a rebuild

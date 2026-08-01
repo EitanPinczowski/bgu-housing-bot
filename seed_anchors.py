@@ -163,6 +163,10 @@ def _accept(street: str, text: str, pt) -> tuple:
     off = geocode._off_street_m(street, pt[0], pt[1])
     if off is not None and off > MAX_OFFSET_M:
         return None
+    # An address govmap places inside the campus or the hospital is a lecture hall, not a
+    # flat — and as an anchor it drags its interpolated neighbours in after it.
+    if zones.no_housing_here(pt[0], pt[1]):
+        return None
     return number, pt
 
 

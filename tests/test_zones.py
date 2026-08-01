@@ -136,3 +136,36 @@ def test_display_neighborhoods_absent_is_not_fatal(tmp_path, monkeypatch):
     monkeypatch.setattr(map_listings, "_MAP_NBHD_PATH", tmp_path / "nope.json")
     assert map_listings.display_neighborhoods_svg(lambda a, b: (0, 0),
                                                   (31.0, 31.5, 34.6, 34.9)) == []
+
+
+def test_nothing_lives_on_the_campus_or_in_the_hospital():
+    """The user's report: dots inside Ben-Gurion University, where no one rents.
+
+    The polygon has to be tight enough to separate "on the lawn" from "across the road",
+    or masking would throw away real perimeter addresses — רגר and יוסף בן מתתיהו both
+    have genuine flats along the campus edge."""
+    import zones
+    assert zones.no_housing_here(31.2622, 34.8015) == "אוניברסיטת בן גוריון"  # campus centre
+    assert zones.no_housing_here(31.2585, 34.8005) == "סורוקה"                # the hospital
+    # real addresses along the campus edge must survive
+    assert zones.no_housing_here(31.264384, 34.798418) is None   # רגר 104
+    assert zones.no_housing_here(31.264404, 34.800715) is None   # יוסף בן מתתיהו 46
+    assert zones.no_housing_here(None, None) is None
+
+
+def test_an_anchor_on_institutional_land_is_dropped(monkeypatch, tmp_path):
+    """One bad anchor poisons its neighbours: יוסף בן מתיתיהו 97 sits inside the campus,
+    and interpolating between it and 77 put number 90 on the university lawn. 13 anchors
+    across six streets were like this."""
+    import json
+    import geocode
+    monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
+    monkeypatch.setattr(geocode, "_GOVMAP_ANCHORS_PATH", tmp_path / "govmap.json")
+    monkeypatch.setattr(geocode, "_USER_ANCHORS_PATH", tmp_path / "user.json")
+    (tmp_path / "house_anchors.json").write_text(json.dumps({
+        "X": {"1": [31.2600, 34.7950],        # a normal street — kept
+              "97": [31.2622, 34.8015]}}),    # inside the campus — dropped
+        encoding="utf-8")
+    monkeypatch.setattr(geocode, "_anchors", None)
+    got = geocode._load_anchors()
+    assert "1" in got["X"] and "97" not in got["X"]

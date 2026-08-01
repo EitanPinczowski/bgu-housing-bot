@@ -65,6 +65,44 @@ def in_no_amber_zone(lat: Optional[float], lon: Optional[float]) -> bool:
     return any(_point_in(lat, lon, p) for p in _no_amber_polys())
 
 
+# Land where a flat cannot be, whatever a geocoder says. Only kinds we hold a real
+# surveyed outline for — guessing the extent of a mall or an industrial zone would be
+# inventing, which is the failure mode this exists to prevent.
+_NO_HOUSING_KINDS = ("university", "hospital")
+
+
+@lru_cache(maxsize=1)
+def _no_housing_polys() -> list:
+    """[(name, polygon)] for the campus and the hospital, from area_features.json."""
+    try:
+        with open(config.ROOT / "area_features.json", encoding="utf-8") as f:
+            return [(lm.get("name") or "?", lm["polygon_latlon"])
+                    for lm in json.load(f).get("landmarks", [])
+                    if lm.get("kind") in _NO_HOUSING_KINDS and lm.get("polygon_latlon")]
+    except Exception:
+        return []
+
+
+def no_housing_here(lat: Optional[float], lon: Optional[float]) -> Optional[str]:
+    """The name of the institution the point sits inside, or None.
+
+    Nobody rents a flat in the middle of Ben-Gurion University or Soroka hospital, so a
+    coordinate that lands there is a data error every time — and it was reaching the map:
+    the `אוניברסיטה` landmark point IS the campus centre, and 13 house-number anchors sit
+    on institutional buildings, dragging interpolated neighbours in after them.
+
+    Measured before this was added: NO street geometry runs inside the campus (0 of 23
+    vertices on `יוסף בן מתיתיהו`, 0 of 231 on `רגר`), and real perimeter addresses like
+    `רגר 104` fall outside the polygon. The outline is tight enough to separate "across
+    the road" from "on the lawn", which is what makes rejecting safe."""
+    if lat is None or lon is None:
+        return None
+    for name, poly in _no_housing_polys():
+        if _point_in(lat, lon, poly):
+            return name
+    return None
+
+
 @lru_cache(maxsize=1)
 def _neighborhood_polys() -> list:
     """[(letter, polygon)] for the imported ב/ג/ד boundaries (neighborhoods.json,
