@@ -276,6 +276,34 @@ def test_snap_moves_a_point_onto_a_building_but_only_a_near_one(monkeypatch):
     assert far == (31.2610, 34.8000)                         # ~110 m away: left alone
 
 
+def test_a_street_type_word_that_is_part_of_the_name_is_kept(monkeypatch):
+    """`דרך`/`שדרות`/`סמטת` are usually noise, but sometimes they ARE the name, and
+    stripping them then names a different REAL street: `דרך מצדה 69` was placed on
+    `מצדה`, 585 m away. The full name is tried first — but only on an exact index
+    match, so a fuzzy hit can't invent `רחוב רגר`."""
+    toks = geocode._candidate_tokens("דרך מצדה 69")
+    assert toks[0] == "דרך מצדה" and "מצדה" in toks
+    # the ordinary case is untouched: the type word is still stripped
+    assert geocode._candidate_tokens("רחוב רינגלבלום 5")[0] == "רינגלבלום"
+    assert geocode._candidate_tokens("רחוב רגר 179, באר שבע")[0] == "שדרות יצחק רגר"
+
+
+def test_our_own_placement_is_held_to_the_off_street_rule(monkeypatch):
+    """The 250 m gate used to apply only to Overpass/Nominatim, so a fall-through to a
+    similarly-named street looked fully confident. Rejecting sends the listing on to
+    the next tier (and ultimately to NEEDS_DATA), where a human sees it."""
+    seen = []
+    monkeypatch.setattr(geocode, "_plausible_external",
+                        lambda text, pt, src: seen.append((text, src)) or False)
+    monkeypatch.setattr(geocode, "place_house", lambda st, hn: ((31.0, 34.0), "interpolated"))
+    monkeypatch.setattr(geocode, "_overpass", lambda t: (None, None, True))
+    monkeypatch.setattr(geocode.config, "USE_NOMINATIM_FALLBACK", False)
+    monkeypatch.setattr(geocode, "_cache", {})
+    got, src = geocode.geocode_detailed("אלכסנדר ינאי 32")
+    assert seen and seen[0][1] == "interpolated"      # the internal hit WAS checked
+    assert got is None                                # and refused, not returned
+
+
 def test_dead_mirror_is_skipped_after_first_failure(monkeypatch, tmp_path):
     """A dead Overpass mirror must cost its timeout ONCE, not on every lookup — that
     stall was making a single address take minutes."""

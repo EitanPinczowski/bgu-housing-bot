@@ -184,7 +184,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 5      # 5: building-centroid anchors + 2D parity interpolation
+GEOCODE_LOGIC_VERSION = 6      # 6: keep the street-type word; gate internal placements
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -321,8 +321,8 @@ def geocode_cached(location_text: Optional[str]):
     if hn:                                    # local interpolation, no network
         for cand in _candidate_tokens(location_text)[:2]:
             real, _how = streets.canonical(cand)
-            pt, _how = place_house(real or cand, hn)
-            if pt:
+            pt, how = place_house(real or cand, hn)
+            if pt and _plausible_external(location_text, pt, how):
                 return pt
 
     entry = _load_cache().get(norm)
@@ -393,7 +393,11 @@ def geocode_detailed(location_text: Optional[str]):
         for cand in _candidate_tokens(location_text)[:2]:
             real, _how = streets.canonical(cand)
             pt, how = place_house(real or cand, hn)
-            if pt:
+            # The SECOND candidate can be a different real street with a similar name,
+            # and placing there is worse than not placing at all: `דרך מצדה 69` fell
+            # through to `מצדה` and landed 585 m away, looking fully confident. Hold an
+            # internal placement to the same distance rule the external tiers obey.
+            if pt and _plausible_external(location_text, pt, how):
                 return pt, how
 
     # 2) cache of earlier lookups (success or a still-fresh miss)
@@ -551,6 +555,20 @@ def _overpass_name(location_text: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Same, but KEEPING the street-type word. `דרך`/`שדרות`/`סמטת` are usually noise, and
+# stripping them is what makes `רחוב רינגלבלום 5` match OSM's `רינגלבלום`. Sometimes
+# they are part of the name, and then stripping them names a DIFFERENT REAL STREET:
+# `דרך מצדה 69` was placed on `מצדה`, 585 m from דרך מצדה — caught by audit_geocode.
+_KEEP_TYPE_STRIP = re.compile(r"\d+(?:/\d+)?|שכונ[הת]\s*[א-י]?['׳]?")
+
+
+def _typed_name(location_text: str) -> str:
+    s = _CITY_RE.sub(" ", location_text)
+    s = _KEEP_TYPE_STRIP.sub(" ", s)
+    s = s.translate(str.maketrans("", "", '"\\/,'))
+    return re.sub(r"\s+", " ", s).strip()
+
+
 # The city name in the address breaks the OSM name~ match: "רגר 179" resolves but
 # "רחוב רגר 179, באר שבע" did not. Strip it (and the ב"ש abbreviations).
 _CITY_RE = re.compile(r"באר\s*שבע|ב['\"׳״]ש\b|beer\s*sheva", re.IGNORECASE)
@@ -574,6 +592,12 @@ def _candidate_tokens(location_text: Optional[str]) -> list:
             out.append(tok)
 
     parts = [p for p in _SPLIT_RE.split(base) if p and p.strip()]
+    # A street whose name INCLUDES its type word wins outright, but only on an EXACT
+    # index match — a fuzzy one would let "רחוב רגר" invent a street. See _typed_name.
+    for p in parts:
+        real, how = streets.canonical(_typed_name(p))
+        if real and how == "exact":
+            add(real)
     cleaned = [_overpass_name(p) for p in parts] or [_overpass_name(base)]
     # canonical (real OSM) names first — they query exactly and fix typos/prefixes
     for c in cleaned:
