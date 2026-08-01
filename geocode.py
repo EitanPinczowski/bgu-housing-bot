@@ -36,6 +36,24 @@ def is_precise_address(s: Optional[str]) -> bool:
     return any(w in s for w in _STREET_WORDS)
 
 
+# Static-table keys that name an AREA, not a place. A neighbourhood is detected by its
+# `שכונה` prefix; these are the slang ones that aren't spelled that way but cover just as
+# much ground — הבלוק is the whole student quarter, several streets across.
+_AREA_KEYS = {"הבלוק", "בבלוק"}
+
+
+def _static_source(key: Optional[str]) -> str:
+    """'static' for a real place, 'static_area' for a whole neighbourhood or quarter.
+
+    The distinction is about the KEY, not the address: whatever the post said, if the
+    thing we matched is an area then the coordinate is an area centroid and every listing
+    that matches it lands on the identical point."""
+    n = _normalize(key or "")
+    if n.startswith("שכונה") or n.startswith("שכונת") or n in _AREA_KEYS:
+        return "static_area"
+    return "static"
+
+
 def is_bare_neighborhood(s: Optional[str]) -> bool:
     """A whole-neighborhood location with no specific street ("שכונה ג")."""
     if not s or ("שכונה" not in s and "שכונת" not in s):
@@ -78,6 +96,12 @@ _CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
                # as "extrapolated" but an honest label, because the evidence is
                # genuinely weaker and the map should say so.
                "projected": "street",
+               # a static-table hit on a whole AREA rather than a place: "שכונה ד" or
+               # the slang "הבלוק". One coordinate stands for a neighbourhood, so 19
+               # flats landed on it drawn as solid, precise dots — the single biggest
+               # pile on the map, and a lie. Its siblings already grade honestly
+               # (static_street -> street, landmark -> street); this joins them.
+               "static_area": "area",
                "overpass": "street", "nominatim": "street"}
 
 
@@ -184,7 +208,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 6      # 6: keep the street-type word; gate internal placements
+GEOCODE_LOGIC_VERSION = 7      # 7: govmap anchors; no clamping past a street's end
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -365,7 +389,7 @@ def geocode_detailed(location_text: Optional[str]):
     #    so this can only improve precision, never lose a placement.
     precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
     numbered = bool(_house_number(location_text))
-    best_pos, best_coords = None, None
+    best_pos, best_coords, best_key = None, None, None
     skipped_street_coords = None
     for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
         k = _normalize(key)
@@ -379,11 +403,12 @@ def geocode_detailed(location_text: Optional[str]):
         pos = norm.find(k)
         if pos != -1:                                       # forward: key inside the address
             if best_pos is None or pos < best_pos:
-                best_pos, best_coords = pos, coords
+                best_pos, best_coords, best_key = pos, coords, key
         elif len(norm) >= _MIN_REVERSE_MATCH and norm in k and best_coords is None:
-            best_pos, best_coords = 10 ** 6, coords         # reverse: lowest priority
+            best_pos, best_coords, best_key = 10 ** 6, coords, key   # reverse: lowest
     if best_coords is not None:
-        return best_coords, "static"
+        # a whole-neighbourhood key is an AREA centroid, not a place — see _static_source
+        return best_coords, _static_source(best_key)
 
     # 1b) house-number interpolation — local, free and more precise than any street-level
     #     hit: place the number between the known OSM address nodes on that street. Only
@@ -659,6 +684,11 @@ _ANCHORS_PATH = config.ROOT / "house_anchors.json"
 # them. They win over OSM: someone looked at the map and said "number 140 is here".
 _USER_ANCHORS_PATH = config.ROOT / "user_anchors.json"
 
+# Anchors seeded once from govmap (seed_anchors.py) for the 199 relevant streets where
+# OSM has fewer than the two house numbers interpolation needs. Its own file so a bad
+# batch can be deleted wholesale, and so a PBF rebuild cannot wipe it.
+_GOVMAP_ANCHORS_PATH = config.ROOT / "govmap_anchors.json"
+
 # A hand-placed anchor still has to be near the street it claims — the same rule
 # load_osm_addresses applies to OSM's own data, for the same reason. Generous, because
 # a street's OSM geometry can be a partial fragment: this rejects "you tapped a
@@ -669,12 +699,25 @@ _anchors: Optional[dict] = None
 
 
 def _load_anchors() -> dict:
+    """Every known house-number anchor, in ascending order of authority.
+
+    OSM is a survey, so it is the base. govmap only FILLS GAPS — it never replaces an
+    OSM point, so a one-off bad seed cannot degrade a street that already worked. A user
+    pin overrides both: a person looked at the map and said where the flat is."""
     global _anchors
     if _anchors is None:
         try:
             _anchors = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
         except Exception:
             _anchors = {}
+        try:
+            for street, nums in json.loads(
+                    _GOVMAP_ANCHORS_PATH.read_text(encoding="utf-8")).items():
+                have = _anchors.setdefault(street, {})
+                for num, pt in nums.items():
+                    have.setdefault(num, pt)           # fill only, never overwrite
+        except Exception:
+            pass
         try:
             for street, nums in json.loads(
                     _USER_ANCHORS_PATH.read_text(encoding="utf-8")).items():
@@ -967,6 +1010,16 @@ def place_house(street: Optional[str], number: Optional[str]):
         if span_n <= 0:
             return None, None
         per = span_p / span_n
+        # A gradient wildly unlike the city's measured 11.2 m per number means the
+        # anchors are not laid out along this street the way house numbers are. On
+        # אלכסנדר ינאי both anchors (8 and 14) sit PAST the end of the street's own
+        # polyline, 16 m apart across 6 numbers, giving 2.7 m per number — and every
+        # number from 17 to 32 then projected to the same clamped endpoint. Fall back to
+        # the city's typical spacing, which is what the single-anchor branch already
+        # trusts, rather than believing a degenerate pair.
+        typical = _median_metres_per_number() / 111320.0
+        if not (0.25 * typical <= abs(per) <= 4.0 * typical):
+            per = typical if per >= 0 else -typical
         edge = hi if n > hi[0] else lo
         target = edge[1] + (n - edge[0]) * per
         overshoot = abs(target - edge[1]) * 111320.0
@@ -983,7 +1036,14 @@ def place_house(street: Optional[str], number: Optional[str]):
 
     if overshoot > MAX_EXTRAPOLATE_M:
         return None, None                          # too far to still be evidence
-    # never leave the street: clamp to its real geometry
+    # Past the end of the street's own polyline there is nothing left to project ONTO.
+    # `_point_on_axis` clamps to the last vertex, which silently answered seven different
+    # אלכסנדר ינאי numbers (17, 19, 21, 23, 28, 30, 32) with one identical point, graded
+    # `high` and drawn as a confident dot. Refuse instead: the address falls through to
+    # the tiers that can answer, and a hollow street-level dot beats a precise wrong one.
+    lo_p, hi_p = min(p[idx] for p in pts), max(p[idx] for p in pts)
+    if not (lo_p <= target <= hi_p):
+        return None, None
     return snap_to_building(_point_on_axis(pts, idx, target)), how
 
 

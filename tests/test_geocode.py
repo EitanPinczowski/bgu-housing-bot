@@ -362,8 +362,9 @@ def test_precise_street_skips_neighborhood_centroid(monkeypatch, tmp_path):
         {"elements": [{"type": "node", "lat": 31.268, "lon": 34.792}]}))
     coords, src = geocode.geocode_detailed("רחוב האיסיים 5, שכונה ד")
     assert src == "overpass" and coords == (31.268, 34.792)     # the street, not the ד centroid
-    # a BARE neighborhood still uses the static centroid (bare path unchanged)
-    assert geocode.geocode_detailed("שכונה ד")[1] == "static"
+    # a BARE neighborhood still uses the static centroid (bare path unchanged), but it
+    # is labelled as the AREA it is — see test_a_neighborhood_centroid_is_graded_area
+    assert geocode.geocode_detailed("שכונה ד")[1] == "static_area"
 
 
 # --- #1: negative-result cache with a TTL ---------------------------------------
@@ -407,7 +408,7 @@ def test_geocode_detailed_reports_source(monkeypatch, tmp_path):
     import requests
     monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp(
         {"elements": [{"type": "node", "lat": 31.257, "lon": 34.80}]}))
-    assert geocode.geocode_detailed("גר בשכונה ג")[1] == "static"     # static table
+    assert geocode.geocode_detailed("גר בשכונה ג")[1] == "static_area"   # static table
     assert geocode.geocode_detailed("רחוב חדש כלשהו 5")[1] == "overpass"
 
 
@@ -458,7 +459,21 @@ def test_a_bare_street_still_uses_the_static_point():
 def test_a_bare_neighborhood_still_resolves():
     import geocode
     coords, src = geocode.geocode_detailed("שכונה ג")
-    assert coords and src == "static"
+    assert coords and src == "static_area"
+
+
+def test_a_neighborhood_centroid_is_graded_area_not_exact():
+    """19 listings whose post said only `שכונה ד` sat on ONE point drawn as solid,
+    precise dots — the biggest pile on the map, and a lie. An area centroid is an area.
+    `הבלוק` is the same thing without the word שכונה: a whole student quarter."""
+    import geocode
+    assert geocode.confidence("static_area") == "area"
+    assert geocode.is_precise_source("static_area") is False
+    assert geocode._static_source("שכונה ד") == "static_area"
+    assert geocode._static_source("הבלוק") == "static_area"
+    # a real place keeps its precision
+    assert geocode._static_source("כיכר האבות") == "static"
+    assert geocode.confidence("static") == "exact"
 
 
 def test_every_static_entry_sits_on_the_street_it_names():
@@ -606,6 +621,29 @@ def test_extrapolated_is_high_but_never_counts_as_precise():
     assert geocode.confidence("extrapolated") == "high"
     assert geocode.is_precise_source("extrapolated") is False
     assert geocode.is_precise_source("interpolated") is True
+
+
+def test_numbers_past_the_end_of_the_street_are_refused_not_clamped(monkeypatch):
+    """`_point_on_axis` clamps to the last vertex, so every number projecting past the
+    polyline answered with the SAME point. On אלכסנדר ינאי that put 17, 19, 21, 23, 28,
+    30 and 32 on one coordinate, graded `high` and drawn as a confident dot. Refusing
+    hands the address to a tier that can answer."""
+    pts = [(31.2600 + i * 0.0002, 34.79) for i in range(6)]      # street ends at .2610
+    _anchored(monkeypatch, {"X": {"2": [31.2600, 34.79], "8": [31.2606, 34.79]}}, pts)
+    assert geocode.place_house("X", "12")[0] is not None          # still inside: fine
+    far = geocode.place_house("X", "24")                          # projects past the end
+    assert far == (None, None)
+
+
+def test_a_degenerate_anchor_gradient_falls_back_to_the_city_spacing(monkeypatch):
+    """Two anchors 16 m apart across 6 house numbers is 2.7 m/number against the city's
+    measured 11.2 m — they are not laid out the way house numbers are. Believing them
+    compressed a whole street onto one point."""
+    pts = [(31.2600 + i * 0.0002, 34.79) for i in range(40)]
+    _anchored(monkeypatch, {"X": {"8": [31.2620, 34.79], "14": [31.26202, 34.79]}}, pts)
+    a = geocode.place_house("X", "16")[0]
+    b = geocode.place_house("X", "20")[0]
+    assert a and b and a != b, "distinct numbers must not collapse onto one point"
 
 
 def test_a_single_anchor_projection_is_graded_street_not_high():

@@ -71,6 +71,13 @@ def run(sample: int = SAMPLE, seed: int = 7, truth_path: str | None = None) -> d
     by_tier: dict = {}
     unresolved = 0
     original = geocode._anchors
+    real_cache = geocode._load_cache()
+    real_save = geocode._save_cache
+    # Blanking the cache is how the hold-out avoids answering from a previous run. But
+    # `geocode_detailed` PERSISTS the cache after any successful external lookup, so the
+    # blank dict was being written straight to disk — one run of this tool destroyed the
+    # real cache (measured: 1 entry left). Disable the write for the duration.
+    geocode._save_cache = lambda: None
     try:
         for street, number, (tlat, tlon) in truth:
             geocode._anchors = _held_out(street, number, anchors)
@@ -83,7 +90,8 @@ def run(sample: int = SAMPLE, seed: int = 7, truth_path: str | None = None) -> d
             by_tier.setdefault(geocode.confidence(source), []).append(err)
     finally:
         geocode._anchors = original
-        geocode._cache = None
+        geocode._cache = real_cache               # the REAL one back, not a blank
+        geocode._save_cache = real_save
 
     order = ["exact", "high", "street", "area", "none"]
     print(f"{'tier':10} {'n':>5} {'p50':>8} {'p90':>8} {'max':>8}")

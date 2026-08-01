@@ -239,10 +239,46 @@ def test_a_stack_fans_out_because_zoom_can_never_split_it(temp_db, monkeypatch,
     _save("k1", "רגר 5")
     page = dashboard.build()
     assert "b.sameSpot = b.rows.every(" in page         # the discriminator
-    assert "if (grp.__sameSpot) setSpider(" in page     # stack -> fan
+    assert "grp.__sameSpot || grp.__tight" in page      # stack (or unzoomable) -> fan
     assert "else fitTo(grp.__rows);" in page            # spread -> zoom
     assert "function drawSpider(" in page and "spider-leg" in page
     assert "באותה נקודה בדיוק" in page                 # the badge says which it is
+
+
+def test_a_badge_is_as_easy_to_hit_as_a_dot(temp_db, monkeypatch, tmp_path):
+    """The badge opens 97% of the map — 223 of 229 listings sit inside one — and it was
+    4 px across with no hit padding, while every single dot got HIT_RADIUS_PX of it.
+    That is the "clusters aren't clickable" report."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "Math.max(10 / k, HIT_RADIUS_PX * unitsPerPx)" in page
+    assert "'clhit'" in page and ".clhit{fill:transparent" in page
+    # the dot handlers must keep ignoring it, or they'd call rowByKey(undefined)
+    assert "closest('.dot, .hit')" in page and "closest('.dot, .clhit')" not in page
+
+
+def test_pressing_a_badge_does_not_start_a_pan(temp_db, monkeypatch, tmp_path):
+    """pointerdown captured the pointer for anything that wasn't `.dot`, and a captured
+    pointer retargets the following click to the <svg> — where closest('.cl') is null,
+    so the badge handler never ran."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "!ev.target.closest('.dot, .cl')" in page
+
+
+def test_stacks_fan_by_themselves_once_you_are_zoomed_in(temp_db, monkeypatch, tmp_path):
+    """38 of 48 badges at maximum zoom are flats on one exact coordinate. Clicking each
+    one is not a fix; past AUTO_FAN_ZOOM the ones in view open on their own."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "const AUTO_FAN_ZOOM" in page
+    assert "function activeFans(" in page
+    assert "zoomFactor() < AUTO_FAN_ZOOM" in page
+    # viewport-limited: 38 stacks x 19 dots would otherwise all be built every redraw
+    assert "!inView(b.x, b.y)" in page
 
 
 def test_touch_action_is_set_on_the_svg_not_only_the_container(temp_db, monkeypatch,

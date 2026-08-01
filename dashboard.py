@@ -292,6 +292,8 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 .map svg.placing .hit{pointer-events:none}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
 .cl.stack{cursor:cell}                     /* a stack fans out, it doesn't zoom */
+.clhit{fill:transparent;cursor:inherit}    /* the badge's real tap target — see mkHit */
+.map svg.placing .clhit{pointer-events:none}
 .spider-leg{stroke:#8a94a6;stroke-width:1;stroke-opacity:.65;
       vector-effect:non-scaling-stroke;pointer-events:none}
 .spider-hub{fill:#8a94a6;pointer-events:none}
@@ -555,7 +557,10 @@ function initMapGestures(){
       svg.setPointerCapture(ev.pointerId);
       return;
     }
-    if (pts.size === 1 && !ev.target.closest('.dot')){
+    // `.cl` belongs here as much as `.dot`. Pressing a badge used to start a pan AND
+    // call setPointerCapture, which retargets the following `click` to the <svg> — so
+    // the badge handler's closest('.cl') found nothing and clusters never opened.
+    if (pts.size === 1 && !ev.target.closest('.dot, .cl')){
       drag = {x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y};
       svg.classList.add('drag');
       svg.setPointerCapture(ev.pointerId);
@@ -635,11 +640,15 @@ function initMapGestures(){
   svg.addEventListener('click', ev => {
     const grp = ev.target.closest('.cl');
     if (grp && grp.__rows){
-      if (grp.__sameSpot) setSpider({rows: grp.__rows, x: grp.__x, y: grp.__y});
+      // Zooming only helps if the dots are actually apart. A stack shares one exact
+      // coordinate, and a group already tighter than a cluster cell at MAX ZOOM cannot
+      // be separated either — fitTo would clamp and the badge would sit there being
+      // clicked forever with nothing happening. Both of those fan instead.
+      if (grp.__sameSpot || grp.__tight) openFan({rows: grp.__rows, x: grp.__x, y: grp.__y});
       else fitTo(grp.__rows);
       return;
     }
-    if (spider && !ev.target.closest('.dot')) setSpider(null);
+    if (manualFans.length && !ev.target.closest('.dot')) closeFans();
   });
 }
 
@@ -716,9 +725,17 @@ function clusterOf(rows){
   return [...bins.values()];
 }
 
-/* A stack that has been fanned open: {rows, x, y} in world coords, so it survives the
-   redraw that every zoom triggers. */
-let spider = null;
+/* Stacks that are fanned open: [{rows, x, y}] in world coords, so they survive the
+   redraw that every zoom triggers. A LIST, not one — past AUTO_FAN_ZOOM every stack in
+   view opens by itself, and there are 38 of them. */
+let manualFans = [];
+
+/* Zoom cannot separate dots that share a coordinate, and 38 of the 48 clusters at full
+   zoom are exactly that: 184 listings whose post gave no house number, plus flats that
+   really are in the same building. Once you are zoomed in far enough to be looking at
+   one neighbourhood, opening them automatically is the only way the map stops being a
+   wall of badges. Leader lines keep it honest — they show the dots share one origin. */
+const AUTO_FAN_ZOOM = 6;
 
 function isApprox(r){
   return r.geo_confidence === 'street' || r.geo_confidence === 'area' ||
@@ -776,10 +793,15 @@ function drawDots(rows){
   const fill = r => byScore ? scoreColor(r.eff_score)
                             : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
   let n = 0, clusters = 0;
-  const fanned = spider ? new Set(spider.rows.map(r => r.dedup_key)) : null;
-  for (const b of clusterOf(rows)){
+  const groups = clusterOf(rows);
+  const fans = activeFans(groups);
+  const fanned = new Set();
+  fans.forEach(f => f.rows.forEach(r => fanned.add(r.dedup_key)));
+  // a group tighter than one cluster cell at MAX zoom can never be split by zooming
+  const tightSpan = CLUSTER_PX * ((WORLD.w / 12) / (svgBox.width || 1));
+  for (const b of groups){
     n += b.rows.length;
-    if (fanned && b.rows.every(r => fanned.has(r.dedup_key))) continue;   // drawn below
+    if (b.rows.every(r => fanned.has(r.dedup_key))) continue;             // drawn below
     if (b.rows.length === 1){
       g.appendChild(mkHit(b.rows[0], b.x, b.y, unitsPerPx));
       g.appendChild(mkDot(b.rows[0], b.x, b.y, k, fill(b.rows[0])));
@@ -796,6 +818,7 @@ function drawDots(rows){
     grp.__rows = b.rows;
     grp.__sameSpot = b.sameSpot;
     grp.__x = b.x; grp.__y = b.y;
+    grp.__tight = spanOf(b.rows) <= tightSpan;
     const c = el('circle');
     c.setAttribute('cx', b.x.toFixed(1));
     c.setAttribute('cy', b.y.toFixed(1));
@@ -820,10 +843,18 @@ function drawDots(rows){
       ? b.rows.length + ' דירות באותה נקודה בדיוק — הפוסטים לא נתנו מספר בית. ' +
         'לחיצה פורשת אותן'
       : b.rows.length + ' דירות באזור הזה — לחיצה מתקרבת';
-    grp.append(c, t, ttl);
+    // A badge is the control that opens 97% of the map, and it was 4 px across with no
+    // hit padding at all while every single dot got 14–22 px of it. Same fix as mkHit,
+    // its own class so the dot handlers keep ignoring it.
+    const h = el('circle');
+    h.setAttribute('cx', b.x.toFixed(1));
+    h.setAttribute('cy', b.y.toFixed(1));
+    h.setAttribute('r', Math.max(10 / k, HIT_RADIUS_PX * unitsPerPx).toFixed(2));
+    h.setAttribute('class', 'clhit');
+    grp.append(h, c, t, ttl);
     g.appendChild(grp);
   }
-  if (spider) drawSpider(g, k, fill, unitsPerPx);
+  for (const f of fans) drawSpider(g, f, k, fill, unitsPerPx);
   svg.appendChild(g);
   $('mapcount').textContent = n + ' על המפה' +
     (clusters ? ' · ' + clusters + ' קבוצות' : '');
@@ -833,7 +864,7 @@ function drawDots(rows){
    Zoom cannot separate dots that share a coordinate, so the only honest way to reach
    them is to move them off it deliberately, on leader lines that show where they
    really came from. */
-function drawSpider(g, k, fill, unitsPerPx){
+function drawSpider(g, spider, k, fill, unitsPerPx){
   const R = 34 / k;                                   // constant on screen
   const rows = spider.rows;
   const grp = el('g');
@@ -865,8 +896,40 @@ function drawSpider(g, k, fill, unitsPerPx){
   g.appendChild(grp);
 }
 
-function setSpider(next){
-  spider = next;
+/* How far apart are a group's dots, in world units? A group tighter than one cluster
+   cell at maximum zoom can never be pulled apart by zooming. */
+function spanOf(rows){
+  const pts = rows.map(r => project(r.lat, r.lon));
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+}
+
+function inView(x, y){
+  return x >= view.x && x <= view.x + view.w && y >= view.y && y <= view.y + view.h;
+}
+
+/* Fans to draw: the ones you opened by hand, plus — once zoomed in — every stack in
+   view. Limited to the viewport on purpose: 38 stacks of up to 19 dots would otherwise
+   all be built on every redraw, and drawDots has no culling. */
+function activeFans(groups){
+  const out = manualFans.slice();
+  if (zoomFactor() < AUTO_FAN_ZOOM) return out;
+  for (const b of groups){
+    if (!b.sameSpot || b.rows.length < 2 || !inView(b.x, b.y)) continue;
+    if (out.some(f => Math.abs(f.x - b.x) < 1e-6 && Math.abs(f.y - b.y) < 1e-6)) continue;
+    out.push({rows: b.rows, x: b.x, y: b.y});
+  }
+  return out;
+}
+
+function openFan(fan){
+  if (!manualFans.some(f => Math.abs(f.x - fan.x) < 1e-6 && Math.abs(f.y - fan.y) < 1e-6))
+    manualFans.push(fan);
+  drawDots(lastRows);
+}
+
+function closeFans(){
+  manualFans = [];
   drawDots(lastRows);
 }
 
@@ -1295,7 +1358,7 @@ async function commitPlace(key, lat, lon, scope){
     }
   }
   setPlacing(null);
-  setSpider(null);
+  manualFans = [];                 // the flat just moved; its old fan is meaningless
   render();
   // Say what the move DID. A corrected location re-grades the flat — it can move
   // RED->GREEN — and that consequence should never be silent.
