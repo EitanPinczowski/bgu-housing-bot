@@ -15,6 +15,8 @@ import json
 import os
 import sqlite3
 import sys
+import time
+import datetime as dt
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -260,6 +262,57 @@ def _check_listener():
             "reload code — restart it after any change")
 
 
+def _process_started(needle: str):
+    """When did the process whose command line contains `needle` start? None if absent.
+
+    Python imports a module once, so a long-lived server keeps serving whatever the code
+    said at startup — see `_check_dashboard_fresh`."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "
+             f"'{needle}' " + "} | ForEach-Object { $_.CreationDate.ToString('o') }"],
+            capture_output=True, text=True, timeout=25).stdout
+        for line in (out or "").splitlines():
+            line = line.strip()
+            if line:
+                return dt.datetime.fromisoformat(line).timestamp()
+    except Exception:
+        pass
+    return None
+
+
+def _check_dashboard_fresh():
+    """Is the live dashboard serving the CODE WE HAVE, or the code it started with?
+
+    Found the hard way: `serve_dashboard.py` had been up 22 hours, so the page reachable
+    from the phone was still running the previous evening's `dashboard.py`, the previous
+    evening's `geocode.py`, and `geocode._anchors` loaded before `govmap_anchors.json`
+    existed. A whole day of geocoding work was invisible there and nothing said so — the
+    process was healthy, which is exactly why it needed its own check. A stale server
+    should be as visible as a dead one."""
+    started = _process_started("serve_dashboard")
+    if started is None:
+        return ("dashboard", WARN, "serve_dashboard is not running — no live/phone page",
+                "start it: run_dashboard.cmd")
+    newest, newest_name = 0.0, ""
+    for name in ("dashboard.py", "geocode.py", "govmap_anchors.json", "house_anchors.json",
+                 "user_anchors.json", "user_pins.json"):
+        p = config.ROOT / name
+        if p.exists() and p.stat().st_mtime > newest:
+            newest, newest_name = p.stat().st_mtime, name
+    age_h = (time.time() - started) / 3600
+    if newest > started:
+        behind = (newest - started) / 3600
+        return ("dashboard", FAIL,
+                f"running code from {age_h:.1f} h ago — {newest_name} changed "
+                f"{behind:.1f} h after it started",
+                "restart it: the module is imported once, so edits and new anchors are "
+                "NOT picked up until the process restarts")
+    return ("dashboard", PASS, f"serving current code (up {age_h:.1f} h)", "")
+
+
 def _check_telegram():
     tok, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not tok or not chat:
@@ -326,7 +379,8 @@ def checks() -> list:
     out += _check_data_files()
     out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
-            _check_wake_timers(), _check_hot_scheduled(), _check_geocode_placement()]
+            _check_wake_timers(), _check_hot_scheduled(), _check_geocode_placement(),
+            _check_dashboard_fresh()]
     return out
 
 

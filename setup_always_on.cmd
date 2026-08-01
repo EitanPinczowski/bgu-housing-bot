@@ -41,18 +41,18 @@ if errorlevel 1 (
 )
 
 echo.
-echo === 1/3  Letting the BGU tasks wake the PC ===
+echo === 1/4  Letting the BGU tasks wake the PC ===
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$n=0; Get-ScheduledTask | Where-Object {$_.TaskName -like 'BGU*'} | ForEach-Object { $s=$_.Settings; $s.WakeToRun=$true; $s.StartWhenAvailable=$true; Set-ScheduledTask -TaskName $_.TaskName -Settings $s | Out-Null; Write-Host ('  [ok] ' + $_.TaskName); $n++ }; Write-Host ('  ' + $n + ' task(s) updated')"
 
 echo.
-echo === 2/3  Allowing wake timers on battery as well as mains ===
+echo === 2/4  Allowing wake timers on battery as well as mains ===
 powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP RTCWAKE 1
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP RTCWAKE 1
 echo   [ok] wake timers enabled (AC + battery)
 
 echo.
-echo === 3/3  Not falling asleep mid-run on battery ===
+echo === 3/4  Not falling asleep mid-run on battery ===
 REM  AC is already "never sleep"; battery was 3 minutes, which cut runs short.
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 1800
 echo   [ok] battery sleep timeout set to 30 minutes
@@ -60,8 +60,23 @@ echo   [ok] battery sleep timeout set to 30 minutes
 powercfg /setactive SCHEME_CURRENT
 
 echo.
+echo === 4/4  Keeping the live dashboard server up ===
+REM  serve_dashboard.py is what the phone talks to. It was started by hand and had been
+REM  up 22 hours serving the code it was launched with — Python imports a module once, so
+REM  a whole day of geocoding fixes were invisible on the page while the process looked
+REM  perfectly healthy. At logon it now starts itself; run_dashboard.cmd already relaunches
+REM  it if it exits. `python doctor.py` reports when it is older than the code it serves.
+schtasks /Create /TN "BGU Dashboard Server" /SC ONLOGON /RL LIMITED /F ^
+  /TR "\"%~dp0run_dashboard.cmd\"" >nul 2>&1
+if errorlevel 1 (
+  echo   [!!] could not create the task - are you running this as Administrator?
+) else (
+  echo   [ok] "BGU Dashboard Server" starts at logon
+)
+
+echo.
 echo === done ===
-echo   Verify with:  python doctor.py      ("wake timers" should read PASS)
+echo   Verify with:  python doctor.py      ("wake timers" and "dashboard" should read PASS)
 echo.
 echo   UNDO:
 echo     powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 180
