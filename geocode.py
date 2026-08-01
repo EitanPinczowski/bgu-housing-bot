@@ -705,10 +705,24 @@ _BUILDINGS_PATH = config.ROOT / "buildings.json"
 _buildings: Optional[dict] = None
 
 # How far a computed address may be moved to land on a real structure. Deliberately
-# small: interpolation is good to a few tens of metres, so a wide radius would let a
-# point jump to the NEXT building along, trading a small honest error for a confident
-# wrong one. Tuned against the hold-out (geo_accuracy.py) — see SNAP_TUNING below.
+# small: interpolation is good to a few tens of metres, so a wide radius lets a point
+# jump to the NEXT building along, trading a small honest error for a confident wrong
+# one. Swept against the 705-address hold-out (p50 / p90, snapping place_house):
+#
+#     off  18.7 / 97.9     25m  16.0 / 97.2     40m  15.9 / 102.5
+#     15m  18.7 / 99.3     30m  15.6 / 102.5    60m  16.0 / 100.1
+#
+# 25 m is the only setting that improves BOTH; past it the median keeps creeping down
+# while the tail gets worse, which is exactly the wrong trade for a map you act on.
 SNAP_TO_BUILDING_M = 25.0
+
+# Counting the buildings between two anchors (number 14 is the second building after
+# number 10, not 40% of the way to number 20) was built and measured, and it does not
+# work: p50 19.0 m against 18.4 m for plain interpolation when the building count has
+# to match the house-number gap exactly, and steadily worse as that tolerance is
+# loosened (20.0 m at ±1, 20.2 m at ±3). Sheds, stairwells and garages are footprints
+# too, so "the buildings between these anchors" is not the list of addresses between
+# them. Not implemented — recorded here so it is not rediscovered as a good idea.
 
 
 def _load_buildings() -> dict:
@@ -827,10 +841,14 @@ def place_house(street: Optional[str], number: Optional[str]):
     "extrapolated" is deliberately NOT in _PRECISE_SOURCES: it is a projection, not a
     survey, so `pipeline._classify` keeps applying its boundary-street and near-edge
     caution to it. It is graded `high` for display because it is still far better than
-    the street centroid it replaces."""
+    the street centroid it replaces.
+
+    Both answers are finally nudged onto the nearest real building (`snap_to_building`)
+    when one is within 25 m — an address is a structure, and arithmetic on its own can
+    land in a garden or a car park."""
     pt = interpolate_house(street, number)
     if pt:
-        return pt, "interpolated"
+        return snap_to_building(pt), "interpolated"
     if not street or not number:
         return None, None
     try:
@@ -867,7 +885,7 @@ def place_house(street: Optional[str], number: Optional[str]):
     if overshoot > MAX_EXTRAPOLATE_M:
         return None, None                          # too far to still be evidence
     # never leave the street: clamp to its real geometry
-    return _point_on_axis(pts, idx, target), "extrapolated"
+    return snap_to_building(_point_on_axis(pts, idx, target)), "extrapolated"
 
 
 def interpolate_house(street: Optional[str], number: Optional[str]):
