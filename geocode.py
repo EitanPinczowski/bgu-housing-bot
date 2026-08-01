@@ -177,7 +177,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 4      # 4: house-number extrapolation + PBF anchors
+GEOCODE_LOGIC_VERSION = 5      # 5: building-centroid anchors + 2D parity interpolation
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -697,6 +697,68 @@ def _median_metres_per_number() -> float:
     return _median_gap
 
 
+# --- the building layer ---------------------------------------------------------
+# `buildings.json` (load_osm_buildings.py) holds the centre of all 19,110 footprints in
+# the box. Only 3.7% of them carry a house number, so until now the pipeline could see
+# the 700-odd addressed buildings and none of the rest.
+_BUILDINGS_PATH = config.ROOT / "buildings.json"
+_buildings: Optional[dict] = None
+
+# How far a computed address may be moved to land on a real structure. Deliberately
+# small: interpolation is good to a few tens of metres, so a wide radius would let a
+# point jump to the NEXT building along, trading a small honest error for a confident
+# wrong one. Tuned against the hold-out (geo_accuracy.py) — see SNAP_TUNING below.
+SNAP_TO_BUILDING_M = 25.0
+
+
+def _load_buildings() -> dict:
+    global _buildings
+    if _buildings is None:
+        try:
+            raw = json.loads(_BUILDINGS_PATH.read_text(encoding="utf-8"))
+            _buildings = {"cell": raw.get("cell") or 0.002, "cells": raw.get("cells") or {}}
+        except Exception:
+            _buildings = {"cell": 0.002, "cells": {}}
+    return _buildings
+
+
+def nearest_building(lat: float, lon: float, max_m: float = SNAP_TO_BUILDING_M):
+    """((lat, lon), metres) for the closest building centre, or None.
+
+    The grid index makes this a scan of ~9 cells (a hundred-odd points) instead of
+    19,110, which matters because it runs inside the geocoder's hot path."""
+    import math
+    data = _load_buildings()
+    cells = data["cells"]
+    if not cells:
+        return None
+    cell = data["cell"]
+    ci, cj = int(lat / cell), int(lon / cell)
+    scale = 111320.0 * math.cos(math.radians(lat))
+    best, best_d = None, float("inf")
+    for i in range(ci - 1, ci + 2):
+        for j in range(cj - 1, cj + 2):
+            for blat, blon in cells.get(f"{i}:{j}") or ():
+                d = math.hypot((blat - lat) * 111320.0, (blon - lon) * scale)
+                if d < best_d:
+                    best, best_d = (blat, blon), d
+    if best is None or best_d > max_m:
+        return None
+    return best, best_d
+
+
+def snap_to_building(pt, max_m: float = SNAP_TO_BUILDING_M):
+    """`pt` moved onto the nearest building centre if one is close enough, else `pt`.
+
+    An interpolated house number lands wherever the arithmetic puts it — a garden, a
+    car park, the middle of the road. A person looking for the flat is looking for a
+    building, and so is the walking router."""
+    if not pt:
+        return pt
+    got = nearest_building(pt[0], pt[1], max_m)
+    return got[0] if got else pt
+
+
 def _point_on_axis(pts, idx, target):
     """The point ON the street's polyline at `target` along its dominant axis.
 
@@ -721,6 +783,36 @@ def _point_on_axis(pts, idx, target):
             out[other] = a[other] + f * (b[other] - a[other])
             return (out[0], out[1])
     return ordered[-1]
+
+
+def _axis_offset(pts, idx, anchor):
+    """How far an anchor sits OFF the street's centreline, as a (dlat, dlon) pair.
+
+    A building is not on the road. Measured across the anchor set, the median address
+    sits 27.8 m from the centreline of the street it belongs to (p90 63.7 m) — and
+    `_point_on_axis` used to discard all of it, returning a point on the tarmac. Keeping
+    the offset puts the answer back on the building line, and on the correct SIDE of the
+    road when the anchors used are the same parity.
+
+    Defined against the same axis parametrization the interpolation uses, so feeding an
+    anchor's own house number back through reproduces the anchor exactly."""
+    base = _point_on_axis(pts, idx, anchor[idx])
+    return (anchor[0] - base[0], anchor[1] - base[1])
+
+
+def _anchors_for(known: dict, n: int) -> list:
+    """[(number, (lat, lon))] to interpolate `n` between — same parity when possible.
+
+    Odd and even numbers are on opposite sides of the street, so mixing them averages
+    the two sides and lands back in the middle of the road. 45 of the 58 streets with
+    ≥4 anchors carry both parities, which is enough for this to matter; when a street
+    hasn't got two of the right parity bracketing `n`, all anchors are used and the
+    result is simply the older, side-agnostic answer."""
+    every = sorted((int(k), (v[0], v[1])) for k, v in known.items() if str(k).isdigit())
+    same = [a for a in every if a[0] % 2 == n % 2]
+    if len(same) >= 2 and same[0][0] <= n <= same[-1][0]:
+        return same
+    return every
 
 
 def place_house(street: Optional[str], number: Optional[str]):
@@ -788,6 +880,10 @@ def interpolate_house(street: Optional[str], number: Optional[str]):
         knows only 1..19 of a street that runs to 60, and guessing past the last anchor
         is exactly the false precision this is meant to remove).
     A None simply means "street-level only", which the caller treats as lower confidence.
+
+    Position ALONG the street still follows the polyline, so a bend doesn't get cut off;
+    the anchors' distance OFF the centreline is interpolated alongside it and added back
+    (`_axis_offset`), so the answer lands on the building line rather than on the road.
     """
     if not street or not number:
         return None
@@ -799,19 +895,18 @@ def interpolate_house(street: Optional[str], number: Optional[str]):
     pts, idx = _street_axis(street)
     if len(known) < 2 or len(pts) < 2:
         return None
-    # (house number -> its own coordinate along the street axis)
-    anchors = sorted((int(k), v[idx]) for k, v in known.items() if str(k).isdigit())
+    anchors = _anchors_for(known, n)
     if len(anchors) < 2 or not (anchors[0][0] <= n <= anchors[-1][0]):
         return None                                        # outside known range -> no guess
-    lo_pt = max((p for p in anchors if p[0] <= n), key=lambda p: p[0])
-    hi_pt = min((p for p in anchors if p[0] >= n), key=lambda p: p[0])
-    if hi_pt[0] == lo_pt[0]:
-        target = lo_pt[1]
-    else:
-        f = (n - lo_pt[0]) / (hi_pt[0] - lo_pt[0])         # linear in house number
-        target = lo_pt[1] + f * (hi_pt[1] - lo_pt[1])
-    # the street point sitting at that position along the axis
-    return _point_on_axis(pts, idx, target)
+    lo_n, lo_c = max((p for p in anchors if p[0] <= n), key=lambda p: p[0])
+    hi_n, hi_c = min((p for p in anchors if p[0] >= n), key=lambda p: p[0])
+    f = 0.0 if hi_n == lo_n else (n - lo_n) / (hi_n - lo_n)   # linear in house number
+    target = lo_c[idx] + f * (hi_c[idx] - lo_c[idx])
+    base = _point_on_axis(pts, idx, target)
+    d_lo = _axis_offset(pts, idx, lo_c)
+    d_hi = _axis_offset(pts, idx, hi_c)
+    return (base[0] + d_lo[0] + f * (d_hi[0] - d_lo[0]),
+            base[1] + d_lo[1] + f * (d_hi[1] - d_lo[1]))
 
 
 MAX_OVERPASS_CANDIDATES = 3        # bound the paced queries per address
