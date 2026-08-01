@@ -370,14 +370,26 @@ def geocode_cached(location_text: Optional[str]):
             real, _how = streets.canonical(cand)
             pt, how = place_house(real or cand, hn)
             if pt and _plausible_external(location_text, pt, how):
-                return pt
+                return _not_on_campus(pt)
 
+    # The cache long outlives the rules that filled it: an entry written before the
+    # no-housing mask existed still pointed at Soroka, and this is the function every
+    # map dot goes through, so it has to apply the mask too — not just geocode_detailed.
     entry = _load_cache().get(norm)
     if isinstance(entry, dict) and entry.get("c"):
-        return tuple(entry["c"])
+        return _not_on_campus(tuple(entry["c"]))
     if isinstance(entry, list) and len(entry) == 2:      # legacy bare [lat, lon]
-        return tuple(entry)
+        return _not_on_campus(tuple(entry))
     return skipped_street                     # street-level, better than no dot at all
+
+
+def _not_on_campus(pt):
+    """`pt`, unless it is on land nobody rents — then None. Hand-placed points never
+    reach here; the static-table and user-pin returns above bypass it deliberately."""
+    if not pt:
+        return None
+    import zones
+    return None if zones.no_housing_here(pt[0], pt[1]) else pt
 
 
 # A hand-curated point is a decision, not a guess: the static table is maintained by
