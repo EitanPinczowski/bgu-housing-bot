@@ -744,3 +744,26 @@ def test_anchors_from_a_same_named_street_do_not_get_merged(tmp_path, monkeypatc
     monkeypatch.setattr(loader.geocode, "_load_anchors", lambda: {})
     out = loader.build(dry_run=True)
     assert set(out["ההגנה"]) == {"14", "18"}, "the far same-named anchor was kept"
+
+
+def test_a_stale_process_cannot_wipe_the_geocode_cache(monkeypatch, tmp_path):
+    """Twice in one day the on-disk cache went from ~300 entries to 1, and recovering
+    cost a 35-minute re-geocode of every listing while the map quietly lost two thirds
+    of its dots. The mechanism is always a process holding a small `_cache` — a hold-out
+    harness using it as scratch, or a long-lived server whose copy predates a rebuild —
+    calling _save_cache() once. The cache is a pure accelerator, so refusing a suspicious
+    write can only cost time; allowing one costs data."""
+    import json
+    p = tmp_path / "geocode_cache.json"
+    monkeypatch.setattr(geocode, "_CACHE_PATH", p)
+    full = {f"k{i}": {"c": [31.25, 34.79], "s": "static", "v": 7} for i in range(300)}
+    p.write_text(json.dumps(full), encoding="utf-8")
+
+    monkeypatch.setattr(geocode, "_cache", {"only": {"m": "now", "v": 7}})
+    geocode._save_cache()
+    assert len(json.loads(p.read_text(encoding="utf-8"))) == 300, "the wipe got through"
+
+    # a real edit — one uncache — must still persist
+    monkeypatch.setattr(geocode, "_cache", {k: v for k, v in list(full.items())[:299]})
+    geocode._save_cache()
+    assert len(json.loads(p.read_text(encoding="utf-8"))) == 299

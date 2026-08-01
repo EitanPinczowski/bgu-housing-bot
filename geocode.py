@@ -224,9 +224,32 @@ def _load_cache() -> dict:
 
 
 def _save_cache() -> None:
+    """Persist the cache — but never let a nearly-empty one overwrite a full one.
+
+    Twice in one day the on-disk cache went from ~300 entries to 1. The mechanism is
+    always the same: something sets `_cache` to a small dict (a hold-out harness using it
+    as scratch, a long-lived process whose copy predates a rebuild), then one successful
+    or missed lookup calls this and the small dict lands on disk. Recovering costs a
+    35-minute re-geocode of every listing, and until someone notices, the map silently
+    loses two thirds of its dots.
+
+    The cache is a pure accelerator, so refusing a suspicious write can only cost time,
+    never correctness — whereas allowing one costs real data. A legitimate shrink (an
+    `uncache`, or entries ageing out) moves a handful of keys, not almost all of them."""
     try:
-        _CACHE_PATH.write_text(json.dumps(_cache, ensure_ascii=False, indent=0),
-                               encoding="utf-8")
+        payload = json.dumps(_cache, ensure_ascii=False, indent=0)
+    except Exception:
+        return
+    try:
+        on_disk = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        on_disk = {}
+    if len(on_disk) > 20 and len(_cache) < len(on_disk) * 0.5:
+        print(f"[geocode] refusing to shrink the cache {len(on_disk)} -> {len(_cache)} "
+              f"entries — something is holding a stale copy")
+        return
+    try:
+        _CACHE_PATH.write_text(payload, encoding="utf-8")
     except Exception:
         pass
 
