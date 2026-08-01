@@ -135,6 +135,21 @@ SQLite + optional Google Sheets + Telegram alert`
 - `load_osm_buildings.py` — `buildings.json`: 19,110 footprint CENTRES on a coarse grid
   index, from the same PBF. Only 3.7% of them carry a house number, which is why nothing
   in the pipeline had ever seen a building.
+- **The geocode cache CANNOT be shrunk by more than half** (`_save_cache`). It was wiped
+  from ~300 entries to 1 twice in one day: any process holding a small `_cache` — a
+  hold-out harness using it as scratch, a long-lived server whose copy predates a rebuild
+  — saves once and the small dict lands on disk. Recovery is a 35-minute re-geocode and
+  until someone notices the map loses two thirds of its dots. The cache is a pure
+  accelerator, so a refused write costs time and an allowed one costs data. Don't remove.
+- `warm_cache.py` — rebuild the cache for the ~340 LISTING addresses in minutes instead
+  of `replay.py`'s hour over 3,680 archived posts. Fills the cache only; `replay --apply`
+  is still the only thing that rewrites verdicts.
+- **A long-lived server pins the code at process start.** `serve_dashboard.py` had been up
+  22 h, so the phone page was serving the previous evening's `dashboard.py`, `geocode.py`
+  and an `_anchors` loaded before `govmap_anchors.json` existed — a whole day of work
+  invisible while the process looked healthy. `doctor.py`'s `dashboard` row compares the
+  process start against those files' mtimes and FAILs when it is older. **Restart the
+  server after any change.**
 - `govmap.py` / `seed_anchors.py` — **the anchors are BOUGHT ONCE and then owned.**
   199 of the 237 GREEN/AMBER-relevant streets had <2 OSM anchors, so `interpolate_house`
   could not run and every flat on them collapsed onto one street centroid — the real
@@ -159,6 +174,29 @@ SQLite + optional Google Sheets + Telegram alert`
     low (1–28) while the listings were at 50 and 64.
   - Merge order in `_load_anchors()`: **OSM survey → govmap fills only MISSING keys →
     user pins override both.** govmap can never degrade a surveyed point or a 📍 fix.
+  - **`--exact` beats interpolating.** Arithmetic is p50 13 m; asking govmap for the
+    address itself is 5.4 m. For the ~142 addresses this bot has listings at there is no
+    reason to compute what can be looked up — 69 of 89 missing ones became exact anchors.
+  - **Select by unplaceable LISTINGS, not anchor count** (`stranded_streets`). Two anchors
+    in the wrong place buy nothing: `אלכסנדר ינאי` was anchored 8–14 with every listing at
+    17–32, `ביאליק` anchored 1–4 with listings at 11–139 — both skipped by the old
+    "<2 anchors" test.
+  - **Reject a street only when its anchors split into clumps >300 m apart** (`_one_road`).
+    The earlier axis-ordering test discarded **29 streets of good data** (רוטנברג's 9
+    anchors were all within 49 m) because OSM often holds a FRAGMENT: רוטנברג has 147 m of
+    geometry but real numbers past 65, so projecting onto that fragment scrambles the
+    order. The per-anchor 200 m offset test is the real guard.
+  - **`--unresolved` pins the addresses whose STREET we cannot resolve at all** — govmap
+    takes a whole string without our index. This placed `יוטבתה 6` and `פארן 11`, which
+    the note below records as absent from OSM entirely. 11 of 14.
+  - **POI/landmark lookups are a TRAP — measured, do not retry.** govmap "resolved" 30 of
+    41 landmark strings but almost all are fuzzy substitutions to a different place:
+    `אגם תבור`→`הר תבור 17`, `אוקספורד`→`בת שבע`, `בניין הסטודנטים-אוקספורד`→`חומרי בניין`
+    (a building-supplies shop). With no house number there is nothing to validate against,
+    so it cannot be gated the way the address path is.
+  - **Post text / comments carry no recoverable house number** — measured over all 196
+    listings without one: **0** from comments, 4 from post text of which most are regex
+    false positives. Confirms the existing note; don't build an extractor.
 - **Free alternatives to govmap: all checked 2026-08-01, all dead.** Nominatim / Photon /
   LocationIQ / Geoapify / Pelias serve the same OSM data already in our PBF.
   `api.govmap.gov.il` is an HTML portal and the guessed ArcGIS paths 404. OpenAddresses

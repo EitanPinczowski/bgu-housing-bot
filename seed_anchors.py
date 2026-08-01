@@ -261,8 +261,56 @@ def seed_exact(pairs: list, existing: dict) -> int:
     return added
 
 
+def seed_unresolvable(dry: bool = False) -> int:
+    """Numbered addresses whose STREET our index cannot resolve at all.
+
+    `מגדלי קרן 5`, `רחוב יואל השופט 2`, `סמטת צקלג 5`, `יוטבתה 6` — CLAUDE.md records
+    צקלג and יוטבתה as absent from OSM entirely, so no amount of anchoring helps. govmap
+    resolves a whole address string without needing our street index, which makes it the
+    only route to these. Stored as user pins, not anchors: with no street to hang them on
+    they cannot interpolate anything, they just place their own listing.
+
+    The city check still applies, and so does the house number — those are what stop
+    govmap's habit of substituting a different place from doing damage here."""
+    import storage
+    with storage._conn() as c:
+        rows = [(r[0] or "") for r in c.execute("SELECT DISTINCT address FROM listings")]
+    todo = []
+    for a in rows:
+        hn = geocode._house_number(a)
+        if not hn or geocode.geocode_cached(a):
+            continue
+        if any(streets.canonical(t)[0] for t in geocode._candidate_tokens(a)[:2]):
+            continue
+        todo.append((a.strip(), hn))
+    print(f"{len(todo)} numbered addresses whose street cannot be resolved locally")
+    if dry:
+        for a, _hn in todo[:25]:
+            print(f"   {a[:56]}")
+        print("\n--dry-run: nothing sent")
+        return 0
+    added = 0
+    for i, (a, hn) in enumerate(todo, 1):
+        pt = None
+        for kind, text, p in govmap.search(f"{a} באר שבע"):
+            if kind != "address" or not any(c in text for c in ("באר שבע", "באר-שבע")):
+                continue
+            if not govmap._has_number(text, hn):
+                continue                       # the `999 -> 13` substitution
+            pt = p
+            break
+        if pt:
+            geocode.add_pin(a, pt[0], pt[1])
+            added += 1
+        print(f"  [{i}/{len(todo)}] {a[:44]:46} {'pinned' if pt else '—'}")
+    print(f"\n{added}/{len(todo)} pinned into user_pins.json")
+    return 0
+
+
 def main() -> int:
     dry = "--dry-run" in sys.argv
+    if "--unresolved" in sys.argv:
+        return seed_unresolvable(dry)
     only = None
     if "--street" in sys.argv:
         only = sys.argv[sys.argv.index("--street") + 1]
