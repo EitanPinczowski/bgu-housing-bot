@@ -99,6 +99,26 @@ def _rows() -> list:
     return rows
 
 
+def street_shapes(rows) -> dict:
+    """{street: [[lat, lon], …]} for the streets that IMPRECISE listings sit on.
+
+    134 listings can never be placed to a building — the post gave a street, an area, or
+    nothing. Drawing each as a dot at a centroid still says "here", and it is the honest
+    reason so many dots overlap. With the street's own polyline in hand the page can show
+    what we actually know: somewhere along THIS line.
+
+    Only the streets that need it are shipped — 22 of them, 14 KB — not the whole city,
+    which `map_listings` already draws as four combined paths."""
+    want = {r.get("street") for r in rows
+            if r.get("street") and r.get("geo_confidence") in ("street", "area")}
+    out = {}
+    for name in sorted(filter(None, want)):
+        pts = [p for seg in streets.geometry(name) for p in seg]
+        if pts:
+            out[name] = [[round(p[0], 5), round(p[1], 5)] for p in pts]
+    return out
+
+
 def _street_of(address) -> str:
     """The canonical street an address names, or ''.
 
@@ -293,6 +313,11 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
 .cl.stack{cursor:cell}                     /* a stack fans out, it doesn't zoom */
 .clhit{fill:transparent;cursor:inherit}    /* the badge's real tap target — see mkHit */
+/* the street an imprecise listing names: thick, soft, under the dots — it says "somewhere
+   along here", which is the whole truth about a listing with no house number */
+.sthint{fill:none;stroke:var(--accent);stroke-width:7;stroke-opacity:.32;
+        stroke-linecap:round;stroke-linejoin:round;pointer-events:none;
+        vector-effect:non-scaling-stroke}
 .map svg.placing .clhit{pointer-events:none}
 .spider-leg{stroke:#8a94a6;stroke-width:1;stroke-opacity:.65;
       vector-effect:non-scaling-stroke;pointer-events:none}
@@ -1187,11 +1212,35 @@ function cardHtml(r){
       dirs + walk + place + votes + '</div>';
 }
 
+/* ---------- what we actually know about an imprecise listing ----------
+   A street- or area-level listing has no building. Drawing it as a dot still says
+   "here", so opening one also lights up the street it names: "somewhere along this
+   line" is both true and more useful than a point pretending to be a location. */
+function drawStreetHint(r){
+  const old = document.getElementById('sthint');
+  if (old) old.remove();
+  if (!r || !isApprox(r) || !r.street) return;
+  const pts = (window.__STREETS__ || {})[r.street];
+  if (!pts || pts.length < 2) return;
+  const svg = document.querySelector('.map svg');
+  const d = pts.map((c, i) => (i ? 'L' : 'M') +
+                    project(c[0], c[1]).map(v => v.toFixed(1)).join(' ')).join(' ');
+  const g = el('g');
+  g.id = 'sthint';
+  const p = el('path');
+  p.setAttribute('d', d);
+  p.setAttribute('class', 'sthint');
+  g.appendChild(p);
+  // under the dots, so the flat you are pointing at stays on top
+  svg.insertBefore(g, document.getElementById('dots'));
+}
+
 function showCard(r, dot){
   clearTimeout(hideTimer);
   cardKey = r.dedup_key;
   $('cardbody').innerHTML = cardHtml(r);
   drawMyAmenities(r);                     // point at THIS flat's stops and gym
+  drawStreetHint(r);                      // …and the street, when that is all we know
   const card = $('card');
   card.classList.add('on');
   /* Below 700px the CSS turns the card into a bottom sheet; positioning it beside
@@ -1230,6 +1279,8 @@ function hideCard(){
   cardKey = null;
   const am = document.getElementById('myamen');
   if (am) am.remove();
+  const st = document.getElementById('sthint');
+  if (st) st.remove();
 }
 
 /* ---------- the real walking route ----------
@@ -1699,6 +1750,7 @@ def render(live: bool, snapshot: bool = False) -> str:
 <div id="lb"><img id="lbimg" alt=""></div>
 <script>
 window.__BOOT__ = {_json_for_script(payload)};
+window.__STREETS__ = {_json_for_script(street_shapes(rows))};
 window.__PROJ__ = {json.dumps(projection)};
 window.__LIVE__ = {str(bool(live)).lower()};
 window.__SNAPSHOT__ = {str(bool(snapshot)).lower()};

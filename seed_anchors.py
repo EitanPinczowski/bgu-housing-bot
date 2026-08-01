@@ -30,6 +30,7 @@ street rather than one per house number.
 """
 from __future__ import annotations
 import json
+import math
 import re
 import sys
 import time
@@ -57,6 +58,24 @@ _ADDR_RE = re.compile(r"^(.*?)\s+(\d+[א-ת]?)\s+באר[- ]שבע\s*$")
 def _street_length_m(name: str) -> float:
     return sum(geocode._haversine_m(a[0], a[1], b[0], b[1])
                for seg in streets.geometry(name) for a, b in zip(seg, seg[1:]))
+
+
+def stranded_streets() -> list:
+    """[(street, length_m, anchor_count)] for streets where a REAL listing's house number
+    cannot be placed — whatever the anchor count.
+
+    Anchor count is the wrong criterion on its own. `אלכסנדר ינאי` has two anchors, 8 and
+    14, so the thin-street test skipped it — but every listing on it is numbered 17 to 32,
+    far past that range and beyond the extrapolation cap. `ביאליק חיים נחמן` is anchored
+    1–4 with listings at 11–139. Two anchors in the wrong place buy nothing."""
+    anchors = geocode._load_anchors()
+    out = []
+    for st, nums in wanted_numbers().items():
+        if not any(not geocode.place_house(st, hn)[0] for hn in nums):
+            continue
+        have = len([k for k in (anchors.get(st) or {}) if str(k).isdigit()])
+        out.append((st, _street_length_m(st), have))
+    return out
 
 
 def relevant_streets() -> list:
@@ -147,38 +166,36 @@ def _accept(street: str, text: str, pt) -> tuple:
     return number, pt
 
 
-MIN_RANK_CORRELATION = 0.8
+# Two roads sharing a name sit kilometres apart (the ההגנה case: anchors 10 m from the
+# geometry AND anchors 2,887 m away). Anchors on ONE road never split like that.
+MAX_CLUSTER_GAP_M = 300.0
 
 
-def _monotonic(street: str, found: dict) -> bool:
-    """Do the house numbers TREND in one direction along the street?
+def _one_road(street: str, found: dict) -> bool:
+    """Do these anchors belong to a single road?
 
-    If they do not, govmap has handed back points from two different roads that share a
-    name, and interpolating between them would be the ההגנה 3.5 km error again. The whole
-    street is then discarded rather than half-trusted.
+    The failure this guards against is govmap answering with points from two different
+    roads that share a name, which is what once put `ההגנה 89` 3.5 km out. Those show up
+    as two clumps of points far apart, so that is what we look for.
 
-    This is a rank correlation, not a step-by-step test. Odd and even numbers sit on
-    opposite sides of the road and are offset along it, so a real street's sequence
-    wobbles locally while trending cleanly: בני אור's nine true anchors step
-    up-down-up-down yet run monotonically from one end to the other. A step-by-step test
-    threw all nine away."""
-    nums = sorted((int(re.sub(r"\D", "", n) or 0), p) for n, p in found.items())
-    if len(nums) < 3:
+    It deliberately does NOT test whether the house numbers order neatly along the
+    street's dominant axis. That version discarded 29 streets of good data, because OSM
+    often holds only a FRAGMENT of a road: `רוטנברג` has 147 m of geometry but real house
+    numbers running past 65, so projecting them onto that fragment's axis scrambles the
+    order. All nine of its anchors sat within 49 m of the street — good data, thrown
+    away. The per-anchor 200 m offset test in `_accept` is the real guard; this only
+    catches the two-road case it cannot see."""
+    pts = [tuple(p) for p in found.values()]
+    if len(pts) < 3:
         return True                       # too few to judge; the offset test stands alone
-    pts, idx = geocode._street_axis(street)
-    if len(pts) < 2:
-        return True
-    axis = [p[idx] for _n, p in nums]
-    n = len(axis)
-    order = sorted(range(n), key=lambda i: axis[i])
-    rank = [0] * n
-    for r, i in enumerate(order):
-        rank[i] = r
-    # Spearman: Pearson on ranks, where the house-number ranks are 0..n-1 by construction
-    mean = (n - 1) / 2
-    num = sum((i - mean) * (rank[i] - mean) for i in range(n))
-    den = sum((i - mean) ** 2 for i in range(n))
-    return den == 0 or abs(num / den) >= MIN_RANK_CORRELATION
+    # single-link clustering along the widest axis: sort, then look for a big gap
+    for axis in (0, 1):
+        scale = 111320.0 * (math.cos(math.radians(pts[0][0])) if axis else 1.0)
+        vals = sorted(p[axis] for p in pts)
+        gaps = [(b - a) * scale for a, b in zip(vals, vals[1:])]
+        if gaps and max(gaps) > MAX_CLUSTER_GAP_M:
+            return False
+    return True
 
 
 def seed_street(street: str, length_m: float, wanted=()) -> dict:
@@ -197,11 +214,51 @@ def seed_street(street: str, length_m: float, wanted=()) -> dict:
             got = _accept(street, text, pt)
             if got:
                 found[got[0]] = [round(got[1][0], 6), round(got[1][1], 6)]
-    if not _monotonic(street, found):
-        print(f"  ! {street}: numbers do not advance along the street — discarding all "
-              f"{len(found)}")
+    if not _one_road(street, found):
+        print(f"  ! {street}: anchors split into clumps >{MAX_CLUSTER_GAP_M:.0f} m apart "
+              f"— two roads share this name, discarding all {len(found)}")
         return {}
     return found
+
+
+def missing_exact() -> list:
+    """[(street, number)] for every address a real listing uses that we do NOT hold a
+    surveyed anchor for.
+
+    Interpolating between anchors is good to p50 13 m; asking govmap for the address
+    itself measured 5.4 m against surveyed ground truth. For the ~140 addresses this bot
+    actually has listings at, there is no reason to compute what we can look up — and a
+    real anchor also densifies the street for every future listing on it."""
+    anchors = geocode._load_anchors()
+    out = []
+    for st, nums in sorted(wanted_numbers().items()):
+        for hn in sorted(nums, key=lambda n: int(re.sub(r"\D", "", n) or 0)):
+            if hn not in (anchors.get(st) or {}):
+                out.append((st, hn))
+    return out
+
+
+def seed_exact(pairs: list, existing: dict) -> int:
+    """Ask govmap for each address directly. Returns how many were accepted."""
+    added = 0
+    for i, (st, hn) in enumerate(pairs, 1):
+        if govmap.calls >= MAX_REQUESTS:
+            print(f"\nrequest cap {MAX_REQUESTS} reached — re-run to continue")
+            break
+        got = None
+        for kind, text, pt in govmap.search(f"{st} {hn} באר שבע"):
+            if kind != "address":
+                continue
+            got = _accept(st, text, pt)
+            if got:
+                break
+        if got:
+            existing.setdefault(st, {})[got[0]] = [round(got[1][0], 6), round(got[1][1], 6)]
+            added += 1
+            OUT_PATH.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True,
+                                           indent=1), encoding="utf-8")
+        print(f"  [{i}/{len(pairs)}] {st} {hn:<5} {'exact' if got else '—'}")
+    return added
 
 
 def main() -> int:
@@ -210,15 +267,36 @@ def main() -> int:
     if "--street" in sys.argv:
         only = sys.argv[sys.argv.index("--street") + 1]
 
-    todo = relevant_streets()
+    if "--exact" in sys.argv:
+        pairs = missing_exact()
+        print(f"{len(pairs)} addresses real listings use have no surveyed anchor")
+        print(f"asking govmap for each one directly: {len(pairs)} requests")
+        if dry:
+            print("\n--dry-run: nothing sent.")
+            for st, hn in pairs[:25]:
+                print(f"   {st} {hn}")
+            return 0
+        try:
+            existing = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+        n = seed_exact(pairs, existing)
+        print(f"\n{n}/{len(pairs)} became exact anchors -> {OUT_PATH}")
+        return 0
+
+    # Streets a real listing is waiting on come FIRST and are never skipped as
+    # "already seeded" — the point is the numbers we still cannot place.
+    stranded = stranded_streets()
+    stranded_names = {t[0] for t in stranded}
+    todo_all = stranded + [t for t in relevant_streets() if t[0] not in stranded_names]
     if only:
-        todo = [t for t in todo if t[0] == only] or [(only, _street_length_m(only), 0)]
+        todo_all = [t for t in todo_all if t[0] == only] or [(only, _street_length_m(only), 0)]
 
     try:
         existing = json.loads(OUT_PATH.read_text(encoding="utf-8"))
     except Exception:
         existing = {}
-    todo = [t for t in todo if t[0] not in existing]
+    todo = [t for t in todo_all if t[0] in stranded_names or t[0] not in existing]
 
     want = wanted_numbers()
     extra = sum(len(want.get(n, ())) for n, _L, _h in todo)
@@ -246,7 +324,9 @@ def main() -> int:
             break
         got = seed_street(name, L, want.get(name, ()))
         if got:
-            existing[name] = got
+            # MERGE, don't replace: a stranded street is revisited for the numbers it
+            # still cannot place, and its earlier anchors are just as good as the new ones
+            existing.setdefault(name, {}).update(got)
             OUT_PATH.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True,
                                            indent=1), encoding="utf-8")
         print(f"  [{i}/{len(todo)}] {name:26} +{len(got):2} anchors "

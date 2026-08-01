@@ -361,7 +361,13 @@ def test_precise_street_skips_neighborhood_centroid(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "post", lambda url, **kw: _Resp(
         {"elements": [{"type": "node", "lat": 31.268, "lon": 34.792}]}))
     coords, src = geocode.geocode_detailed("רחוב האיסיים 5, שכונה ד")
-    assert src == "overpass" and coords == (31.268, 34.792)     # the street, not the ד centroid
+    # The invariant is that the NEIGHBOURHOOD centroid never wins — not which tier does.
+    # Since the govmap seed, האיסיים has enough anchors to place number 5 locally, so this
+    # now answers `interpolated` without touching the network, which is strictly better
+    # than the `overpass` it used to need. Assert the rule, not the route.
+    assert src != "static_area"
+    assert coords != geocode.STATIC_TABLE["שכונה ד"]
+    assert geocode.confidence(src) in ("exact", "high")          # a point, not an area
     # a BARE neighborhood still uses the static centroid (bare path unchanged), but it
     # is labelled as the AREA it is — see test_a_neighborhood_centroid_is_graded_area
     assert geocode.geocode_detailed("שכונה ד")[1] == "static_area"
