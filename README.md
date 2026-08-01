@@ -131,6 +131,22 @@ store, and alert. Try a couple of real posts to sanity-check the extraction.
   a point inside that area to `STATIC_TABLE` in `geocode.py` for more reliable
   placement (a few seeds are already there).
 
+- **Optional — address precision from the OSM extract.** `python load_osm_addresses.py`
+  builds `house_anchors.json` (known house numbers) and `python load_osm_buildings.py`
+  builds `buildings.json` (19k footprint centres), both from the same
+  `israel-and-palestine-latest.osm.pbf` that OSRM already needs — offline and free.
+  Between them a numbered address is placed on the building line rather than at the
+  street's midpoint: measured p50 **14 m** from the real address, p90 99 m.
+  `python geo_accuracy.py` re-measures that at any time by hiding each known address
+  in turn; `python audit_geocode.py` catches blunders (a point on the wrong road).
+
+- **The fastest way to improve placement is the dashboard's 📍 button.** Pinning a
+  numbered flat teaches the geocoder where that number is, which then places every
+  other number on the street. Tick `מיקום משוער בלבד` and the page ranks the streets
+  where one pin fixes several flats at once. Pins land in `user_anchors.json`, which
+  wins over OSM and survives a rebuild; a tap more than 200 m from the street it claims
+  is refused so one slip cannot move a whole street.
+
 - **Optional — amenity & transit proximity.** `python load_amenities.py` builds
   `amenities.json`, and every alert then carries a line like
   `🚌 669 מרגר · 6 דק׳ (כל ~20 דק׳) ↔ 8 דק׳` — walking minutes to the bus and

@@ -94,8 +94,26 @@ def _rows() -> list:
         r["geo_confidence"] = geocode.confidence(r["geocode_source"])
         r["photos"] = _photo_hashes(r["images"])
         r["breakdown"] = _breakdown_for(r)
+        r["street"] = _street_of(r["address"])
     rows.sort(key=lambda r: r["eff_score"], reverse=True)
     return rows
+
+
+def _street_of(address) -> str:
+    """The canonical street an address names, or ''.
+
+    Computed here rather than in the page, because the page can only strip the digits
+    off the text and that is not a street: it turned `רחוב בן גוריון, באר שבע` into the
+    CITY, and filed `דרך השלום` and `רחוב השלום` as two different places. The worklist
+    counts listings per street, so those two mistakes both hide work."""
+    text = (address or "").strip()
+    if not text:
+        return ""
+    for cand in geocode._candidate_tokens(text)[:2]:
+        real, _how = streets.canonical(cand)
+        if real:
+            return real
+    return ""
 
 
 def _photo_hashes(images_json) -> list:
@@ -137,7 +155,7 @@ def rows_for_api() -> list:
             "amenity_text", "first_seen", "summary", "saved", "contacted", "stale",
             "broker", "note", "post_text", "lat", "lon", "photos", "breakdown",
             "geocode_source", "geo_confidence", "manual_location",
-            "amenity_points")}
+            "amenity_points", "street")}
             | {"wa": _wa_link(r["contact"])})
     return out
 
@@ -362,8 +380,11 @@ function esc(s){ const d = document.createElement('div'); d.textContent = s == n
 function passes(r){
   const text = $('q').value.trim().toLowerCase();
   if (text){
-    const hay = [r.address, r.contact, r.summary, r.amenity_text, r.note, r.post_text]
-      .join(' ').toLowerCase();
+    // r.street is the CANONICAL name, which an address often doesn't spell out
+    // ("רגר 5" -> "שדרות יצחק רגר"). Searching it is what makes the worklist's
+    // one-click filter land on the whole street rather than nothing.
+    const hay = [r.address, r.street, r.contact, r.summary, r.amenity_text, r.note,
+                 r.post_text].join(' ').toLowerCase();
     if (!hay.includes(text)) return false;
   }
   if ($('st').value && r.status !== $('st').value) return false;
@@ -921,9 +942,8 @@ function drawWorklist(){
   if (!$('approx').checked){ box.style.display = 'none'; return; }
   const by = new Map();
   DATA.filter(isApprox).forEach(r => {
-    const st = (r.address || '').replace(/\s*\d+.*$/, '').trim();
-    if (!st) return;
-    by.set(st, (by.get(st) || 0) + 1);
+    if (!r.street) return;                 // canonical, resolved server-side
+    by.set(r.street, (by.get(r.street) || 0) + 1);
   });
   const top = [...by.entries()].filter(e => e[1] > 1)
                 .sort((a, b) => b[1] - a[1]).slice(0, 8);

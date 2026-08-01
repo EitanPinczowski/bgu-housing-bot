@@ -90,13 +90,40 @@ SQLite + optional Google Sheets + Telegram alert`
 - `geocode.py` — static name table (primary) → house-number placement → cache →
   optional Google → Overpass → Nominatim.
   - **`place_house()` projects, `interpolate_house()` only interpolates.** Between two
-    anchors → `interpolated`. Past them, or on a single-anchor street (using the city's
-    measured 11.2 m per house number) → `extrapolated`, capped at 150 m and clamped to
-    the street's real geometry. It exists because refusing sent the address to
-    Overpass/Nominatim, and those measured **3,528 m** out (ההגנה 89) and p90 595 m.
+    anchors → `interpolated`. Past them → `extrapolated`; on a single-anchor street
+    (using the city's measured 11.2 m per house number) → `projected`. Both are capped
+    at 150 m and clamped to the street's real geometry. It exists because refusing sent
+    the address to Overpass/Nominatim, and those measured **3,528 m** out (ההגנה 89).
   - **`extrapolated` is graded `high` but is NOT in `_PRECISE_SOURCES`** — it's a
     projection, not a survey, so `pipeline._classify` keeps its boundary-street and
     near-edge caution. Don't "tidy" it into the precise set.
+  - **`projected` (one anchor) is graded `street`, not `high`** — that anchor fixes
+    where a number is, not which way the numbers run, so the direction is a guess.
+    Same coordinate, honest label.
+  - **Interpolation is 2D and parity-aware, and keeps the setback** (2026-08-01).
+    Position along the street still follows the polyline, but the anchors' offset from
+    the centreline is interpolated alongside it and added back (`_axis_offset`), and
+    `_anchors_for` prefers anchors of the same parity as the number. The two halves
+    only work TOGETHER — on 705 held-out addresses: old 44.9 m, parity only 31.3 m,
+    setback only **46.8 m (worse)**, both 18.7 m. Setback alone averages the odd and
+    even sides and points back at the road. End to end the geocoder went p50 38 → 14 m,
+    p90 146 → 99 m.
+  - **A computed address is snapped to the nearest building within 25 m**
+    (`snap_to_building`, `buildings.json`). 25 m is swept, not guessed: it is the only
+    radius that improves the median AND the tail. A number we hold an anchor FOR is
+    exempt — that point is evidence, and snapping it answered a hand-placed pin 20 m
+    from where the person put it.
+  - **Building-COUNT interpolation does not work** — measured 19.0 m vs 18.4 m, worse
+    as the tolerance loosens. Sheds and stairwells are footprints too. Don't rebuild it.
+  - **A dashboard pin on a numbered address becomes an ANCHOR** (`add_anchor` →
+    `user_anchors.json`, which wins over OSM and survives a PBF rebuild). It fixes the
+    whole street, not one flat — the only mechanism that can ever place a house on the
+    ~18 streets with no OSM addresses, because the numbering origin is not derivable
+    from free data ("low numbers nearer the centre" holds for only 64% of streets, so
+    guessing it lands at the wrong END). Refused past 200 m from the street it claims.
+- `load_osm_buildings.py` — `buildings.json`: 19,110 footprint CENTRES on a coarse grid
+  index, from the same PBF. Only 3.7% of them carry a house number, which is why nothing
+  in the pipeline had ever seen a building.
 - `load_osm_addresses.py` — builds `house_anchors.json` from
   `C:\osrm\israel-and-palestine-latest.osm.pbf`, **the extract already on disk for OSRM**.
   Overpass (`load_house_numbers.py`) is the fallback, not the source: it was down on all
@@ -112,6 +139,10 @@ SQLite + optional Google Sheets + Telegram alert`
     geometry *and* anchors 2,887 m away from a different street of the same name, so
     `ההגנה 89` interpolated between two unrelated streets and landed 3.5 km out. **Five
     anchors out of 998 were the entire multi-kilometre error tail.** Don't relax this.
+  - **A way's anchor is the MEAN of its footprint, not `nodes[0]`** — the first vertex is
+    a corner, median 12.3 m off centre, and it was 68% of the anchor set. On its own this
+    changed nothing (the old interpolation snapped to the centreline and threw the
+    cross-street half away); it is what makes the setback fix above meaningful.
 - **What we accept from Overpass/Nominatim** (`_plausible_external`, `_NOMINATIM_OK_CLASSES`):
   a point >250 m from the street the address names is a blunder, not imprecision
   (`audit_geocode` measures the median at 6 m), and Nominatim must return somewhere to
