@@ -100,6 +100,17 @@ SQLite + optional Google Sheets + Telegram alert`
   - **`projected` (one anchor) is graded `street`, not `high`** — that anchor fixes
     where a number is, not which way the numbers run, so the direction is a guess.
     Same coordinate, honest label.
+  - **Never clamp past the end of a street's polyline.** `_point_on_axis` clamps to the
+    last vertex, so seven `אלכסנדר ינאי` numbers (17,19,21,23,28,30,32) all answered with
+    ONE point graded `high`. Both its anchors sit past that end, 16 m apart across 6
+    numbers = 2.7 m/number against the measured 11.2. Now: refuse when the target leaves
+    the street's extent, and fall back to the city spacing when the gradient is
+    degenerate. Same pathology `_point_on_axis` was written to fix, same street — the
+    interpolated interior was fixed and the extrapolated tail was not.
+  - **`static_area` (a `שכונה …` key, or the slang `הבלוק`) is graded `area`** and is NOT
+    a precise source. `_CONFIDENCE["static"]` was `exact` whatever the key was, so 19
+    listings whose post said only `שכונה ד` drew as solid precise dots on one point — the
+    biggest pile on the map. Siblings already did this right (`static_street`, `landmark`).
   - **Interpolation is 2D and parity-aware, and keeps the setback** (2026-08-01).
     Position along the street still follows the polyline, but the anchors' offset from
     the centreline is interpolated alongside it and added back (`_axis_offset`), and
@@ -124,6 +135,40 @@ SQLite + optional Google Sheets + Telegram alert`
 - `load_osm_buildings.py` — `buildings.json`: 19,110 footprint CENTRES on a coarse grid
   index, from the same PBF. Only 3.7% of them carry a house number, which is why nothing
   in the pipeline had ever seen a building.
+- `govmap.py` / `seed_anchors.py` — **the anchors are BOUGHT ONCE and then owned.**
+  199 of the 237 GREEN/AMBER-relevant streets had <2 OSM anchors, so `interpolate_house`
+  could not run and every flat on them collapsed onto one street centroid — the real
+  content of "most of the points are clusters". `POST govmap.gov.il/api/search-service/
+  autocomplete {"searchText": …}` is free, keyless and Israeli-government; measured
+  **median 5.4 m** against 8 surveyed OSM addresses. One run: **549 requests, 9 min, 838
+  anchors on 127 streets**, written to `govmap_anchors.json`. After that the live pipeline
+  never touches it again — every future listing on those streets is placed by local
+  arithmetic. **`main.py`/`pipeline.py`/`replay.py` must never import `govmap`**: it is
+  the site's own internal endpoint, undocumented and free to change.
+  - **It substitutes silently, so nothing is trusted.** `בני אור 999` answers
+    `בני אור 13`; a nonsense street answers with an address in **רמלה**; it renames
+    (`סמטת קדש` → `קדש`). A result is accepted only if it is `type=address`, in Be'er
+    Sheva, carries the number asked for, canonicalises to the same street, sits within
+    200 m of that street's geometry, and the street's numbers **trend** monotonically
+    along it by RANK CORRELATION. A step-by-step monotonic test threw away all nine
+    correct `בני אור` anchors — odd and even sit on opposite sides so the sequence
+    wobbles locally while trending cleanly.
+  - **Asking for a number that does not exist is the efficient move**: govmap answers
+    with a spread of real neighbours, so `בני אור 200` harvests nine anchors in one
+    request. Numbers real listings use are also asked for explicitly — the harvest ranks
+    low (1–28) while the listings were at 50 and 64.
+  - Merge order in `_load_anchors()`: **OSM survey → govmap fills only MISSING keys →
+    user pins override both.** govmap can never degrade a surveyed point or a 📍 fix.
+- **Free alternatives to govmap: all checked 2026-08-01, all dead.** Nominatim / Photon /
+  LocationIQ / Geoapify / Pelias serve the same OSM data already in our PBF.
+  `api.govmap.gov.il` is an HTML portal and the guessed ArcGIS paths 404. OpenAddresses
+  `sources/il/countrywide-hebrew.json` is `"skip": true` with a 404 upstream. The Be'er
+  Sheva municipality `כתובות` ArcGIS layer is public with exactly our bbox but its origin
+  refuses all connections and its proxy answers `CONT_0044 Error generating token`.
+- `unique_report.py` — **scores the objective**: how many distinct (street, number)
+  addresses have a point to THEMSELVES. 85 → **111 of 142** after the seed. The ceiling is
+  not the listing count: 196 of 410 listings give no house number and can never be
+  unique honestly.
 - `load_osm_addresses.py` — builds `house_anchors.json` from
   `C:\osrm\israel-and-palestine-latest.osm.pbf`, **the extract already on disk for OSRM**.
   Overpass (`load_house_numbers.py`) is the fallback, not the source: it was down on all
@@ -220,6 +265,19 @@ SQLite + optional Google Sheets + Telegram alert`
     in. Each dot also carries an invisible `.hit` circle sized in **real screen pixels**
     (`HIT_RADIUS_PX * unitsPerPx`): a dot is 4px, and sizing the target in viewBox units
     looked right but measured 8px, because the map renders ~0.36px per unit.
+  - **A badge must be as easy to hit as a dot, and stacks open themselves.** 223 of 229
+    listings sat inside a badge and the badges had **zero** hit targets between them
+    (4.1 px circles) while every single dot got `HIT_RADIUS_PX` of padding — that is
+    "clusters aren't clickable". Pressing one also started a pan and captured the
+    pointer, which retargets the following `click` to the `<svg>` where `closest('.cl')`
+    is null, so `.cl` now joins `.dot` in the pointerdown exclusion. Past
+    `AUTO_FAN_ZOOM` (6×) every `sameSpot` stack **in the viewport** fans open by itself —
+    viewport-limited because 38 stacks × 19 dots would otherwise be rebuilt on every
+    redraw and `drawDots` has no culling. A group too tight for max zoom to split
+    (`__tight`) fans instead of zooming, because `fitTo` clamps at 8× while `applyView`
+    allows 12× and the badge could otherwise be clicked forever doing nothing. Measured
+    in-viewport: at 4× 80% of visible listings are still badged, at **6× it is 3%**, at
+    8× zero.
   - **A dot says how much to trust it.** `geocode_source` → `geocode.confidence()`;
     `street`/`none` draw HOLLOW. Only 45% of listings have a house number; 41% are a
     street/neighbourhood centroid. That is why 282 mapped listings sit on **105

@@ -136,9 +136,19 @@ store, and alert. Try a couple of real posts to sanity-check the extraction.
   builds `buildings.json` (19k footprint centres), both from the same
   `israel-and-palestine-latest.osm.pbf` that OSRM already needs — offline and free.
   Between them a numbered address is placed on the building line rather than at the
-  street's midpoint: measured p50 **14 m** from the real address, p90 99 m.
+  street's midpoint: measured p50 **13 m** from the real address.
   `python geo_accuracy.py` re-measures that at any time by hiding each known address
-  in turn; `python audit_geocode.py` catches blunders (a point on the wrong road).
+  in turn; `python audit_geocode.py` catches blunders (a point on the wrong road); and
+  `python unique_report.py` scores how many addresses have a map point to themselves.
+
+- **Optional but worth it — `python seed_anchors.py`.** OSM knows fewer than two house
+  numbers on 199 of the streets that matter, and interpolation needs two, so every flat
+  on them lands on one street centroid. This fetches the missing anchors **once** from
+  govmap.gov.il (free, no key, Israeli government data — measured median 5.4 m against
+  surveyed addresses) and writes `govmap_anchors.json`. One run took 549 requests and
+  9 minutes for 838 anchors; after that nothing calls the network again, because the
+  anchors place every future listing on those streets locally. `--dry-run` shows exactly
+  what it would ask for first. Your 📍 pins still override it.
 
 - **The fastest way to improve placement is the dashboard's 📍 button.** Pinning a
   numbered flat teaches the geocoder where that number is, which then places every
