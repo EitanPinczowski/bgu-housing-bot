@@ -218,6 +218,64 @@ def test_interpolate_house_between_anchors(monkeypatch):
     assert geocode.interpolate_house("X", "2") is None
 
 
+def _user_anchor_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(geocode, "_USER_ANCHORS_PATH", tmp_path / "user_anchors.json")
+    monkeypatch.setattr(geocode, "_anchors", None)
+    monkeypatch.setattr(geocode, "_median_gap", None)
+
+
+def test_a_pin_becomes_an_anchor_and_places_the_rest_of_the_street(monkeypatch, tmp_path):
+    """The point of Part 4: a 📍 on ONE numbered flat has to place the others too.
+    Without it the 18 streets OSM has no addresses for can never be fixed at all."""
+    line = [[31.260 + i * 0.0002, 34.800] for i in range(11)]
+    monkeypatch.setattr(geocode.streets, "geometry", lambda s: [line])
+    monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
+    _user_anchor_file(monkeypatch, tmp_path)
+    _no_buildings(monkeypatch)
+    assert geocode.interpolate_house("X", "6") is None          # nothing known yet
+
+    assert geocode.add_anchor("X", "1", 31.2600, 34.800) is True
+    assert geocode.add_anchor("X", "11", 31.2620, 34.800) is True
+    mid = geocode.interpolate_house("X", "5")
+    assert mid is not None and 31.2600 < mid[0] < 31.2620       # a DIFFERENT flat
+
+
+def test_a_user_anchor_beats_osm_and_survives_a_pbf_rebuild(monkeypatch, tmp_path):
+    """User anchors live in their own file so load_osm_addresses.py cannot wipe them,
+    and they win: a person looked at the map, OSM did not."""
+    (tmp_path / "house_anchors.json").write_text(
+        '{"X": {"1": [31.2000, 34.8000]}}', encoding="utf-8")
+    monkeypatch.setattr(geocode.streets, "geometry",
+                        lambda s: [[[31.2600, 34.800], [31.2620, 34.800]]])
+    monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
+    _user_anchor_file(monkeypatch, tmp_path)
+    assert geocode.add_anchor("X", "1", 31.2601, 34.800) is True
+    assert geocode._load_anchors()["X"]["1"] == [31.2601, 34.8]
+
+
+def test_a_mistap_far_from_the_street_is_refused_as_an_anchor(monkeypatch, tmp_path):
+    """One bad anchor moves every address on the street, so the same 200 m rule that
+    guards OSM's own data guards a hand-placed point. The listing's own manual location
+    is stored separately and is unaffected."""
+    monkeypatch.setattr(geocode.streets, "geometry",
+                        lambda s: [[[31.2600, 34.800], [31.2620, 34.800]]])
+    monkeypatch.setattr(geocode, "_ANCHORS_PATH", tmp_path / "house_anchors.json")
+    _user_anchor_file(monkeypatch, tmp_path)
+    assert geocode.add_anchor("X", "7", 31.2900, 34.8400) is False   # ~4 km away
+    assert not (tmp_path / "user_anchors.json").exists()
+    # and nothing that isn't a house number ever becomes an anchor
+    assert geocode.add_anchor("X", "ב", 31.2610, 34.800) is False
+
+
+def test_snap_moves_a_point_onto_a_building_but_only_a_near_one(monkeypatch):
+    monkeypatch.setattr(geocode, "_buildings",
+                        {"cell": 0.002, "cells": {"15630:17400": [[31.26011, 34.8000]]}})
+    near = geocode.snap_to_building((31.2600, 34.8000))
+    assert near == (31.26011, 34.8000)                       # ~12 m away: snapped
+    far = geocode.snap_to_building((31.2610, 34.8000))
+    assert far == (31.2610, 34.8000)                         # ~110 m away: left alone
+
+
 def test_dead_mirror_is_skipped_after_first_failure(monkeypatch, tmp_path):
     """A dead Overpass mirror must cost its timeout ONCE, not on every lookup — that
     stall was making a single address take minutes."""
@@ -470,10 +528,18 @@ def test_a_hand_placed_point_outranks_every_geocoder():
 
 
 # --- projecting past / around the anchors ------------------------------------------
+def _no_buildings(monkeypatch):
+    """Turn the building snap off. These tests are about the ARITHMETIC; leaving the
+    real buildings.json in play would make them depend on whether a Be'er Sheva shed
+    happens to sit near a synthetic test coordinate."""
+    monkeypatch.setattr(geocode, "_buildings", {"cell": 0.002, "cells": {}})
+
+
 def _anchored(monkeypatch, anchors, pts):
     monkeypatch.setattr(geocode, "_anchors", anchors)
     monkeypatch.setattr(geocode, "_street_axis", lambda st: (pts, 0))
     monkeypatch.setattr(geocode, "_median_gap", 10.0)
+    _no_buildings(monkeypatch)
 
 
 def test_a_number_past_the_last_anchor_is_projected_not_abandoned(monkeypatch):
@@ -497,11 +563,12 @@ def test_extrapolation_is_bounded(monkeypatch):
 
 def test_a_single_anchor_street_is_usable(monkeypatch):
     """24 streets have exactly one anchor. With the city's typical spacing that still
-    beats the centroid, and it stays bounded."""
+    beats the centroid, and it stays bounded — but it is labelled 'projected', because
+    one anchor fixes where a number is and not which way the numbers run."""
     pts = [(31.2600 + i * 0.0002, 34.79) for i in range(20)]
     _anchored(monkeypatch, {"X": {"10": [31.2604, 34.79]}}, pts)
     pt, how = geocode.place_house("X", "16")
-    assert how == "extrapolated" and pt is not None
+    assert how == "projected" and pt is not None
     assert geocode.place_house("X", "900")[0] is None   # still capped
 
 
@@ -513,6 +580,13 @@ def test_extrapolated_is_high_but_never_counts_as_precise():
     assert geocode.is_precise_source("interpolated") is True
 
 
+def test_a_single_anchor_projection_is_graded_street_not_high():
+    """Two anchors give a measured gradient; one gives a guessed direction. Same
+    coordinate, weaker evidence, and the map has to say so."""
+    assert geocode.confidence("projected") == "street"
+    assert geocode.is_precise_source("projected") is False
+
+
 def test_house_numbers_do_not_collapse_onto_one_vertex(monkeypatch):
     """The user's actual complaint, generated by the geocoder rather than the data:
     snapping the computed position to the nearest street VERTEX put eight different
@@ -522,6 +596,7 @@ def test_house_numbers_do_not_collapse_onto_one_vertex(monkeypatch):
     monkeypatch.setattr(geocode, "_anchors",
                         {"X": {"2": [31.2600, 34.79], "40": [31.2620, 34.79]}})
     monkeypatch.setattr(geocode, "_street_axis", lambda st: (pts, 0))
+    _no_buildings(monkeypatch)
     placed = {geocode.place_house("X", str(n))[0] for n in range(4, 36, 4)}
     assert len(placed) == 8, f"8 numbers collapsed onto {len(placed)} point(s)"
 
@@ -532,6 +607,7 @@ def test_a_projected_point_still_lies_on_the_street(monkeypatch):
     monkeypatch.setattr(geocode, "_anchors",
                         {"X": {"2": [31.2600, 34.79], "40": [31.2620, 34.79]}})
     monkeypatch.setattr(geocode, "_street_axis", lambda st: (pts, 0))
+    _no_buildings(monkeypatch)
     lat, lon = geocode.place_house("X", "20")[0]
     assert 31.2600 <= lat <= 31.2620 and abs(lon - 34.7900) < 1e-9
 

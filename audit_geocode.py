@@ -12,8 +12,18 @@ anything further than AUDIT_MAX_OFFSET_M from the street it claims to be on.
 
 That is how the וינגייט bug surfaced (2026-07-30): a STATIC_TABLE street entry sat
 520 m off its own street AND answered every house number with the same coordinate,
-so `interpolate_house` never ran. Median offset across stored listings was 6 m, so
-anything past ~150 m is a real defect, not noise.
+so `interpolate_house` never ran.
+
+DISTANCE FROM THE STREET IS NOT AN ERROR
+----------------------------------------
+This tool asks "is the point on the right ROAD?", not "is it the right BUILDING?" —
+that second question is `geo_accuracy.py`, which measures against real addresses.
+The distinction matters now, because a house number is deliberately placed OFF the
+centreline: a building sits a median 27.8 m back from the road, and since 2026-08-01
+`interpolate_house` keeps that setback instead of discarding it. So the median offset
+reported below rose from ~6 m to roughly the real setback, and that is the geocoder
+working, not drifting. Only the tail is a defect signal — hence a blunder threshold of
+150 m, which no honest setback approaches.
 """
 from __future__ import annotations
 import sqlite3
@@ -24,8 +34,9 @@ import config
 import geocode
 import streets
 
-# Generous: a street-level point legitimately sits anywhere along the street, and a
-# long street's own points span hundreds of metres. This is a blunder detector.
+# Generous: a street-level point legitimately sits anywhere along the street, a long
+# street's own points span hundreds of metres, and a house number is now placed on the
+# building line rather than the tarmac. This is a blunder detector, not a ruler.
 AUDIT_MAX_OFFSET_M = 150
 
 

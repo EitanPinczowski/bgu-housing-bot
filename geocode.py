@@ -67,10 +67,17 @@ _PRECISE_SOURCES = {"static", "google", "osm_addr", "interpolated", "manual"}
 #   area   — a whole neighborhood centroid
 _CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
                "osm_addr": "exact", "interpolated": "high",
-               # a projection past/around the known anchors: much better than the
-               # street centroid it replaces, but deliberately absent from
-               # _PRECISE_SOURCES so the boundary-street caution still applies
+               # a projection past the known anchors, along the street's OWN measured
+               # gradient: much better than the street centroid it replaces, but
+               # deliberately absent from _PRECISE_SOURCES so the boundary-street
+               # caution still applies
                "extrapolated": "high",
+               # a projection from a SINGLE anchor. That anchor fixes where one number
+               # is, not which way the numbers run — the direction is a guess (they are
+               # assumed to run toward the longer half of the street). Same coordinate
+               # as "extrapolated" but an honest label, because the evidence is
+               # genuinely weaker and the map should say so.
+               "projected": "street",
                "overpass": "street", "nominatim": "street"}
 
 
@@ -622,6 +629,18 @@ def _house_number(location_text: Optional[str]) -> Optional[str]:
 # by its position ALONG the street: project the anchors onto the polyline, then read
 # off where N falls between the two nearest known numbers.
 _ANCHORS_PATH = config.ROOT / "house_anchors.json"
+
+# Anchors the USER placed by hand, kept in their own file so a sloppy pin is auditable
+# and deletable, and so rebuilding from the PBF (load_osm_addresses.py) can never wipe
+# them. They win over OSM: someone looked at the map and said "number 140 is here".
+_USER_ANCHORS_PATH = config.ROOT / "user_anchors.json"
+
+# A hand-placed anchor still has to be near the street it claims — the same rule
+# load_osm_addresses applies to OSM's own data, for the same reason. Generous, because
+# a street's OSM geometry can be a partial fragment: this rejects "you tapped a
+# different street", not "you were a few metres off".
+MAX_ANCHOR_OFFSET_M = 200.0
+
 _anchors: Optional[dict] = None
 
 
@@ -632,7 +651,56 @@ def _load_anchors() -> dict:
             _anchors = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
         except Exception:
             _anchors = {}
+        try:
+            for street, nums in json.loads(
+                    _USER_ANCHORS_PATH.read_text(encoding="utf-8")).items():
+                _anchors.setdefault(street, {}).update(nums)
+        except Exception:
+            pass
     return _anchors
+
+
+def _off_street_m(street: str, lat: float, lon: float) -> Optional[float]:
+    """Metres from (lat, lon) to the nearest point of `street`'s geometry, or None if
+    we don't know where the street is."""
+    segs = streets.geometry(street) if street else []
+    if not segs:
+        return None
+    return min(_haversine_m(lat, lon, p[0], p[1]) for seg in segs for p in seg)
+
+
+def add_anchor(street: str, number: str, lat: float, lon: float) -> bool:
+    """Teach the geocoder that `street number` is at (lat, lon). True if accepted.
+
+    A pin fixes one listing; an anchor fixes the STREET — every other flat between it
+    and the next known number, and every future one. That is the only mechanism that
+    can ever place a house on the streets OSM has no addresses for at all, because the
+    numbering origin of a street cannot be derived from free data (measured: "low
+    numbers nearer the centre" holds for 64% of streets, so guessing it is a coin flip
+    that lands at the wrong END).
+
+    Refused when the point is more than MAX_ANCHOR_OFFSET_M from the street's geometry,
+    so one mis-tap cannot poison every address on a street. The listing's own manual
+    location is stored separately and still applies."""
+    street = (street or "").strip()
+    number = str(number or "").strip()
+    if not street or not number.isdigit():
+        return False
+    off = _off_street_m(street, lat, lon)
+    if off is not None and off > MAX_ANCHOR_OFFSET_M:
+        print(f"[geocode] refused anchor {street} {number}: {off:.0f} m off that street")
+        return False
+    try:
+        data = json.loads(_USER_ANCHORS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data.setdefault(street, {})[number] = [round(lat, 6), round(lon, 6)]
+    _USER_ANCHORS_PATH.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True,
+                                             indent=1), encoding="utf-8")
+    global _anchors, _median_gap
+    _anchors = None                        # both are derived from the anchor set
+    _median_gap = None
+    return True
 
 
 def _street_axis(street: str):
@@ -836,7 +904,7 @@ def place_house(street: Optional[str], number: Optional[str]):
       • the number sits between two known anchors  -> "interpolated"
       • it sits past them, within MAX_EXTRAPOLATE_M -> "extrapolated"
       • the street has ONE anchor, and the number is within MAX_EXTRAPOLATE_M of it at
-        the city's typical spacing                 -> "extrapolated"
+        the city's typical spacing                 -> "projected"
 
     "extrapolated" is deliberately NOT in _PRECISE_SOURCES: it is a projection, not a
     survey, so `pipeline._classify` keeps applying its boundary-street and near-edge
@@ -845,7 +913,13 @@ def place_house(street: Optional[str], number: Optional[str]):
 
     Both answers are finally nudged onto the nearest real building (`snap_to_building`)
     when one is within 25 m — an address is a structure, and arithmetic on its own can
-    land in a garden or a car park."""
+    land in a garden or a car park. A number we have an anchor FOR is exempt: that point
+    is evidence, not arithmetic, and snapping it would answer a hand-placed pin with a
+    coordinate 20 m from where the person put it."""
+    known = _load_anchors().get(street) or {}
+    hit = known.get(str(number or "").strip())
+    if hit:
+        return (hit[0], hit[1]), "osm_addr"
     pt = interpolate_house(street, number)
     if pt:
         return snap_to_building(pt), "interpolated"
@@ -856,12 +930,12 @@ def place_house(street: Optional[str], number: Optional[str]):
     except (TypeError, ValueError):
         return None, None
 
-    known = _load_anchors().get(street) or {}
     pts, idx = _street_axis(street)
     anchors = sorted((int(k), v[idx]) for k, v in known.items() if str(k).isdigit())
     if not anchors or len(pts) < 2:
         return None, None
 
+    how = "extrapolated"
     if len(anchors) >= 2:
         # project past whichever end we fell off, using THIS street's own gradient
         lo, hi = anchors[0], anchors[-1]
@@ -873,6 +947,7 @@ def place_house(street: Optional[str], number: Optional[str]):
         target = edge[1] + (n - edge[0]) * per
         overshoot = abs(target - edge[1]) * 111320.0
     else:
+        how = "projected"                      # one anchor: the DIRECTION is a guess
         one = anchors[0]
         # no local gradient with a single anchor — use the city's typical spacing, and
         # the street's own direction so we move ALONG it rather than across it
@@ -885,7 +960,7 @@ def place_house(street: Optional[str], number: Optional[str]):
     if overshoot > MAX_EXTRAPOLATE_M:
         return None, None                          # too far to still be evidence
     # never leave the street: clamp to its real geometry
-    return snap_to_building(_point_on_axis(pts, idx, target)), "extrapolated"
+    return snap_to_building(_point_on_axis(pts, idx, target)), how
 
 
 def interpolate_house(street: Optional[str], number: Optional[str]):
@@ -1013,10 +1088,9 @@ def _off_claimed_street_m(location_text: str, lat: float, lon: float):
     None when we don't know that street and so can't judge."""
     for cand in _candidate_tokens(location_text)[:2]:
         real, _how = streets.canonical(cand)
-        segs = streets.geometry(real) if real else []
-        if not segs:
-            continue
-        return min(_haversine_m(lat, lon, p[0], p[1]) for seg in segs for p in seg)
+        off = _off_street_m(real, lat, lon) if real else None
+        if off is not None:
+            return off
     return None
 
 

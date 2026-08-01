@@ -29,6 +29,7 @@ import geocode
 import map_listings
 import osrm
 import storage
+import streets
 
 OUT = config.DATA_DIR / "dashboard.html"
 
@@ -286,6 +287,9 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 #placebar .live{color:#fff}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
+#worklist{color:var(--mut);font-size:12px;margin:2px 2px 8px;
+          display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+#worklist button{font-size:12px;padding:2px 8px}
 .panel{border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0;
        background:var(--card);display:none}
 .panel.on{display:block}
@@ -899,8 +903,36 @@ function render(){
   $('newcount').textContent = nnew
     ? nnew + ' חדשות מאז הביקור הקודם · ' : '';
   drawDots(rows);
+  drawWorklist();
   if (cursor >= rows.length) cursor = Math.max(0, rows.length - 1);
   markCursor();
+}
+
+/* Which street is worth pinning next?
+
+   A 📍 on a numbered address does not just fix that flat — the server turns it into a
+   geocoding anchor, which then places every other number on the same street. So the
+   effort is worth wildly different amounts depending on where it lands: one pin on a
+   street with nine approximate flats is nine fixes, one pin on a street with a single
+   flat is one. This ranks them so the next pin is the expensive one. */
+function drawWorklist(){
+  const box = $('worklist');
+  if (!box) return;
+  if (!$('approx').checked){ box.style.display = 'none'; return; }
+  const by = new Map();
+  DATA.filter(isApprox).forEach(r => {
+    const st = (r.address || '').replace(/\s*\d+.*$/, '').trim();
+    if (!st) return;
+    by.set(st, (by.get(st) || 0) + 1);
+  });
+  const top = [...by.entries()].filter(e => e[1] > 1)
+                .sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (!top.length){ box.style.display = 'none'; return; }
+  box.style.display = '';
+  box.innerHTML = 'פין אחד ברחוב יתקן כמה דירות בבת אחת: ' +
+    top.map(([st, n]) =>
+      '<button data-street="' + esc(st) + '">' + esc(st) + ' · ' + n + '</button>')
+      .join(' ');
 }
 
 const rowByKey = k => DATA.find(r => r.dedup_key === k);
@@ -935,6 +967,13 @@ function afterFilter(){
     node.addEventListener(ev, afterFilter);
   });
 $('bycolor').addEventListener('change', render);
+
+$('worklist').addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-street]');
+  if (!b) return;
+  $('q').value = b.dataset.street;
+  afterFilter();
+});
 
 document.querySelectorAll('#t thead th[data-k]').forEach(th =>
   th.addEventListener('click', () => {
@@ -1246,8 +1285,11 @@ async function commitPlace(key, lat, lon, scope){
     ? ' · ' + b.location_tier + '→' + a.location_tier +
       ' · ⭐' + fmt(b.eff_score) + '→' + fmt(a.eff_score)
     : (out.regraded ? ' · הדירוג לא השתנה' : ' · הדירוג לא חושב מחדש (הפוסט לא נשמר)');
+  // A numbered pin also teaches the geocoder where that number is, which places every
+  // other number on the street. Worth saying — it is why pinning is worth the trouble.
   $('walknote').textContent = '📍 המיקום עודכן' +
-    (out.pinned_address ? ' לכל הכתובת "' + out.pinned_address + '"' : '') + chg;
+    (out.pinned_address ? ' לכל הכתובת "' + out.pinned_address + '"' : '') +
+    (out.taught_street ? ' · נלמד "' + out.taught_street + '" לכל הרחוב' : '') + chg;
   $('walknote').style.display = '';
 }
 
@@ -1546,6 +1588,7 @@ def render(live: bool, snapshot: bool = False) -> str:
     <option value="score">ציון</option></select></label>
 </div>
 <div class="count"><span id="n"></span> · <span id="mapcount"></span></div>
+<div id="worklist" style="display:none"></div>
 <div class="panel" id="cmp"></div>
 <div class="map">{base_svg}</svg>
   <div class="mapbtns">
@@ -1631,6 +1674,14 @@ def relocate(key: str, lat: float, lon: float, scope: str = "listing") -> dict:
     listing at that address and every future one — the right scope for the two flats
     whose address is literally `אוניברסיטת בן גוריון`, or for a bare `שכונה ד`.
 
+    Either way, a pin on a NUMBERED address also becomes a geocoding anchor
+    (`geocode.add_anchor`): saying "number 140 is here" is exactly what an anchor is, and
+    it then places every other number on that street. On the 18 streets OSM has no
+    addresses for at all this is the only mechanism that can ever work — the numbering
+    origin of a street is not derivable from free data. `add_anchor` refuses a point more
+    than 200 m from the street it claims, so a mis-tap cannot poison the street; the
+    listing's own manual location is stored separately and stands regardless.
+
     The re-grade goes through pipeline._classify, the same function the live pipeline
     and replay.py use, so a corrected listing can never be graded by different rules
     than everything else."""
@@ -1645,14 +1696,30 @@ def relocate(key: str, lat: float, lon: float, scope: str = "listing") -> dict:
     if scope == "address" and (before["address"] or "").strip():
         pinned_address = geocode.add_pin(before["address"].strip(), lat, lon)
         geocode.uncache(before["address"].strip())     # drop the wrong cached hit
+    taught = _teach_anchor(before.get("address"), lat, lon)
 
     after = _regrade(key)
     out = {"ok": True, "lat": lat, "lon": lon, "pinned_address": pinned_address,
+           "taught_street": taught,
            "before": {k: before.get(k) for k in ("location_tier", "walk_minutes",
                                                  "eff_score", "status")}}
     out["after"] = after or out["before"]
     out["regraded"] = after is not None
     return out
+
+
+def _teach_anchor(address, lat: float, lon: float):
+    """Turn a hand-placed listing into a street anchor. Returns 'street number' when the
+    geocoder accepted it, else None (no house number, unknown street, or too far off)."""
+    text = (address or "").strip()
+    hn = geocode._house_number(text)
+    if not text or not hn:
+        return None
+    for cand in geocode._candidate_tokens(text)[:2]:
+        real, _how = streets.canonical(cand)
+        if real and geocode.add_anchor(real, hn, lat, lon):
+            return f"{real} {hn}"
+    return None
 
 
 def unrelocate(key: str) -> dict:
