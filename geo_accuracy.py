@@ -3,6 +3,7 @@ How far from the real building does the geocoder actually land?
 
     python geo_accuracy.py              # error in metres, by confidence tier
     python geo_accuracy.py --sample 400 # bigger hold-out
+    python geo_accuracy.py --truth new_anchors.json   # grade against a DIFFERENT file
 
 WHY THIS EXISTS
 ---------------
@@ -18,11 +19,18 @@ report a perfect zero.
 
 Report p50/p90/max by tier. A tier that claims `exact` and lands 300 m out is a lie the
 map is telling; this is what makes that visible.
+
+`--truth` exists because the answer key and the geocoder read the SAME file, so improving
+the anchors improves the ruler at the same time and the two gains are indistinguishable.
+Pointing the truth at the new file while the geocoder still reads the old one measures
+the geocoder alone.
 """
 from __future__ import annotations
+import json
 import random
 import statistics
 import sys
+from pathlib import Path
 
 import geocode
 import streets
@@ -41,11 +49,18 @@ def _held_out(street: str, number: str, anchors: dict) -> dict:
     return out
 
 
-def run(sample: int = SAMPLE, seed: int = 7) -> dict:
+def run(sample: int = SAMPLE, seed: int = 7, truth_path: str | None = None) -> dict:
     anchors = geocode._load_anchors()
-    truth = [(st, num, tuple(pt))
-             for st, nums in anchors.items() for num, pt in nums.items()
-             if str(num).isdigit()]
+    key = anchors
+    if truth_path:
+        key = json.loads(Path(truth_path).read_text(encoding="utf-8"))
+        print(f"grading against {truth_path}, geocoding with house_anchors.json")
+    # the address list comes from the ANSWER KEY, not from the geocoder's own file, so
+    # two runs graded against the same key test exactly the same addresses even when
+    # their anchor files differ
+    truth = sorted((st, num, tuple(pt))
+                   for st, nums in key.items() for num, pt in nums.items()
+                   if str(num).isdigit())
     if not truth:
         print("no anchors — run load_osm_addresses.py first")
         return {}
@@ -94,6 +109,9 @@ if __name__ == "__main__":
     n = SAMPLE
     if "--sample" in sys.argv:
         n = int(sys.argv[sys.argv.index("--sample") + 1])
+    tp = None
+    if "--truth" in sys.argv:
+        tp = sys.argv[sys.argv.index("--truth") + 1]
     # streets.py is imported for its side-effect-free index; keep ruff happy about it
     assert streets
-    run(n)
+    run(n, truth_path=tp)

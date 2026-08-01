@@ -58,13 +58,47 @@ def _pbf() -> Path | None:
     return files[-1] if files else None
 
 
+def _way_centre(o) -> tuple | None:
+    """(lat, lon) at the middle of a way's footprint, or None.
+
+    This used to be `o.nodes[0].location` — the FIRST vertex, i.e. a corner of the
+    building — and it was wrong for 732 of the 1,082 address elements (68%). Measured
+    against the same footprints' centroids: median 12.3 m off, p90 28.6 m. That error is
+    baked into every anchor built from a way, so it is paid twice — once when the anchor
+    is placed and again when a house number is interpolated between two of them.
+
+    A polygon's true centroid would need the shoelace formula and closed rings; the mean
+    of the vertices is within a metre of it for the rectangular blocks this city is made
+    of, and it never leaves the footprint the way a corner does."""
+    lat = lon = 0.0
+    n = 0
+    try:
+        nodes = o.nodes
+    except Exception:
+        return None
+    # a closed way repeats its first node last; counting it twice biases the mean
+    seen = list(nodes)
+    if len(seen) > 1 and seen[0].ref == seen[-1].ref:
+        seen = seen[:-1]
+    for nd in seen:
+        try:
+            loc = nd.location
+        except Exception:
+            continue
+        if not loc.valid():
+            continue
+        lat += loc.lat
+        lon += loc.lon
+        n += 1
+    return (lat / n, lon / n) if n else None
+
+
 def _collect(path: Path) -> list:
     """[(lat, lon, housenumber, street_or_None)] inside the Be'er Sheva box.
 
     Nodes and building ways both carry addresses — in this extract 350 nodes against
-    732 ways, so skipping ways would lose two thirds of the data. A way is represented
-    by its first node, which for a building footprint is a corner: within a few metres
-    of its centre and far inside the precision this feeds."""
+    732 ways, so skipping ways would lose two thirds of the data. A way is reduced to
+    the CENTRE of its footprint (see `_way_centre`), not a corner of it."""
     import osmium
 
     la0, lo0, la1, lo1 = geocode._bs_bounds()
@@ -82,13 +116,10 @@ def _collect(path: Path) -> list:
                 continue
             lat, lon = loc.lat, loc.lon
         elif kind == "w":
-            try:
-                loc = o.nodes[0].location
-                if not loc.valid():
-                    continue
-                lat, lon = loc.lat, loc.lon
-            except Exception:
+            centre = _way_centre(o)
+            if centre is None:
                 continue
+            lat, lon = centre
         else:
             continue
         if not (la0 <= lat <= la1 and lo0 <= lon <= lo1):
@@ -168,6 +199,15 @@ def build(dry_run: bool = False) -> dict:
 
     usable = sum(1 for v in anchors.values() if len(v) >= 2)
     was_usable = sum(1 for v in before.values() if len(v) >= 2)
+    moved = []
+    for street, nums in anchors.items():
+        old = before.get(street) or {}
+        for hn, (lat, lon) in nums.items():
+            was = old.get(hn)
+            if was:
+                moved.append(math.hypot((was[0] - lat) * 111320.0,
+                                        (was[1] - lon) * 111320.0
+                                        * math.cos(math.radians(lat))))
     print(f"  bound by addr:street       : {bound_by_name}")
     print(f"  rejected, far from that name: {far_from_named}  (a different street "
           f"sharing the name)")
@@ -177,6 +217,11 @@ def build(dry_run: bool = False) -> dict:
     print(f"anchor points : {sum(len(v) for v in before.values())} -> {sum(len(v) for v in anchors.values())}")
     print(f"streets       : {len(before)} -> {len(anchors)}")
     print(f"…with >=2 (interpolation works): {was_usable} -> {usable}")
+    if moved:
+        moved.sort()
+        print(f"anchors also in the previous file: {len(moved)}, moved "
+              f"p50 {moved[len(moved) // 2]:.1f} m / "
+              f"p90 {moved[int(len(moved) * 0.9)]:.1f} m / max {moved[-1]:.1f} m")
 
     if dry_run:
         print("\n--dry-run: nothing written")
