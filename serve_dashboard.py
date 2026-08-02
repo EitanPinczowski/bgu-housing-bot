@@ -196,7 +196,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/route":            # takes a list, not a single key
             return self._route_plan(payload)
         if route == "/api/worklist":         # no key either — it IS the list
-            return self._json(200, {"items": dashboard.pin_worklist()})
+            return self._json(200, {"items": dashboard.pin_worklist(
+                bool(payload.get("unplaced_only")))})
         key = (payload.get("key") or "").strip()
         if not key:
             return self._json(400, {"error": "missing key"})

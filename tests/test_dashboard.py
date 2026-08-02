@@ -473,6 +473,42 @@ def test_the_hover_highlight_keeps_the_precision_signal(temp_db, monkeypatch, tm
     assert ".dot{cursor:pointer;vector-effect:non-scaling-stroke}" in page
 
 
+def test_the_unplaced_listings_are_named_not_hidden(temp_db, monkeypatch, tmp_path):
+    """A listing with no coordinate simply vanished from the map, and the two counters
+    disagreed with no explanation — 83 of 395 when this was written, 21% of the data and
+    exactly the set 🎯 exists to fix."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "' מתוך '" in page and "' ללא מיקום'" in page
+    assert "function showNoLoc(" in page
+    # the sheet lists them even on the snapshot; only the WRITE path is live-only
+    assert "const canPin = !SNAP && window.__LIVE__;" in page
+    # the 🎯 button says how many it can actually walk
+    assert "rows.filter(r => (r.address || '').trim()).length" in page
+
+
+def test_the_unplaced_queue_narrows_without_shrinking_the_payoff(temp_db, monkeypatch,
+                                                                 tmp_path):
+    """`fixes` must stay counted over EVERY imprecise listing: a pin on a street really
+    does fix the placed-but-vague ones too, so filtering the rows before counting would
+    make each pin look worth less than it is."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    monkeypatch.setattr(dashboard, "_rows", lambda: [
+        {"dedup_key": "a", "address": "בזל 1", "street": "בזל", "lat": None,
+         "geo_confidence": "none", "manual_location": False},
+        {"dedup_key": "b", "address": "בזל 2", "street": "בזל", "lat": 31.25,
+         "geo_confidence": "street", "manual_location": False},
+        {"dedup_key": "c", "address": "", "street": "", "lat": None,
+         "geo_confidence": "none", "manual_location": False},
+    ])
+    everything = dashboard.pin_worklist()
+    unplaced = dashboard.pin_worklist(unplaced_only=True)
+    assert [i["key"] for i in everything] == ["a", "b"]
+    assert [i["key"] for i in unplaced] == ["a"], "only the ones with no coordinate"
+    assert unplaced[0]["fixes"] == 2, "a pin on בזל fixes the placed-but-vague one too"
+
+
 def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
                                                                  tmp_path):
     """The published snapshot is the phone page now that Tailscale is gone, so it has to

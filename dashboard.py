@@ -358,6 +358,24 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 @keyframes pinpulse{50%{stroke-opacity:.35}}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
+/* a count that is also the way in — looks like the text it sits in, not a chrome button */
+.linkish{background:none;border:0;padding:0;font:inherit;color:var(--accent);
+         cursor:pointer;text-decoration:underline}
+/* the flats with no coordinate. A sheet over the map rather than a panel beside it,
+   because the phone is the case that matters and there is no room beside anything. */
+#noloc{position:absolute;inset-inline:8px;bottom:8px;max-height:62%;z-index:19;
+       background:var(--card);border:1px solid var(--line);border-radius:10px;
+       box-shadow:0 6px 22px #0004;display:flex;flex-direction:column;overflow:hidden}
+.nlhead{display:flex;gap:8px;align-items:center;padding:8px 10px;
+        border-bottom:1px solid var(--line);font-size:13px}
+.nlhead b{flex:1}
+.nlbody{overflow-y:auto;-webkit-overflow-scrolling:touch}
+.nlrow{display:flex;gap:8px;width:100%;text-align:start;background:none;border:0;
+       border-bottom:1px solid var(--line);padding:9px 10px;font:inherit;
+       color:var(--fg);cursor:pointer;align-items:baseline}
+.nlrow:hover{background:var(--bg)}
+.nladdr{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (pointer:coarse){ .nlrow{padding:13px 10px} }
 #worklist{color:var(--mut);font-size:12px;margin:2px 2px 8px;
           display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #worklist button{font-size:12px;padding:2px 8px}
@@ -1013,8 +1031,53 @@ function drawDots(rows){
   }
   for (const f of fans) drawSpider(g, f, k, fill, unitsPerPx);
   svg.appendChild(g);
-  $('mapcount').textContent = n + ' על המפה' +
-    (clusters ? ' · ' + clusters + ' קבוצות' : '');
+  /* NAME THE OMISSION. A listing with no coordinate simply vanished from the map, and
+     the two counters ("N / M דירות" and "N על המפה") disagreed with no explanation —
+     84 of 394 right now, 21%, and precisely the set 🎯 pinning exists to fix. Silently
+     dropping a fifth of the data is the one thing this project keeps refusing to do. */
+  const lost = rows.length - n;
+  $('mapcount').innerHTML = esc(n + ' מתוך ' + rows.length + ' על המפה') +
+    (clusters ? esc(' · ' + clusters + ' קבוצות') : '') +
+    (lost ? ' · <button id="nolocbtn" class="linkish">' +
+            esc(lost + ' ללא מיקום') + '</button>' : '');
+  const nb = $('nolocbtn');
+  if (nb) nb.onclick = () => showNoLoc(rows.filter(
+      r => r.lat === null || r.lat === undefined));
+}
+
+/* ---------- the flats with no coordinate ----------
+   They are not on the map and never can be until someone says where they are, so the
+   honest move is to list them where the count is, not to pretend the map is complete.
+   A bottom sheet on a phone, the same shape the card already uses under 700px. */
+function showNoLoc(rows){
+  const box = $('noloc');
+  const canPin = !SNAP && window.__LIVE__;
+  // 🎯 can only walk the ones that HAVE an address — govmap has nothing to answer for a
+  // post that never named a place. Say the number on the button rather than let it
+  // silently cover fewer flats than the heading promises; the rest are still listed,
+  // still openable, and still placeable by hand from the card.
+  const pinnable = rows.filter(r => (r.address || '').trim()).length;
+  box.innerHTML = '<div class="nlhead"><b>' + esc(rows.length + ' דירות ללא מיקום') +
+    '</b>' + (canPin && pinnable
+                ? ' <button id="nlpin">' + esc('🎯 מקם אותן (' + pinnable + ')') + '</button>'
+                : '') +
+    ' <button id="nlclose" aria-label="סגור">✕</button></div>' +
+    '<div class="nlbody">' + rows.map(r =>
+      '<button class="nlrow" data-key="' + esc(r.dedup_key) + '">' +
+      '<span class="nladdr">' + esc(r.address || '— ללא כתובת בפוסט') + '</span>' +
+      '<span class="muted">' + esc('⭐' + fmt(r.eff_score) +
+        (r.price_per_room ? ' · ' + r.price_per_room + '₪' : '')) + '</span></button>').join('') +
+    '</div>';
+  box.style.display = '';
+  $('nlclose').onclick = () => { box.style.display = 'none'; };
+  box.querySelectorAll('.nlrow').forEach(b => b.onclick = () => {
+    box.style.display = 'none';
+    showCard(rowByKey(b.dataset.key));      // no dot to hover — the list IS the way in
+  });
+  // The pin flow is a WRITE path, so it exists only on the live page; the snapshot
+  // still lists them, because knowing which flats have no location is useful offline.
+  if (canPin) $('nlpin').onclick = () => { box.style.display = 'none';
+                                           startPinFlow(true); };
 }
 
 /* ---------- fan a stack open ----------
@@ -1239,7 +1302,7 @@ $('worklist').addEventListener('click', ev => {
 
 if (!SNAP && window.__LIVE__){
   $('pinstart').style.display = '';
-  $('pinstart').onclick = startPinFlow;
+  $('pinstart').onclick = () => startPinFlow(false);
   $('pinaccept').onclick = acceptPin;
   $('pinskip').onclick = () => { pinAt++; showPinStep(); };
   $('pinstop').onclick = endPinFlow;
@@ -1769,8 +1832,8 @@ let pinQueue = [], pinAt = 0, pinCand = null;
    under which a save should advance the queue */
 const inPinFlow = key => !!(pinQueue[pinAt] && pinQueue[pinAt].key === key);
 
-async function startPinFlow(){
-  const out = await post('/api/worklist', {});
+async function startPinFlow(unplacedOnly){
+  const out = await post('/api/worklist', {unplaced_only: !!unplacedOnly});
   pinQueue = (out && out.items) || [];
   pinAt = 0;
   if (!pinQueue.length){ alert('אין דירות שדורשות מיקום — הכל ממוקם'); return; }
@@ -2067,6 +2130,7 @@ def render(live: bool, snapshot: bool = False) -> str:
   </div>
   <div id="boxchip" style="display:none">אזור מסומן
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
+  <div id="noloc" style="display:none"></div>
   <div id="walknote" style="display:none"></div>
   <div id="placebar" style="display:none">📍 הקישו על המיקום הנכון של
     <b id="placewhat"></b> <span id="placemsg" class="live"></span>
@@ -2224,11 +2288,15 @@ def propose_location(key: str) -> dict:
             "street": street, "number": hn}
 
 
-def pin_worklist() -> list:
+def pin_worklist(unplaced_only: bool = False) -> list:
     """Imprecise listings worth pinning, best first.
 
     Ordered by how many OTHER listings the same pin would fix, because a 📍 on a numbered
-    address becomes a street anchor and places every other number on that street."""
+    address becomes a street anchor and places every other number on that street.
+
+    `unplaced_only` narrows it to the listings with NO coordinate at all — the ones that
+    are missing from the map rather than merely imprecise on it. That is the queue the
+    "ללא מיקום" sheet starts, because those are the flats you cannot even see."""
     rows = _rows()
     per_street: dict = {}
     for r in rows:
@@ -2239,6 +2307,11 @@ def pin_worklist() -> list:
     out = []
     for r in rows:
         if r.get("geo_confidence") in ("exact", "high") or r.get("manual_location"):
+            continue
+        # NARROW THE QUEUE, NOT THE ARITHMETIC: `fixes` is counted over every imprecise
+        # listing above, because a pin really does fix all of them. Filtering the rows
+        # before that would have made each pin look worth less than it is.
+        if unplaced_only and r.get("lat") is not None:
             continue
         if not (r.get("address") or "").strip():
             continue                       # nothing to propose and nothing to pin
