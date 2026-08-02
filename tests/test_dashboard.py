@@ -431,3 +431,71 @@ def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkey
     assert "fetch(e.request)" in sw and "caches.match" in sw
     assert sw.index("fetch(e.request)") < sw.index("caches.match"), "must try network first"
     assert "bgu-20260802-1200" in sw, "cache name must be stamped per publish"
+
+
+# --- guided pinning: govmap proposes, a person decides -----------------------------
+def test_worklist_puts_the_pin_that_fixes_the_most_flats_first(temp_db, monkeypatch,
+                                                               tmp_path):
+    """A numbered pin becomes a street anchor, so it places every other number on that
+    street. The queue is therefore ordered by how many flats one tap pays for."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "בני אור 13")
+    _save("k2", "בני אור 21")
+    _save("k3", "סוסו הכהן 3")
+    monkeypatch.setattr(dashboard, "_rows", lambda: [
+        {"dedup_key": "k1", "address": "בני אור 13", "street": "בני אור",
+         "geo_confidence": "street", "manual_location": False},
+        {"dedup_key": "k2", "address": "בני אור 21", "street": "בני אור",
+         "geo_confidence": "street", "manual_location": False},
+        {"dedup_key": "k3", "address": "סוסו הכהן 3", "street": "סוסו הכהן",
+         "geo_confidence": "street", "manual_location": False},
+        {"dedup_key": "k4", "address": "רגר 5", "street": "רגר",
+         "geo_confidence": "exact", "manual_location": False},
+        {"dedup_key": "k5", "address": "", "street": "",
+         "geo_confidence": "area", "manual_location": False},
+    ])
+    items = dashboard.pin_worklist()
+    assert [i["key"] for i in items] == ["k1", "k2", "k3"], \
+        "precise and address-less rows have nothing to pin"
+    assert items[0]["fixes"] == 2 and items[2]["fixes"] == 1
+
+
+def test_propose_never_writes_and_refuses_a_point_with_no_housing(temp_db, monkeypatch,
+                                                                  tmp_path):
+    """govmap substitutes silently (בני אור 999 -> בני אור 13), which is precisely why
+    this only PROPOSES. And a candidate inside the campus or the hospital is not a flat,
+    so it is rejected before a person can accept it by reflex."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    import govmap
+    import zones
+    monkeypatch.setattr(dashboard, "_rows", lambda: [
+        {"dedup_key": "k1", "address": "בני אור 13", "street": "בני אור"}])
+    monkeypatch.setattr(govmap, "address_detail",
+                        lambda *a, **k: ("בני אור 13, באר שבע", (31.2620, 34.7990)))
+
+    monkeypatch.setattr(zones, "no_housing_here", lambda la, lo: None)
+    out = dashboard.propose_location("k1")
+    assert out == {"ok": True, "lat": 31.2620, "lon": 34.7990,
+                   "address": "בני אור 13", "found": "בני אור 13, באר שבע",
+                   "street": "בני אור", "number": "13"}
+    assert storage.manual_location("k1") is None, "propose must not write"
+
+    monkeypatch.setattr(zones, "no_housing_here", lambda la, lo: "אוניברסיטת בן גוריון")
+    blocked = dashboard.propose_location("k1")
+    assert blocked["ok"] is False and blocked["reason"] == "no_housing"
+
+
+def test_the_pin_flow_is_confirm_only_and_live_only(temp_db, monkeypatch, tmp_path):
+    """No auto-accept anywhere in the page, and the trigger never appears on the
+    snapshot — an offline copy cannot write, so a button that pretends it can is worse
+    than no button."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    live = dashboard.render(live=True)
+    assert "id=\"pinstart\"" in live and "startPinFlow" in live
+    # accept is only ever reachable from the button — nothing invokes it in code
+    assert "$('pinaccept').onclick = acceptPin;" in live
+    assert "acceptPin();" not in live, "govmap's answer must never be auto-accepted"
+    assert "if (!SNAP && window.__LIVE__){" in live
+    snap = dashboard.render(live=False, snapshot=True)
+    assert "startPinFlow" not in snap or "__SNAPSHOT__" in snap

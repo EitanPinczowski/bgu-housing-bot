@@ -195,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "bad json"})
         if route == "/api/route":            # takes a list, not a single key
             return self._route_plan(payload)
+        if route == "/api/worklist":         # no key either — it IS the list
+            return self._json(200, {"items": dashboard.pin_worklist()})
         key = (payload.get("key") or "").strip()
         if not key:
             return self._json(400, {"error": "missing key"})
@@ -211,6 +213,10 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/note":
             storage.set_note(key, payload.get("text") or "")
             return self._json(200, {"ok": True, "text": storage.get_note(key)})
+        if route == "/api/propose":
+            # Read-only: asks govmap where this address is so the pinning flow can offer
+            # a candidate. Writes nothing — /api/locate is what commits.
+            return self._json(200, dashboard.propose_location(key))
         if route == "/api/locate":
             # POST for the same reason as /api/walk: a dedup_key is phone|address and
             # must not land in a URL or an access log.

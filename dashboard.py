@@ -330,6 +330,23 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
       display:flex;gap:8px;align-items:center;flex-wrap:wrap;box-shadow:0 3px 12px #0003}
 #placebar button{background:#fff3;border:1px solid #fff6;color:#fff;font-size:12px}
 #placebar .live{color:#fff}
+/* the guided flow rides in the same slot as place-mode — the two are never on together
+   (pinmanual hands over to setPlacing), so one position is enough */
+#pinflow{position:absolute;inset-inline:8px;top:8px;z-index:18;font-size:12.5px;
+      background:#5b3fa8;color:#fff;border-radius:8px;padding:7px 10px;
+      display:flex;gap:8px;align-items:center;flex-wrap:wrap;box-shadow:0 3px 12px #0003}
+#pinflow button{background:#fff3;border:1px solid #fff6;color:#fff;font-size:12px}
+#pinflow button[disabled]{opacity:.45;cursor:default}
+#pinflow .live{color:#fff}
+/* the candidate is deliberately NOT a dot: a dashed pulsing ring reads as "proposed",
+   so an unconfirmed govmap guess can't be mistaken for a saved location */
+.pincand{fill:none;stroke:#5b3fa8;stroke-width:2.5;stroke-dasharray:4,3;
+      vector-effect:non-scaling-stroke;pointer-events:none}
+.pincand.halo{stroke:#fff;stroke-width:5;stroke-dasharray:none;stroke-opacity:.85}
+@media (prefers-reduced-motion:no-preference){
+  .pincand{animation:pinpulse 1.4s ease-in-out infinite}
+}
+@keyframes pinpulse{50%{stroke-opacity:.35}}
 .muted{color:var(--mut)}a{color:var(--accent)}
 .count{color:var(--mut);font-size:12px;margin:6px 2px}
 #worklist{color:var(--mut);font-size:12px;margin:2px 2px 8px;
@@ -533,6 +550,13 @@ function applyView(){
   if (Math.abs(Math.log(k / (lastZoom || k))) > 0.01 || !lastZoom){
     lastZoom = k;
     drawDots(lastRows);
+  }
+  // AFTER drawDots, which re-appends #dots: the proposed point has to stay on top of
+  // the dots it is about, and counter-scale so it stays a ring rather than a blob
+  const cand = document.getElementById('pincand');
+  if (cand){
+    cand.querySelectorAll('circle').forEach(c => c.setAttribute('r', (12 / k).toFixed(2)));
+    svg.appendChild(cand);
   }
 }
 
@@ -1083,6 +1107,18 @@ $('worklist').addEventListener('click', ev => {
   afterFilter();
 });
 
+if (!SNAP && window.__LIVE__){
+  $('pinstart').style.display = '';
+  $('pinstart').onclick = startPinFlow;
+  $('pinaccept').onclick = acceptPin;
+  $('pinskip').onclick = () => { pinAt++; showPinStep(); };
+  $('pinstop').onclick = endPinFlow;
+  $('pinmanual').onclick = () => {
+    const item = pinQueue[pinAt];
+    if (item) setPlacing(item.key);        // today's tap-to-place, same commit path
+  };
+}
+
 document.querySelectorAll('#t thead th[data-k]').forEach(th =>
   th.addEventListener('click', () => {
     const k = th.dataset.k;
@@ -1382,6 +1418,11 @@ function setPlacing(key){
   svg.classList.toggle('placing', !!key);
   const bar = $('placebar');
   bar.style.display = key ? '' : 'none';
+  // both bars live in the same slot, and the guided flow deliberately falls through to
+  // place-mode — so stack instead of overlapping. Measured, because the pin bar wraps.
+  const flow = $('pinflow');
+  bar.style.top = (key && flow && flow.style.display !== 'none')
+      ? (flow.offsetHeight + 12) + 'px' : '';
   if (key){
     const r = rowByKey(key);
     $('placewhat').textContent = (r && r.address) || '';
@@ -1392,7 +1433,9 @@ function setPlacing(key){
 async function commitPlace(key, lat, lon, scope){
   const out = await post('/api/locate', {key: key, lat: lat, lon: lon, scope: scope});
   if (!out || !out.ok){
-    $('placemsg').textContent = 'לא נשמר' + (out && out.reason ? ' (' + out.reason + ')' : '');
+    const why = 'לא נשמר' + (out && out.reason ? ' (' + out.reason + ')' : '');
+    $('placemsg').textContent = why;
+    if (inPinFlow(key)) $('pinmsg').textContent = why;
     return;
   }
   const r = rowByKey(key);
@@ -1425,6 +1468,10 @@ async function commitPlace(key, lat, lon, scope){
     (out.pinned_address ? ' לכל הכתובת "' + out.pinned_address + '"' : '') +
     (out.taught_street ? ' · נלמד "' + out.taught_street + '" לכל הרחוב' : '') + chg;
   $('walknote').style.display = '';
+  // The queue advances HERE, not in acceptPin, so correcting by hand moves on exactly
+  // like accepting does — otherwise the manual path left the flow stuck on a flat that
+  // was already placed.
+  if (inPinFlow(key)){ pinAt++; showPinStep(); }
 }
 
 function initPlacing(){
@@ -1573,12 +1620,144 @@ function drawCompare(){
   p.classList.add('on');
   if (SNAP) return;
   $('route').onclick = async () => {
+    const btn = $('route'), label = btn.textContent;
+    btn.textContent = '…';
     const out = await post('/api/route', {keys: picked.map(r => r.dedup_key)});
-    $('routeout').textContent = out
-      ? out.order.map((k, i) => (i + 1) + '. ' + ((rowByKey(k) || {}).address || k)).join('  →  ') +
-        (out.estimated ? '  (הערכה — OSRM כבוי)' : '')
-      : 'לא זמין';
+    btn.textContent = label;
+    drawRoute(out);
   };
+}
+
+/* ---------- guided pinning ----------
+   The worklist told you WHICH streets were worth a pin; finding each building was still
+   yours to do. Now govmap proposes and you judge — accept, correct, or skip. It is never
+   automatic: govmap substitutes silently (`בני אור 999` -> `בני אור 13`), so a person has
+   to see the answer before it becomes an anchor that moves a whole street. */
+let pinQueue = [], pinAt = 0, pinCand = null;
+
+/* true when `key` is the flat the flow is currently asking about — the one condition
+   under which a save should advance the queue */
+const inPinFlow = key => !!(pinQueue[pinAt] && pinQueue[pinAt].key === key);
+
+async function startPinFlow(){
+  const out = await post('/api/worklist', {});
+  pinQueue = (out && out.items) || [];
+  pinAt = 0;
+  if (!pinQueue.length){ alert('אין דירות שדורשות מיקום — הכל ממוקם'); return; }
+  $('pinflow').style.display = '';
+  showPinStep();
+}
+
+function endPinFlow(){
+  pinQueue = []; pinCand = null;
+  $('pinflow').style.display = 'none';
+  const c = document.getElementById('pincand');
+  if (c) c.remove();
+  drawStreetHint(null);
+}
+
+async function showPinStep(){
+  const c = document.getElementById('pincand');
+  if (c) c.remove();
+  pinCand = null;
+  if (pinAt >= pinQueue.length){
+    $('pinmsg').textContent = 'סיימנו — כל הרשימה עברה';
+    $('pinaccept').disabled = true;
+    return;
+  }
+  const item = pinQueue[pinAt];
+  const r = rowByKey(item.key);
+  $('pinwhat').textContent = item.address;
+  $('pincount').textContent = (pinAt + 1) + '/' + pinQueue.length +
+      (item.fixes > 1 ? ' · פין כאן יתקן ' + item.fixes + ' דירות' : '');
+  $('pinmsg').textContent = 'שואל את govmap…';
+  $('pinaccept').disabled = true;
+  if (r) drawStreetHint(r);
+  const out = await post('/api/propose', {key: item.key});
+  if (!out || !out.ok){
+    const WHY = {govmap_no_answer: 'govmap לא מצא — סמנו ידנית על המפה',
+                 no_housing: 'govmap החזיר נקודה בתוך ' + ((out && out.where) || 'מוסד') +
+                             ' — לא מקום מגורים, סמנו ידנית',
+                 no_address: 'אין כתובת בפוסט'};
+    $('pinmsg').textContent = (out && WHY[out.reason]) || 'אין הצעה — סמנו ידנית';
+    setPlacing(item.key);                 // fall straight through to tap-to-place
+    return;
+  }
+  pinCand = out;
+  // show govmap's OWN wording, not the address we asked about — reading the two side by
+  // side is the only way a person can catch a substitution
+  $('pinmsg').textContent = 'govmap: ' + (out.found || out.address || '') + ' — מאשרים?';
+  $('pinaccept').disabled = false;
+  // move the view FIRST: the ring counter-scales off the current zoom, so drawing it
+  // before fitTo would leave it the wrong size the moment the view lands.
+  fitTo([{lat: out.lat, lon: out.lon}]);
+  drawCand(out.lat, out.lon);
+}
+
+/* the proposed point: a white halo under a dashed purple ring, sized in screen terms
+   so it stays a ring and never becomes a blob when you zoom in to look at it */
+function drawCand(lat, lon){
+  const svg = document.querySelector('.map svg');
+  const old = document.getElementById('pincand');
+  if (old) old.remove();
+  const g = el('g');
+  g.id = 'pincand';
+  const [x, y] = project(lat, lon);
+  const r = (12 / zoomFactor()).toFixed(2);
+  for (const cls of ['pincand halo', 'pincand']){
+    const c = el('circle');
+    c.setAttribute('cx', x.toFixed(1)); c.setAttribute('cy', y.toFixed(1));
+    c.setAttribute('r', r);
+    c.setAttribute('class', cls);
+    g.appendChild(c);
+  }
+  svg.appendChild(g);
+}
+
+async function acceptPin(){
+  if (!pinCand) return;
+  const item = pinQueue[pinAt], cand = pinCand;
+  $('pinmsg').textContent = 'שומר…';
+  $('pinaccept').disabled = true;
+  // scope "address" when govmap answered with a house number: that point is the whole
+  // address, and relocate() then teaches it as an anchor for the entire street.
+  await commitPlace(item.key, cand.lat, cand.lon, cand.number ? 'address' : 'listing');
+}
+
+/* ---------- an afternoon of viewings ----------
+   The planner used to print an order and nothing else. What you need before setting out
+   is how long it takes and which way you actually walk, so each leg carries its own
+   minutes and its real OSRM path. When the router is down we say the order is an
+   estimate and draw NOTHING — a straight line here would cross the railway, which is
+   the same lie drawWalk already refuses to tell. */
+function drawRoute(out){
+  const old = document.getElementById('viewroute');
+  if (old) old.remove();
+  const note = $('routeout');
+  if (!out || !out.order || !out.order.length){ note.textContent = 'לא זמין'; return; }
+  const name = k => (rowByKey(k) || {}).address || k;
+  const legs = out.legs || [];
+  note.innerHTML = out.order.map((k, i) => {
+    const leg = legs[i - 1];
+    const gap = leg && leg.minutes ? ' <span class="muted">' + leg.minutes + '′</span> → ' : (i ? ' → ' : '');
+    return gap + '<b>' + (i + 1) + '.</b> ' + esc(name(k));
+  }).join('') +
+    (out.total_minutes ? ' <b>· סה״כ ' + out.total_minutes + ' דק׳ הליכה</b>' : '') +
+    (out.estimated ? ' <span class="muted">(סדר משוער — שרת המסלולים כבוי, אין מסלול לצייר)</span>' : '');
+  if (!out.coords || !out.coords.length) return;
+  const svg = document.querySelector('.map svg');
+  const g = el('g');
+  g.id = 'viewroute';
+  const d = out.coords.map((c, i) => (i ? 'L' : 'M') +
+                  project(c[0], c[1]).map(v => v.toFixed(1)).join(' ')).join(' ');
+  for (const cls of ['wr-cas', 'wr']){
+    const p = el('path');
+    p.setAttribute('d', d);
+    p.setAttribute('class', cls);
+    g.appendChild(p);
+  }
+  svg.appendChild(g);
+  fitTo(out.coords.map(c => ({lat: c[0], lon: c[1]})));
 }
 
 async function poll(){
@@ -1653,7 +1832,30 @@ def plan_route(keys) -> dict:
         nxt = min(remaining, key=lambda k: cost[last].get(k, 1e6))
         remaining.remove(nxt)
         order.append(nxt)
-    return {"order": order, "estimated": estimated}
+
+    # The order alone was all this returned, printed as a line of text. An afternoon of
+    # viewings needs to know how long it takes and which way you actually walk, so each
+    # leg now carries its own minutes and its real path. One geometry call per leg —
+    # a shortlist is capped at 8, and the alternative is a straight line across the
+    # railway, which is the lie `drawWalk` already refuses to tell.
+    at = {k: (rows[k]["lat"], rows[k]["lon"]) for k in order}
+    legs, coords, total = [], [], 0.0
+    for a, b in zip(order, order[1:]):
+        mins = cost[a].get(b)
+        leg = {"from": a, "to": b,
+               "minutes": round(mins, 1) if mins and mins < 1e5 else None}
+        if not estimated:
+            got = osrm.foot_geometry(at[a][0], at[a][1],
+                                     {"lat": at[b][0], "lon": at[b][1]})
+            if got:
+                leg["minutes"] = round(got["minutes"], 1)
+                leg["metres"] = round(got["metres"])
+                coords.extend(got["coords"])
+        if leg["minutes"]:
+            total += leg["minutes"]
+        legs.append(leg)
+    return {"order": order, "estimated": estimated, "legs": legs,
+            "total_minutes": round(total, 1) if total else None, "coords": coords}
 
 
 def _json_for_script(obj) -> str:
@@ -1730,6 +1932,8 @@ def render(live: bool, snapshot: bool = False) -> str:
     <button id="fitbtn" title="התאם את התצוגה לדירות המסוננות">התאם</button>
     <button id="boxbtn" title="סימון אזור: Shift+גרירה, או לחצו כאן ואז גררו">▭ אזור</button>
     <button id="reset" title="איפוס תצוגה">איפוס</button>
+    <button id="pinstart" style="display:none"
+            title="עוברים על הדירות חסרות המיקום — govmap מציע, אתם מאשרים">🎯 מיקומים</button>
   </div>
   <div id="boxchip" style="display:none">אזור מסומן
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
@@ -1737,6 +1941,12 @@ def render(live: bool, snapshot: bool = False) -> str:
   <div id="placebar" style="display:none">📍 הקישו על המיקום הנכון של
     <b id="placewhat"></b> <span id="placemsg" class="live"></span>
     <button id="placecancel">ביטול</button></div>
+  <div id="pinflow" style="display:none">🎯 <b id="pinwhat"></b>
+    <span id="pincount" class="live"></span> · <span id="pinmsg" class="live"></span>
+    <button id="pinaccept">אישור</button>
+    <button id="pinmanual">סימון ידני</button>
+    <button id="pinskip">דילוג</button>
+    <button id="pinstop">סיום</button></div>
   {_legend_html()}
   <div class="maphint">Ctrl+גלגלת או צביטה לזום · גרירה/אצבע להזזה ·
     ריחוף/נגיעה בנקודה לפרטים</div>
@@ -1841,6 +2051,73 @@ def relocate(key: str, lat: float, lon: float, scope: str = "listing") -> dict:
                                                  "eff_score", "status")}}
     out["after"] = after or out["before"]
     out["regraded"] = after is not None
+    return out
+
+
+def propose_location(key: str) -> dict:
+    """Ask govmap where this listing's address is, so the pinning flow can offer an
+    answer instead of asking the user to hunt for the building.
+
+    Deliberately only a PROPOSAL. govmap substitutes silently — `בני אור 999` comes back
+    as `בני אור 13`, and a nonsense street comes back in רמלה — so nothing here writes
+    anything. The user accepts, corrects or skips, which is the whole point of a confirm
+    step: a person sees the substitution."""
+    row = next((r for r in _rows() if r["dedup_key"] == key), None)
+    if not row:
+        return {"ok": False, "reason": "unknown_key"}
+    addr = (row.get("address") or "").strip()
+    if not addr:
+        return {"ok": False, "reason": "no_address"}
+    import govmap
+    hn = geocode._house_number(addr)
+    street = row.get("street")
+    found, pt = None, None
+    if street and hn:
+        found, pt = govmap.address_detail(
+            street, hn, verify=lambda head: streets.canonical(head)[0] == street)
+    if pt is None:                       # no usable street/number — try the whole string
+        for kind, text, p in govmap.search(f"{addr} באר שבע"):
+            if kind == "address" and any(c in text for c in ("באר שבע", "באר-שבע")):
+                if not hn or govmap._has_number(text, hn):
+                    found, pt = text, p
+                    break
+    if pt is None:
+        return {"ok": False, "reason": "govmap_no_answer", "address": addr}
+    import zones
+    where = zones.no_housing_here(pt[0], pt[1])
+    if where:
+        return {"ok": False, "reason": "no_housing", "where": where, "address": addr}
+    # `found` is govmap's OWN wording, which is the thing the user is confirming — the
+    # post said `ביאליק 122, שכונה ב`, govmap answers `ביאליק 122, באר שבע`, and the
+    # difference between those two is exactly what a confirm step is for.
+    return {"ok": True, "lat": pt[0], "lon": pt[1], "address": addr, "found": found,
+            "street": street, "number": hn}
+
+
+def pin_worklist() -> list:
+    """Imprecise listings worth pinning, best first.
+
+    Ordered by how many OTHER listings the same pin would fix, because a 📍 on a numbered
+    address becomes a street anchor and places every other number on that street."""
+    rows = _rows()
+    per_street: dict = {}
+    for r in rows:
+        if r.get("geo_confidence") in ("exact", "high") or r.get("manual_location"):
+            continue
+        if r.get("street"):
+            per_street[r["street"]] = per_street.get(r["street"], 0) + 1
+    out = []
+    for r in rows:
+        if r.get("geo_confidence") in ("exact", "high") or r.get("manual_location"):
+            continue
+        if not (r.get("address") or "").strip():
+            continue                       # nothing to propose and nothing to pin
+        out.append({"key": r["dedup_key"], "address": r["address"],
+                    "street": r.get("street") or "",
+                    "fixes": per_street.get(r.get("street"), 1),
+                    "numbered": bool(geocode._house_number(r["address"]))})
+    # a numbered address on a busy street first: that is where one tap pays the most
+    out.sort(key=lambda x: (-x["fixes"], not x["numbered"], x["address"]))
     return out
 
 

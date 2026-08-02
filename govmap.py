@@ -110,13 +110,18 @@ def _has_number(text: str, number: str) -> bool:
     return re.search(rf"(?<!\d){re.escape(number)}[א-ת]?(?!\d)", text) is not None
 
 
-def address(street: str, number: str, verify=None):
-    """(lat, lon) for `street number` in Be'er Sheva, or None.
+def address_detail(street: str, number: str, verify=None):
+    """(govmap's own answer text, (lat, lon)) for `street number` in Be'er Sheva,
+    or (None, None).
 
     `verify(street_text) -> bool` is called with the street part of govmap's own answer
     so the caller can canonicalise it — govmap renames (`ביאליק חיים נחמן` -> `ביאליק`),
     so a raw string comparison would throw away good data, and no comparison at all would
-    accept a different street."""
+    accept a different street.
+
+    The TEXT comes back as well as the point because a confirm step has to show what was
+    actually answered, not what was asked. The guards below reject the substitutions we
+    have measured, but a person can only judge an answer they can read."""
     number = str(number).strip()
     for kind, text, pt in search(f"{street} {number} באר שבע"):
         if kind != "address":
@@ -130,8 +135,13 @@ def address(street: str, number: str, verify=None):
             head = re.split(rf"(?<!\d){re.escape(number)}[א-ת]?(?!\d)", text)[0]
             if not verify(head.strip()):
                 continue
-        return pt
-    return None
+        return text, pt
+    return None, None
+
+
+def address(street: str, number: str, verify=None):
+    """(lat, lon) for `street number` in Be'er Sheva, or None."""
+    return address_detail(street, number, verify)[1]
 
 
 def place(name: str):
