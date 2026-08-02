@@ -393,13 +393,38 @@ legend panel — collapsed, top corner — explains every symbol and switches la
 streets, neighborhood outlines, transit pins, and **walk-time rings** at 5/10/15/20 min
 around each gate, which is the `MAX_WALK_MINUTES` rule behind every AMBER made visible.
 
-**How much to trust a dot.** Only 45% of listings resolve to a house number; 41% land
-on a street or neighbourhood centroid because the post never gave one. Those draw
-**hollow** instead of solid, the card says which it is, and `מיקום משוער בלבד` filters
-to just them. This is also why "the clusters don't open up": 282 mapped listings sit on
-**105 distinct coordinates**, 19 of them on a single point, and no zoom level can
-separate identical coordinates. A badge over a genuine spread zooms; a badge over a
-*stack* **fans out** on leader lines so you can reach each flat.
+**What the background colours mean.** The whole map is washed green / amber / red — the
+verdict any flat *at that spot* would get, sampled from the same classifier the pipeline
+uses. The dashed red outline is שכונה ד׳, where a flat that isn't in the green zone is
+dropped however short the walk is. One caveat, and the legend says it too: the wash is
+computed in a straight line, while a listing's own colour comes from a real walking
+route, so a dot near a boundary can differ from the band it sits in — and there the dot
+is the more accurate of the two. Switch the wash off in the layers panel.
+
+**How much to trust a dot.** 47% of listings resolve to a house number; 31% land on a
+street or neighbourhood centroid because the post never gave one. Those draw **hollow**
+instead of solid, the card says which it is, and `מיקום משוער בלבד` filters to just them.
+This is also why "the clusters don't open up": 312 mapped listings sit on **157 distinct
+coordinates**, and no zoom level can separate identical ones. A badge over a genuine
+spread zooms; a badge over a *stack* **fans out** on leader lines so you can reach each
+flat.
+
+**Flats with no location at all.** 84 of 396 give nothing a geocoder can use. They are
+not on the map and cannot be, so the counter says so — `312 מתוך 396 על המפה · 84 ללא
+מיקום` — and the last part opens a list of them; tapping one opens its card. 🎯 there
+walks the 61 that at least name a place, which is what govmap can be asked about.
+
+**Reading a dot at a glance.** A gold ring means ⭐ saved (a cluster badge gets one too if
+any flat inside it is saved), and a faded dot means 📵 you already made contact. Colour is
+zone by default; the `צבע` menu also offers score and walking time.
+
+**Where am I.** 📍 אני puts you on the map with a real accuracy circle and re-orders the
+list by distance from where you are standing — useful when you are out looking at places.
+Your position never leaves the phone. It needs a secure connection, so use the published
+page (https); on the plain-http home URL the browser will refuse.
+
+**Coming back.** The map remembers where you left it, and the address bar carries the
+view — send that link and the other person opens on the same corner.
 
 **Fixing a wrong location.** 📍 on a card arms place-mode; the next tap on the map puts
 the flat where it really is, and asks whether that applies to this listing only or to

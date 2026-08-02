@@ -172,6 +172,22 @@ SQLite + optional Google Sheets + Telegram alert`
     is not a location (user's decision, 2026-08-01); the listing stays in the list and in
     search, it just stops claiming a position. `הבלוק` remains a landmark — it is a real
     residential quarter — though the static tier answers it first, as `static_area`.
+- **"NEAR X" IS NOT AN ADDRESS, AND NO EXTERNAL GEOCODER MAY ANSWER ONE**
+  (`geocode._is_bare_proximity`, consulted before the Google/Overpass/Nominatim tier).
+  Dropping the university from `_LANDMARKS` was only HALF the 2026-08-01 decision: the
+  phrase then fell through to **Overpass**, which answered with a point OUTSIDE the campus
+  polygon — so `no_housing_here` missed it too — and two listings came back as AMBER
+  MATCHes in the next replay. `_plausible_external` cannot cover this: it ABSTAINS when
+  there is no street to measure against, which is exactly this case. A `_NEAR_RE` word +
+  no house number + no street we can name → NEEDS_DATA, where a person sees it.
+  `_descriptive_landmark` still runs after, so `ליד הבלוק` keeps working.
+  - Underneath it was a DATA fault: `תחנת רכבת צפון - אוניברסיטה` — the railway station —
+    sat in the STREET index, and `_words_index` matches a unique word run, so
+    `האוניברסיטה` canonicalised straight to it. That is the 783 m mismatch noted above,
+    at its source. Measured: exactly **1 of 1,174** entries, so `streets._NOT_STREETS`
+    names it explicitly rather than pattern-matching `תחנת`. The durable fix is for
+    `load_area_features.py` to stop importing railway features (needs an Overpass run).
+  - **Only a replay diff caught this.** Always read `python replay.py` before `--apply`.
 - **The geocode cache CANNOT be shrunk by more than half** (`_save_cache`). It was wiped
   from ~300 entries to 1 twice in one day: any process holding a small `_cache` — a
   hold-out harness using it as scratch, a long-lived server whose copy predates a rebuild
@@ -285,6 +301,18 @@ SQLite + optional Google Sheets + Telegram alert`
 - `storage.py` — SQLite: dedup, listings, votes/marks, unknown-locations, fingerprints, post archive.
 - `sheets.py` — optional Google Sheets sink (append, batch reconcile, sort, rebuild).
 - `notifier.py` — Telegram MarkdownV2 alerts; group-vs-DM routing; albums; vote buttons.
+  - **A VOTE BUTTON CARRIES A TOKEN, NEVER THE dedup_key.** Telegram caps `callback_data`
+    at **64 BYTES** and answers BUTTON_DATA_INVALID by rejecting the **whole message**,
+    not the offending button. A dedup_key is `phone|address` and Hebrew costs 2 bytes a
+    character, so a descriptive address overflows — measured 2026-08-02, 16 of 417 keys,
+    the longest 93 bytes. Because alerts are **batched**, one long address took a whole
+    batch down: that run delivered **4 of 16** and the rest were lost with one line of log.
+    `storage.callback_token` mints a stable 12-hex-char stand-in into `callback_tokens`;
+    `bot_listener._resolve` reverses it and **falls back to a raw key**, because buttons
+    posted before the change live in the chat forever. `_update_tally` must match through
+    `_resolve` too — comparing `save|{key}` silently stops the counts updating.
+    `_fit_callbacks` drops anything still over 64 bytes so a regression costs a button,
+    not the alert.
 - `pipeline.py` — `process_post(...)` funnel; `_classify(...)` reused by replay.
 - `scraper.py` / `login.py` / `main.py` — Playwright reader, one-time login, orchestrator.
 - `manual.py` — paste-a-post CLI (risk-free entry point).
@@ -362,6 +390,83 @@ SQLite + optional Google Sheets + Telegram alert`
     allows 12× and the badge could otherwise be clicked forever doing nothing. Measured
     in-viewport: at 4× 80% of visible listings are still badged, at **6× it is 3%**, at
     8× zero.
+  - **PANNING MUST NOT DO ZOOM WORK.** `applyView` ran on every pointermove and
+    re-queried + rewrote every `.dot` radius and all 264 `.slabel` font-sizes — all of
+    which divide by the zoom factor, which a pan does not change. It now sits behind the
+    existing `lastZoom` guard in `rescaleForZoom`, and the label NodeList is cached
+    (static backdrop markup). Measured: pan **0.24 → 0.005 ms** at 1×, **0.38 → 0.093 ms**
+    at 8×. `drawDots` also culls to the viewport + 0.6 screens, redrawing only when the
+    window leaves the box it was drawn for: **260 → 108** nodes at 8×, and panning the
+    full width in 28 steps costs 9 redraws with 0 groups left unrendered.
+    - **Culling must never change what the page CLAIMS, only what it draws.** Counting in
+      both the total loop and the render loop made the counter read "556 על המפה" against
+      456 listings. One accumulator, over `allGroups`; there is a test.
+    - **A map laid out at ZERO width cannot be clustered** — every px size divides by it
+      and the `|| 1` fallbacks make one cluster cell 19,000 world units, collapsing all
+      312 listings into a single badge that reads like data loss. `drawDots` keeps the
+      last good drawing and waits. Nothing listened for `resize` at all before, so cluster
+      cells, hit targets, halos and the scale bar were stale after a phone rotation.
+  - **The dot carries two extra channels and only two** — ⭐ saved as a gold ring,
+    📵 contacted at 40% opacity. It already encodes tier as fill and precision as
+    hollow/solid; at ~4px on a phone, more is mud. Broker/stale/notes/photos have filters
+    and card lines and stay there.
+    - **A BADGE carries the ring too.** At 1×, **253 of 312** listings sit inside a badge,
+      so a ring on lone dots alone helps in 19% of cases and is missing from exactly the
+      flats you cannot pick out by eye.
+    - **Sized in SCREEN px, not viewBox units** — the `mkHit` trap again. In world units
+      the ring measured 7px around a 4px dot at 375px wide while looking fine on a
+      desktop. Now 14px (dot) / 20px (badge) on every screen.
+    - `.dot.hi` must not set `stroke:#111`: it repainted an approx dot's tier-coloured
+      outline and destroyed the precision signal at the moment you were looking closely.
+  - **The map NAMES what it is not showing.** A listing with no coordinate used to just
+    vanish, and the two counters disagreed silently — 84 of 396, 21%. The counter now
+    reads `N מתוך M על המפה · K ללא מיקום`, and K opens a sheet listing them, each row
+    opening its card. 🎯 there starts the pin flow via `pin_worklist(unplaced_only=True)`.
+    - `fixes` is still counted over EVERY imprecise listing: a pin on בזל fixes the
+      placed-but-vague ones too, so narrowing the rows before counting would understate
+      each pin. The queue narrows; the arithmetic does not.
+    - The button says **61**, not 83 — the other 22 have no address for govmap to answer.
+  - **GREEN|AMBER|RED is drawn as a field** (`map_listings.tier_field_svg`), sampled from
+    `zones.classify_effective` itself. NOT an analytic mask of gate circles minus green
+    minus no-amber: `classify_effective` also reds out anything outside ב/ג/ד, so a mask
+    would paint AMBER where a listing is classified RED. Sampling the classifier cannot
+    disagree with it; a test asserts pixel identity over every sample cell.
+    - **Run-length merging is what let it ship on by default**: 2,643 rects per-cell →
+      **159** merged (−94%), 186 rects / 12.4 KB / 0.9% of the snapshot. The gate was
+      ≤600 nodes / 40 KB. Cells are uniform and axis-aligned so the merge is exact.
+    - It goes **above the background and below the streets** — it is a wash. The green
+      polygon's own 10% fill drops to 0 while it is on (two washes are mud).
+    - `latlon_from` (the Python twin of the page's `unproject`) exists because the field
+      must cover the WHOLE canvas: `_bounds_of` excludes the pad and `scale = min(...)`
+      leaves slack on one axis, so a grid over those bounds leaves an unpainted frame.
+    - **The band is the straight-line estimate; a dot's own tier uses OSRM.** Near the
+      edge they can disagree, and the dot is the more accurate one. Said in the legend.
+  - **The שכונה ד' carve-out is outlined** (`.noamber`, from `zones._no_amber_polys`). It
+    is a RULE, not a walk-time consequence, and was drawn nowhere in either map — so a
+    flat 7 minutes from a gate could be RED with nothing on screen to explain it. `קדש 26`
+    flipped MATCH→DROP for exactly this reason in the 2026-08-02 replay.
+  - **The map has a dark theme** (`prefers-color-scheme` in `STREET_CSS`). It had none at
+    all while the page has had one since D4, so at night it was a white slab in a dark
+    page. The background is a CLASS so CSS beats the presentation attribute; tier hues are
+    **dimmed, not inverted** — at .19 opacity the light ones glow on dark, so dark lifts
+    them to .26.
+  - **Gates are a layer** with a name revealed at 2.6×. They were a bare ★ with no class:
+    the only untoggleable thing on the map and the only landmark with no name, despite
+    every AMBER verdict being measured to one.
+  - **A scale bar** (`drawScale`), because no zoom level said whether two dots were 100 m
+    or 1 km apart. Reuses the page's own projection so it cannot drift from what is drawn,
+    and rides the zoom guard — a bar is a function of scale, and a pan does not change
+    scale. Measured against haversine: within **0.5%** at 1×/4×/8×. `units_per_metre` is
+    shared with `walk_rings_svg`, which had been recomputing it inside the radius loop.
+  - **📍 אני is client-only.** `watchPosition` → a marker plus an accuracy ring in REAL
+    METRES (a 40 m fix draws 40 m), and on the first fix the list orders by distance from
+    you, restoring the previous sort on the way out. The position is never sent, never
+    stored — which is also why it works on the published snapshot. **Geolocation needs a
+    secure context**: the https page and 127.0.0.1 qualify, the plain-http LAN URL does
+    not, and the error says so.
+  - **The view is remembered and shareable** (`bgu.view` + a `#v=x,y,w` hash). Layers have
+    persisted since F4; the view never did, so the PWA reopened on the whole city. The
+    hash wins over localStorage — it is what somebody deliberately sent you.
   - **A dot says how much to trust it.** `geocode_source` → `geocode.confidence()`;
     `street`/`none` draw HOLLOW. Only 45% of listings have a house number; 41% are a
     street/neighbourhood centroid. That is why 282 mapped listings sit on **105
