@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS post_fingerprints (
     tokens TEXT,
     first_seen TEXT
 );
+-- Short stand-ins for a dedup_key inside a Telegram button.
+--
+-- Telegram caps callback_data at 64 BYTES and rejects the WHOLE MESSAGE with
+-- BUTTON_DATA_INVALID if any button is over — it does not drop just that button. A
+-- dedup_key is `phone|address`, and Hebrew costs 2 bytes a character, so a descriptive
+-- address blows the cap: measured 2026-08-02, 16 of 417 keys were too long, the longest
+-- 93 bytes. Because alerts are BATCHED, one such listing took down the whole batch —
+-- that run delivered 4 of 16 alerts and the rest were lost silently.
+CREATE TABLE IF NOT EXISTS callback_tokens (
+    token TEXT PRIMARY KEY,
+    dedup_key TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_callback_tokens_key ON callback_tokens(dedup_key);
 CREATE TABLE IF NOT EXISTS posts (
     sig TEXT PRIMARY KEY,
     raw_text TEXT,
@@ -719,6 +732,47 @@ def all_notes() -> dict:
     """{dedup_key: text} — one query, so the dashboard doesn't do N of them."""
     with _conn() as c:
         return {k: t for k, t in c.execute("SELECT dedup_key, text FROM notes") if t}
+
+
+# A dedup_key is `phone|address`; Telegram allows 64 BYTES of callback_data and rejects
+# the whole message if any button exceeds it (see the callback_tokens DDL). 12 hex chars
+# keeps `dismiss|<token>` at 20 bytes with room to spare, and 48 bits makes a collision
+# across a few thousand listings vanishingly unlikely — and the loop below handles one
+# anyway rather than silently pointing two flats at the same button.
+_TOKEN_CHARS = 12
+
+
+def callback_token(dedup_key: str) -> str:
+    """A short, stable stand-in for `dedup_key`, safe inside a Telegram button.
+
+    Deterministic, so re-alerting the same flat reuses its token instead of growing a
+    row every run, and so a button posted last week still resolves today."""
+    import hashlib
+    if not dedup_key:
+        return ""
+    digest = hashlib.blake2s(dedup_key.encode("utf-8")).hexdigest()
+    with _conn() as c:
+        for size in range(_TOKEN_CHARS, len(digest) + 1):
+            token = digest[:size]
+            row = c.execute("SELECT dedup_key FROM callback_tokens WHERE token=?",
+                            (token,)).fetchone()
+            if row is None:
+                c.execute("INSERT INTO callback_tokens(token, dedup_key) VALUES (?,?)",
+                          (token, dedup_key))
+                return token
+            if row[0] == dedup_key:
+                return token                      # already minted, reuse it
+        return digest                             # full digest collided: impossible-ish
+
+
+def key_for_token(token: str) -> Optional[str]:
+    """The dedup_key a button's token stands for, or None if we've never seen it."""
+    if not token:
+        return None
+    with _conn() as c:
+        row = c.execute("SELECT dedup_key FROM callback_tokens WHERE token=?",
+                        (token,)).fetchone()
+    return row[0] if row else None
 
 
 def set_manual_location(dedup_key: str, lat: float, lon: float,

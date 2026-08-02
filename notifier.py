@@ -332,15 +332,52 @@ def _alert_keyboard(res):
     if pb:
         rows.append([{"text": pb[0], "url": pb[1]}])
     if res.dedup_key:
-        rows.append([
-            {"text": "⭐ מעניין", "callback_data": f"save|{res.dedup_key}"},
-            {"text": "🗑 הסר", "callback_data": f"dismiss|{res.dedup_key}"},
-        ])
-        rows.append([
-            {"text": "ℹ️ למה", "callback_data": f"why|{res.dedup_key}"},
-            {"text": "📵 שוחחתי", "callback_data": f"contacted|{res.dedup_key}"},
-        ])
-    return {"inline_keyboard": rows} if rows else None
+        # A TOKEN, never the key itself. The key is `phone|address`; Telegram allows 64
+        # bytes of callback_data and Hebrew costs 2 bytes a character, so a descriptive
+        # address overflows — and Telegram then rejects the ENTIRE MESSAGE, so one long
+        # address used to take a whole batch of alerts down with it.
+        try:
+            import storage   # local, like send_photos: no import-time dep on the DB
+            tok = storage.callback_token(res.dedup_key)
+        except Exception as exc:                  # never lose an alert over a button
+            print(f"[notifier] could not mint a callback token: {exc}")
+            tok = ""
+        if tok:
+            rows.append([
+                {"text": "⭐ מעניין", "callback_data": f"save|{tok}"},
+                {"text": "🗑 הסר", "callback_data": f"dismiss|{tok}"},
+            ])
+            rows.append([
+                {"text": "ℹ️ למה", "callback_data": f"why|{tok}"},
+                {"text": "📵 שוחחתי", "callback_data": f"contacted|{tok}"},
+            ])
+    return {"inline_keyboard": _fit_callbacks(rows)} if rows else None
+
+
+# Telegram's hard limit, in BYTES of UTF-8 — not characters.
+CALLBACK_DATA_MAX_BYTES = 64
+
+
+def _fit_callbacks(rows: list) -> list:
+    """Drop any button whose callback_data exceeds Telegram's 64-byte cap.
+
+    Belt and braces behind the tokens above. Telegram answers BUTTON_DATA_INVALID and
+    throws away the WHOLE MESSAGE, so without this a single oversized button silently
+    costs a batch of alerts — measured 2026-08-02: 4 of 16 delivered. Losing one button
+    is a bad day; losing the alert is the product failing."""
+    out = []
+    for row in rows:
+        keep = []
+        for btn in row:
+            data = btn.get("callback_data")
+            if data is not None and len(data.encode("utf-8")) > CALLBACK_DATA_MAX_BYTES:
+                print(f"[notifier] dropping oversized button {btn.get('text')!r} "
+                      f"({len(data.encode('utf-8'))} bytes) so the alert still sends")
+                continue
+            keep.append(btn)
+        if keep:
+            out.append(keep)
+    return out
 
 
 def send(text: str, reply_markup=None, target: str = "all") -> bool:

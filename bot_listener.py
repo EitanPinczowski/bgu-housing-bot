@@ -64,14 +64,16 @@ def _update_tally(cb: dict, key: str) -> None:
         return
     counts = storage.mark_counts(key)
     changed = False
+    label = {"save": f"⭐ מעניין ({counts['saved']})",
+             "dismiss": f"🗑 הסר ({counts['dismissed']})"}
     for row in kb:
         for btn in row:
-            data = btn.get("callback_data", "")
-            if data == f"save|{key}":
-                btn["text"] = f"⭐ מעניין ({counts['saved']})"
-                changed = True
-            elif data == f"dismiss|{key}":
-                btn["text"] = f"🗑 הסר ({counts['dismissed']})"
+            act, _, rest = (btn.get("callback_data") or "").partition("|")
+            # Match through _resolve, not on the raw string: the button carries a token
+            # now, and a straight `save|{key}` comparison would silently never match, so
+            # the counts would stop updating on every new alert.
+            if act in label and _resolve(act, rest) == key:
+                btn["text"] = label[act]
                 changed = True
     if changed:
         try:
@@ -81,8 +83,22 @@ def _update_tally(cb: dict, key: str) -> None:
             print("[listener] tally update failed:", exc)
 
 
+def _resolve(action: str, rest: str) -> str:
+    """The dedup_key a vote button refers to.
+
+    Alerts now carry a short TOKEN instead of the key, because a dedup_key is
+    `phone|address` and Telegram's 64-BYTE callback_data cap cannot hold a Hebrew
+    address (see storage.callback_token). Buttons posted before that change carry the
+    raw key, and those messages live in the chat forever — so an unknown token falls
+    back to treating `rest` as the key itself rather than going dead."""
+    if action not in ("save", "dismiss", "why", "contacted"):
+        return rest
+    return storage.key_for_token(rest) or rest
+
+
 def _handle(cb: dict) -> None:
-    action, _, key = (cb.get("data") or "").partition("|")
+    action, _, rest = (cb.get("data") or "").partition("|")
+    key = _resolve(action, rest)
     # 📌 auto-pin from /unknowns: key is a short id into _pending_pins
     if action == "pin":
         sug = _pending_pins.get(key)

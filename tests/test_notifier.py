@@ -23,12 +23,59 @@ def test_no_ids(monkeypatch):
     assert notifier._recipients("group") == []
 
 
-def test_alert_keyboard_has_why_and_contacted():
+def _callback_data(kb):
+    return [b["callback_data"] for row in kb["inline_keyboard"]
+            for b in row if "callback_data" in b]
+
+
+def test_alert_keyboard_has_why_and_contacted(temp_db):
+    import storage
     res = PipelineResult(status=Status.MATCH, dedup_key="k1",
                          extract=ListingExtract(is_apartment_ad=True))
-    kb = notifier._alert_keyboard(res)
-    data = [b["callback_data"] for row in kb["inline_keyboard"] for b in row if "callback_data" in b]
-    assert {"save|k1", "dismiss|k1", "why|k1", "contacted|k1"} <= set(data)
+    tok = storage.callback_token("k1")
+    assert set(_callback_data(notifier._alert_keyboard(res))) >= {
+        f"save|{tok}", f"dismiss|{tok}", f"why|{tok}", f"contacted|{tok}"}
+
+
+def test_a_hebrew_address_still_fits_in_a_telegram_button(temp_db):
+    """The bug that cost 12 of 16 alerts on 2026-08-02.
+
+    A dedup_key is `phone|address` and Hebrew is 2 bytes a character, so a descriptive
+    address blew past Telegram's 64-BYTE callback_data cap. Telegram answers
+    BUTTON_DATA_INVALID and discards the WHOLE MESSAGE — and alerts are batched, so one
+    long address took the whole batch down with it."""
+    key = "phone:508220245|רגר 93, גבול בין שכונה ב ל-שכונה ד, הבלוק"
+    assert len(f"dismiss|{key}".encode()) > notifier.CALLBACK_DATA_MAX_BYTES, \
+        "this key must be one that used to fail, or the test proves nothing"
+    res = PipelineResult(status=Status.MATCH, dedup_key=key,
+                         extract=ListingExtract(is_apartment_ad=True))
+    data = _callback_data(notifier._alert_keyboard(res))
+    assert len(data) == 4, "all four vote buttons must survive"
+    for d in data:
+        assert len(d.encode()) <= notifier.CALLBACK_DATA_MAX_BYTES
+
+
+def test_an_oversized_button_costs_the_button_not_the_alert():
+    """Belt and braces behind the tokens: if callback_data is ever too long again, drop
+    that button so the alert still sends. Losing a button is a bad day; losing the alert
+    is the product failing."""
+    rows = [[{"text": "ok", "callback_data": "save|short"},
+             {"text": "huge", "callback_data": "save|" + "א" * 40}],
+            [{"text": "url only", "url": "https://example.com"}]]
+    out = notifier._fit_callbacks(rows)
+    assert [b["text"] for row in out for b in row] == ["ok", "url only"]
+
+
+def test_a_token_is_stable_and_reversible(temp_db):
+    """Deterministic, so re-alerting the same flat reuses its token instead of growing a
+    row every run, and so a button posted last week still resolves today."""
+    import storage
+    key = "phone:1|רגר 5"
+    first = storage.callback_token(key)
+    assert storage.callback_token(key) == first
+    assert storage.key_for_token(first) == key
+    assert storage.key_for_token("nosuchtoken") is None
+    assert storage.callback_token("phone:2|רגר 5") != first
 
 
 def _match(**kw):
