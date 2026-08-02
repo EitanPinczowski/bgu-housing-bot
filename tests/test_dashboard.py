@@ -549,6 +549,86 @@ def test_units_per_metre_matches_a_measured_distance():
     assert abs(units / metres - upm) / upm < 0.01
 
 
+def _tier_rects(markup):
+    """[(x, y, w, h, fill)] parsed out of a tier-field group."""
+    return [(float(a), float(b), float(c), float(d), e) for a, b, c, d, e in
+            re.findall(r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" '
+                       r'height="([\d.]+)" fill="(#\w+)"/>', markup)]
+
+
+def test_the_tier_field_says_exactly_what_the_classifier_says():
+    """The whole point of sampling instead of an analytic mask: the drawn field cannot
+    disagree with zones.classify_effective, because it IS zones.classify_effective.
+
+    Run-length merging must be pixel-identical to one rect per cell — so every sample
+    point must land in a rect of its own tier's colour."""
+    import map_listings
+    import zones
+    xy, proj = map_listings._projector([(31.2425, 34.7727), (31.2782, 34.8175)])
+    nx = ny = 24                                     # coarse, so the test stays quick
+    markup = "".join(map_listings.tier_field_svg(xy, proj, nx, ny))
+    rects = _tier_rects(markup)
+    latlon = map_listings.latlon_from(proj)
+    w, h = proj["w"], proj["h"]
+    checked = 0
+    for j in range(ny):
+        for i in range(nx):
+            cx, cy = i * w / nx + w / nx / 2, j * h / ny + h / ny / 2
+            la, lo = latlon(cx, cy)
+            want = map_listings._TIER_FILL.get(zones.classify_effective(la, lo),
+                                               map_listings._TIER_FILL["UNKNOWN"])
+            # topmost rect covering this point wins, and rect[0] is the RED base wash
+            got = next((r[4] for r in reversed(rects)
+                        if r[0] <= cx <= r[0] + r[2] and r[1] <= cy <= r[1] + r[3]), None)
+            assert got == want, f"cell {i},{j} drew {got}, classifier says {want}"
+            checked += 1
+    assert checked == nx * ny
+
+
+def test_the_tier_field_covers_the_whole_canvas():
+    """_bounds_of excludes the 34px pad, and scale = min(...) leaves slack on one axis,
+    so a grid over those bounds would leave an unpainted frame."""
+    import map_listings
+    xy, proj = map_listings._projector([(31.2425, 34.7727), (31.2782, 34.8175)])
+    base = _tier_rects("".join(map_listings.tier_field_svg(xy, proj, 8, 8)))[0]
+    assert (base[0], base[1]) == (0.0, 0.0)
+    assert (base[2], base[3]) == (proj["w"], proj["h"])
+
+
+def test_latlon_from_inverts_xy_from():
+    import map_listings
+    _xy, proj = map_listings._projector([(31.2425, 34.7727), (31.2782, 34.8175)])
+    fwd, back = map_listings.xy_from(proj), map_listings.latlon_from(proj)
+    for la, lo in ((31.25, 34.78), (31.27, 34.81), (31.2616, 34.7994)):
+        x, y = fwd(la, lo)
+        la2, lo2 = back(x, y)
+        assert abs(la2 - la) < 1e-9 and abs(lo2 - lo) < 1e-9
+
+
+def test_the_map_has_a_dark_theme(temp_db, monkeypatch, tmp_path):
+    """The page has themed since D4; map_listings had no prefers-color-scheme at all and
+    hardcoded fill="#f6f7f9", so at night the map was a white slab in a dark page."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    css = dashboard.map_listings.STREET_CSS
+    assert "@media (prefers-color-scheme:dark){" in css
+    for cls in (".mapbg", ".st-art", ".tier", ".gate-l"):
+        assert cls in css.split("prefers-color-scheme:dark")[1], f"{cls} untheme d"
+    # the background is a class now, so CSS can beat the presentation attribute
+    assert '<rect class="mapbg"' in page
+
+
+def test_the_no_amber_carveout_is_drawn(temp_db, monkeypatch, tmp_path):
+    """שכונה ד' drops an otherwise-AMBER flat, and was rendered nowhere in either map —
+    so a listing 7 minutes from a gate could be RED with nothing on screen to say why."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert 'class="noamber"' in page
+    assert ".noamber{fill:none" in dashboard.map_listings.STREET_CSS
+
+
 def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
                                                                  tmp_path):
     """The published snapshot is the phone page now that Tailscale is gone, so it has to

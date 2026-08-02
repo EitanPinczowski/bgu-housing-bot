@@ -2422,7 +2422,8 @@ def _legend_html() -> str:
     Written server-side rather than in JS because it is static text, and because a
     partner opening the shared file cold is exactly who needs it — it has to be in
     the markup even if the script never runs."""
-    tc = map_listings._TIER_COLOR
+    tc = map_listings._TIER_COLOR          # the saturated dot colours
+    tf = map_listings._TIER_FILL           # the pale background field
 
     def sw(color: str, label: str) -> str:
         return (f'<div class="li"><span class="sw" style="background:{color}"></span>'
@@ -2454,6 +2455,14 @@ def _legend_html() -> str:
 <div class="li muted">מספר בעיגול = כמה דירות שם. באותה נקודה בדיוק — לחיצה פורשת
   אותן, כי זום לא יפריד ביניהן.</div>
 <h4>רקע</h4>
+<div class="li">שכבת הצבע ברקע = הדירוג של כל נקודה בעיר:</div>
+{sw(tf["GREEN"], "ירוק — בתוך האזור הירוק")}
+{sw(tf["AMBER"], f'כתום — עד {config.MAX_WALK_MINUTES} דק׳ הליכה לשער')}
+{sw(tf["RED"], "אדום — מחוץ לטווח, או בתוך שכונה ד׳ שאינה ירוקה")}
+<div class="li muted">הרקע מחושב בקו אווירי; לדירה עצמה נמדד מסלול הליכה אמיתי, ולכן
+  נקודה ליד הגבול יכולה להיות בצבע אחר מהרקע — ואז הנקודה היא המדויקת.</div>
+{ln("border-top-width:1.6px;border-color:#c62828;border-top-style:dashed",
+    "שכונה ד׳ — בתוכה דירה שאינה ירוקה נפסלת גם אם ההליכה קצרה")}
 {ln("border-top-width:3px;border-color:#1b5e20", "האזור הירוק (מצויר ביד)")}
 {ln("border-top-width:1.6px;border-color:#1a237e;border-top-style:dashed", "שכונות ב/ג/ד — הקבילות")}
 {ln("border-top-width:1.2px;border-color:#8a94a6;border-top-style:dashed", "שכונות אחרות — לאוריינטציה בלבד")}
@@ -2463,6 +2472,7 @@ def _legend_html() -> str:
 <div class="li">★ שערי הקמפוס (השם מופיע בזום) — כל חישוב AMBER נמדד אליהם</div>
 <div class="li">🚌 קו 669 · 🚆 לרכבת · 🏋️ חדר כושר</div>
 <h4>שכבות</h4>
+{lay("tier", "צביעת האזורים ירוק/כתום/אדום", True)}
 {lay("streets", "רחובות ושמותיהם", True)}
 {lay("nbhd", "גבולות שכונות", True)}
 {lay("gates", "שערי הקמפוס", True)}

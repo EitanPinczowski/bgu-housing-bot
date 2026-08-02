@@ -169,6 +169,33 @@ STREET_CSS = """
 .no-amen .amen{display:none!important}
 .no-gates .gate{display:none!important}
 .gate-l{fill:#5d4037;paint-order:stroke;stroke:#fff;stroke-width:2.6px}
+/* the GREEN|AMBER|RED field. Faint, because streets and dots have to read over it. */
+.tier{fill-opacity:.19;pointer-events:none}
+.no-tier .tier{display:none!important}
+/* Two washes over one another is mud, so the green polygon keeps only its outline
+   while the field is on — and gets its fill back the moment you switch the field off. */
+:not(.no-tier)>.gz{fill-opacity:0!important}
+/* the שכונה ד' carve-out: a RULE that drops otherwise-AMBER flats, so it is outlined
+   in its own right rather than merely implied by the field being red there */
+.noamber{fill:none;stroke:#c62828;stroke-opacity:.55;stroke-width:1.6;
+      stroke-dasharray:2,3;vector-effect:non-scaling-stroke}
+.no-tier .noamber{display:none!important}
+/* DARK. The page has had a full dark theme since D4; the map never did, so at night it
+   was a white slab inside a dark page. The tier hues are dimmed rather than inverted —
+   at .19 opacity the light ones glow against a dark background. */
+@media (prefers-color-scheme:dark){
+  .mapbg{fill:#12161a}
+  .st-cas{stroke:#12161a;stroke-opacity:.55}
+  .st-art{stroke:#c3ccd6;stroke-opacity:.85}
+  .st-min{stroke:#78838f;stroke-opacity:.65}
+  .tier{fill-opacity:.26}
+  .nbhd{fill:#9aa4b0;fill-opacity:.05;stroke:#9aa4b0;stroke-opacity:.4}
+  .nbhd-l{fill:#9aa4b0;stroke:#12161a}
+  .amen-bg{fill:#1b2026;fill-opacity:.85;stroke:#9aa4b0}
+  .gate-l{fill:#f0d8b0;stroke:#12161a}
+  .ring{stroke:#66bb6a}
+  .ring-max{stroke:#ffb74d}
+}
 """
 
 
@@ -340,7 +367,11 @@ def build_base_svg(placed=None):
     bounds = _bounds_of(projection)
 
     svg = [f'<svg viewBox="0 0 {_W} {_H}" xmlns="http://www.w3.org/2000/svg">']
-    svg.append(f'<rect width="{_W}" height="{_H}" fill="#f6f7f9"/>')
+    svg.append(f'<rect class="mapbg" width="{_W}" height="{_H}" fill="#f6f7f9"/>')
+    # The tier field goes here and nowhere else: it is a WASH, so it must sit above the
+    # background and below the street network. Anything on top of the streets or the
+    # dots would bury the two things you actually read.
+    svg += tier_field_svg(xy, projection)
     # the street network FIRST, so everything else reads on top of it. Without this the
     # dots floated over an empty polygon and you couldn't tell where anything was.
     feats = features()
@@ -348,9 +379,16 @@ def build_base_svg(placed=None):
     svg += street_lines
     svg += display_neighborhoods_svg(xy, bounds)   # orientation, beneath ב/ג/ד
     svg += landmarks_svg(xy, feats)
-    # the green zone
-    svg.append(f'<polygon points="{_poly_points(xy, zone)}" fill="#2e7d32" '
+    # The green zone. Its 10% fill is REDUNDANT under the tier field — two washes over
+    # one another just make mud — so CSS drops the fill whenever the tier layer is on
+    # and restores it when you switch the field off (see .gz in STREET_CSS).
+    svg.append(f'<polygon class="gz" points="{_poly_points(xy, zone)}" fill="#2e7d32" '
                f'fill-opacity="0.10" stroke="#2e7d32" stroke-width="2"/>')
+    # The שכונה ד' carve-out: inside it, a flat that is otherwise AMBER is dropped. That
+    # is a RULE, not a consequence of walk time, and it was drawn nowhere in either map —
+    # so a listing 7 minutes from a gate could be RED with nothing on screen to explain it.
+    for poly in zones._no_amber_polys():
+        svg.append(f'<polygon class="noamber" points="{_poly_points(xy, poly)}"/>')
     # neighborhood outlines + labels
     for letter, poly in nbhds:
         svg.append(f'<polygon class="nbhd-abc" points="{_poly_points(xy, poly)}" '
@@ -387,6 +425,81 @@ def build_base_svg(placed=None):
     svg += walk_rings_svg(xy)
     svg += street_labels_svg(street_labels)      # names last, so they're never buried
     return "".join(svg), projection
+
+
+def latlon_from(projection):
+    """The inverse of `xy_from` — canvas (x, y) back to (lat, lon).
+
+    The Python twin of the `unproject` the page already carries for tap-to-place. The
+    tier field needs it because sampling must cover the WHOLE canvas: `_bounds_of` gives
+    the content box excluding the pad, and since `scale = min(...)` one axis always has
+    slack, so a grid over those bounds leaves an unpainted frame."""
+    p = projection
+
+    def latlon(x, y):
+        return (p["max_lat"] - (y - p["pad"]) / p["scale"],
+                p["min_lon"] + (x - p["pad"]) / (p["kx"] * p["scale"]))
+    return latlon
+
+
+# The green/amber/red field, sampled from the REAL classifier. 150x125 = 18,750 calls to
+# zones.classify_effective, measured at 0.36 s and no network.
+TIER_NX, TIER_NY = 150, 125
+_TIER_FILL = {"GREEN": "#48b04d", "AMBER": "#f3b64a", "RED": "#e8776b",
+              "UNKNOWN": "#cfd4d9"}
+
+
+def tier_field_svg(xy, projection, nx: int = 0, ny: int = 0) -> list:
+    """The whole-area GREEN/AMBER/RED wash, as `<rect>`s inside one `<g class="tier">`.
+
+    WHY SAMPLED AND NOT ANALYTIC. The amber band looks like it should be "union of gate
+    circles minus green minus no-amber", which would be a dozen nodes in an SVG mask. It
+    is not: `classify_effective` ALSO reds out anything outside ב/ג/ד, so a circles-only
+    mask would paint AMBER where a real listing is classified RED. Sampling the actual
+    classifier cannot disagree with the classifier; an approximation of it can.
+
+    WHY RUN-LENGTH MERGED. One rect per cell measured 3,566 rects / 233 KB, which on a
+    1.4 MB phone page undoes more than the 2,804-nodes-to-4 street refactor won. Cells
+    are uniform and axis-aligned, so merging horizontally adjacent same-tier cells into
+    one rect is pixel-identical and much cheaper. RED stays a single base wash. Measured
+    on the dashboard's projection: **159 rects, 11 KB** against 2,643 per-cell — 94%
+    fewer nodes, which is why this ships switched ON rather than hidden by default.
+
+    HONESTY. The field uses zones.est_walk_to_gate_min (the calibrated straight line,
+    64 m/min) while a listing's own AMBER verdict uses OSRM when it is up. A dot near
+    the edge can legitimately disagree with the band it sits in — and when it does, the
+    dot is the more accurate of the two. The legend says so."""
+    import zones
+    nx, ny = nx or TIER_NX, ny or TIER_NY
+    latlon = latlon_from(projection)
+    w, h = projection["w"], projection["h"]
+    cw, chh = w / nx, h / ny
+    out = [f'<g class="tier"><rect x="0" y="0" width="{w}" height="{h}" '
+           f'fill="{_TIER_FILL["RED"]}"/>']
+    for j in range(ny):
+        y = j * chh
+        la, _ = latlon(0.0, y + chh / 2)
+        run_tier, run_from = None, 0
+        for i in range(nx + 1):                       # +1 so the last run gets flushed
+            tier = None
+            if i < nx:
+                _, lo = latlon(i * cw + cw / 2, y)
+                tier = zones.classify_effective(la, lo)
+                if tier == "RED":
+                    tier = None                       # already the base wash
+            if tier != run_tier:
+                if run_tier is not None:
+                    x0 = run_from * cw
+                    # +0.6 of overlap, exactly as the per-cell version did, so the
+                    # seams between rows don't show as hairlines
+                    out.append(
+                        f'<rect x="{x0:.1f}" y="{y:.1f}" '
+                        f'width="{(i - run_from) * cw + 0.6:.1f}" '
+                        f'height="{chh + 0.6:.1f}" '
+                        f'fill="{_TIER_FILL.get(run_tier, _TIER_FILL["UNKNOWN"])}"/>')
+                run_tier, run_from = tier, i
+    out.append("</g>")
+    return out
 
 
 def units_per_metre(xy, lat: float, lon: float) -> float:

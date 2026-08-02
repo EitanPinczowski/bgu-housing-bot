@@ -54,30 +54,25 @@ def _poly(xy, poly) -> str:
 
 
 def _tier_grid(xy, bounds) -> list:
-    """The tier color field. RED (out of range) is the whole-area base wash; only the
-    in-range GREEN/AMBER cells get their own rect — that keeps the file light (a few
-    thousand cells, not tens of thousands) instead of one rect per grid cell."""
+    """The tier colour field, from the shared renderer in map_listings.
+
+    This used to be the only implementation; the dashboard now draws the same field, so
+    it moved there (map_listings.tier_field_svg) and this delegates. That version also
+    run-length merges each row into single rects — pixel-identical, 94% fewer nodes."""
     min_la, max_la, min_lo, max_lo = bounds
-    cw = (max_lo - min_lo) / _NX
-    ch = (max_la - min_la) / _NY
     x0, y0 = xy(max_la, min_lo)                       # top-left of the grid in SVG
     x1, y1 = xy(min_la, max_lo)                       # bottom-right
-    px = (x1 - x0) / _NX + 0.6                        # +overlap to avoid hairline seams
-    py = (y1 - y0) / _NY + 0.6
-    out = [f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{x1 - x0:.1f}" height="{y1 - y0:.1f}" '
-           f'fill="{_TIER_FILL["RED"]}"/>']           # RED base = out of range
-    for j in range(_NY):
-        la = max_la - (j + 0.5) * ch
-        ry = y0 + j * (y1 - y0) / _NY
-        for i in range(_NX):
-            lo = min_lo + (i + 0.5) * cw
-            tier = zones.classify_effective(la, lo)
-            if tier == "RED":
-                continue                              # already the base wash
-            rx = x0 + i * (x1 - x0) / _NX
-            out.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{px:.1f}" height="{py:.1f}" '
-                       f'fill="{_TIER_FILL.get(tier, _TIER_FILL["UNKNOWN"])}"/>')
-    return out
+    # tier_field_svg samples over a canvas box, so hand it this map's own box and
+    # projection rather than map_listings' 1000x820 world.
+    projection = {"min_lon": min_lo, "max_lat": max_la, "kx": math.cos(
+                      math.radians((min_la + max_la) / 2)),
+                  "scale": (y1 - y0) / max(max_la - min_la, 1e-9),
+                  "pad": 0.0, "w": x1 - x0, "h": y1 - y0}
+    # our origin is (x0, y0), not (0, 0) — shift the whole group instead of every rect
+    body = map_listings.tier_field_svg(xy, projection, _NX, _NY)
+    body[0] = body[0].replace('<g class="tier">',
+                              f'<g class="tier" transform="translate({x0:.1f},{y0:.1f})">')
+    return body
 
 
 def _in_bounds(la, lo, bounds) -> bool:
