@@ -208,7 +208,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 7      # 7: govmap anchors; no clamping past a street's end
+GEOCODE_LOGIC_VERSION = 8      # 8: one road = one pool of geometry AND anchors
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -815,6 +815,24 @@ def _load_anchors() -> dict:
                     dropped += 1
         if dropped:
             print(f"[geocode] dropped {dropped} anchor(s) inside a campus/hospital")
+        # A road OSM split across two spellings also has its house numbers split across
+        # two anchor sets, and pooling the geometry alone does not fix that: `דרך מצדה`
+        # held one anchor while `מצדה` held 21, so `דרך מצדה 69` projected off a single
+        # point and landed 585 m away. Every spelling now sees the whole road's numbers.
+        # The pool is the touching-geometry one from streets.py, so this cannot merge
+        # two different streets that happen to share a word bag.
+        own = {s: dict(n) for s, n in _anchors.items()}
+        for pool in streets.pools():
+            union: dict = {}
+            for alias in pool:
+                for num, pt in (own.get(alias) or {}).items():
+                    union.setdefault(num, pt)
+            if not union:
+                continue
+            for alias in pool:                     # every spelling, even one with none
+                have = _anchors.setdefault(alias, {})
+                for num, pt in union.items():
+                    have.setdefault(num, pt)       # the spelling's own numbers win
     return _anchors
 
 

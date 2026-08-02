@@ -77,6 +77,25 @@ def _words_index() -> dict:
 # separate roads would be hundreds of metres apart.
 _MERGE_TOUCH_M = 50.0
 
+# Road-type words OSM writes on some ways of a road and leaves off others, so the same
+# street lands in two index entries: `דרך מצדה` holds 5 points and `מצדה` holds 225, and
+# `דרך מצדה 69` then interpolated off a single anchor on a 5-point stub and came out
+# 585 m from the street it names. Measured on this bbox, 10 pairs split this way; the two
+# that are NOT the same road (`כיכר האבות`/`האבות`, `כיכר המדע`/`המדע`) sit 2.5 km apart
+# and are rejected by the same touch test that catches a word-order coincidence.
+_ROAD_TYPES = frozenset(("דרך", "רחוב", "שדרות", "שדרת", "סמטת", "סמטה", "שביל",
+                         "כביש", "כיכר", "ככר"))
+
+
+def _pool_key(name: str) -> str:
+    """The bag of words that identifies a ROAD, ignoring word order and any leading
+    road-type word. Two entries sharing this key are candidates to be pooled — the
+    touch test below decides whether they actually are."""
+    parts = _norm(name).split()
+    while len(parts) > 1 and parts[0] in _ROAD_TYPES:
+        parts = parts[1:]
+    return " ".join(sorted(parts))
+
 
 def _nearest_m(a: list, b: list) -> float:
     """Metres between the closest pair of vertices in two segment lists."""
@@ -98,19 +117,8 @@ def _nearest_m(a: list, b: list) -> float:
 
 
 @lru_cache(maxsize=1)
-def _geometry_index() -> dict:
-    """{real OSM name -> [segment, …]} where a segment is [[lat, lon], …].
-
-    OSM writes the same road's name in more than one word order, and each spelling then
-    keeps its own fragment: `ביאליק חיים נחמן` held 135 m while `חיים נחמן ביאליק` held
-    2,849 m of the SAME street — their nearest vertices are 0 m apart. A 135 m stub then
-    fails every distance check for a house at number 122, which is how six ביאליק
-    listings ended up sharing one dot. 12 name-sets in the index are split this way.
-
-    So entries whose names are the same words in a different order are pooled — but only
-    when their geometry actually TOUCHES. Welding two unrelated roads together because
-    they happen to share word order is precisely the class of error the 200 m guard
-    exists to catch, and it must not be introduced here to satisfy that guard elsewhere."""
+def _raw_geometry() -> dict:
+    """{real OSM name -> [segment, …]} exactly as OSM labelled it, before pooling."""
     try:
         data = json.loads(_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -119,25 +127,69 @@ def _geometry_index() -> dict:
     for st in data.get("streets", []):
         if st.get("name"):
             out.setdefault(st["name"], []).extend(st.get("segments", []))
+    return out
 
+
+@lru_cache(maxsize=1)
+def _pools() -> dict:
+    """{real OSM name -> every name that is the SAME ROAD, itself included}.
+
+    OSM writes one road's name in more than one form, and each spelling then keeps its
+    own fragment: `ביאליק חיים נחמן` held 135 m while `חיים נחמן ביאליק` held 2,849 m of
+    the same street, their nearest vertices 0 m apart. A 135 m stub then fails every
+    distance check for a house at number 122, which is how six ביאליק listings ended up
+    sharing one dot. Two things split a road this way — word ORDER (12 name-sets) and a
+    leading road-TYPE word (10 pairs, see _ROAD_TYPES).
+
+    Pooling happens only when the fragments actually TOUCH. Welding two unrelated roads
+    together because they share a word bag is precisely the class of error the 200 m
+    guard exists to catch, and it must not be introduced here to satisfy that guard
+    elsewhere: `כיכר האבות` and `האבות` share a bag and lie 2.5 km apart."""
+    geo = _raw_geometry()
     by_words: dict = {}
-    for name in out:
-        by_words.setdefault(" ".join(sorted(_norm(name).split())), []).append(name)
+    for name in geo:
+        by_words.setdefault(_pool_key(name), []).append(name)
+    out: dict = {}
     for names in by_words.values():
         if len(names) < 2:
             continue
         # pool everything that touches the largest fragment; leave the rest alone
-        names.sort(key=lambda n: -sum(len(s) for s in out[n]))
-        main, merged = names[0], list(out[names[0]])
-        joined = [main]
-        for other in names[1:]:
-            if _nearest_m(out[main], out[other]) <= _MERGE_TOUCH_M:
-                merged.extend(out[other])
-                joined.append(other)
+        names.sort(key=lambda n: -sum(len(s) for s in geo[n]))
+        main = names[0]
+        joined = [main] + [o for o in names[1:]
+                           if _nearest_m(geo[main], geo[o]) <= _MERGE_TOUCH_M]
         if len(joined) > 1:
             for n in joined:
-                out[n] = merged            # every spelling now sees the whole road
+                out[n] = joined
     return out
+
+
+def pools() -> list:
+    """Every pooled road as a tuple of its OSM names, largest fragment first, each pool
+    listed once. `geocode._load_anchors` walks this to union the house numbers."""
+    return sorted({tuple(p) for p in _pools().values()})
+
+
+def aliases(street: Optional[str]) -> list:
+    """Every OSM name for the same road as `street`, itself first.
+
+    Pooling the GEOMETRY is only half the repair: anchors, pins and caches are all keyed
+    by street name, so a road split across two spellings also has its house numbers split
+    across two anchor sets. Callers use this to gather all of them under one road."""
+    if not street:
+        return []
+    pool = _pools().get(street)
+    return [street] + [n for n in pool if n != street] if pool else [street]
+
+
+@lru_cache(maxsize=1)
+def _geometry_index() -> dict:
+    """{real OSM name -> [segment, …]}, with every spelling of one road seeing the
+    whole road (see _pools)."""
+    geo = dict(_raw_geometry())
+    for name, pool in _pools().items():
+        geo[name] = [s for n in pool for s in _raw_geometry().get(n, [])]
+    return geo
 
 
 def _strip_prefix(n: str) -> Optional[str]:

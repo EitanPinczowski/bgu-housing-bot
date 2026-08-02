@@ -776,22 +776,50 @@ def test_a_stale_process_cannot_wipe_the_geocode_cache(monkeypatch, tmp_path):
     assert len(json.loads(p.read_text(encoding="utf-8"))) == 299
 
 
+def _street_length_m(name):
+    import geocode
+    import streets
+    return sum(geocode._haversine_m(a[0], a[1], b[0], b[1])
+               for s in streets.geometry(name) for a, b in zip(s, s[1:]))
+
+
 def test_one_road_split_by_word_order_is_pooled():
     """OSM writes the same street's name in more than one word order, and each spelling
     kept its own fragment: `ביאליק חיים נחמן` held 135 m while `חיים נחמן ביאליק` held
     2,849 m of the SAME road, nearest vertices 0 m apart. A 135 m stub then failed every
     distance check for house 122, so six ביאליק listings shared one dot."""
-    import geocode
-    import streets
-    def length(n):
-        segs = streets.geometry(n)
-        return sum(geocode._haversine_m(a[0], a[1], b[0], b[1])
-                   for s in segs for a, b in zip(s, s[1:]))
-    a, b = length("ביאליק חיים נחמן"), length("חיים נחמן ביאליק")
+    a = _street_length_m("ביאליק חיים נחמן")
+    b = _street_length_m("חיים נחמן ביאליק")
     assert a == b > 2000, "both spellings must see the whole road"
-    # …and the merge must not weld together roads that merely share word order:
-    # דרך מצדה (166 m) and מצדה (6 km) are DIFFERENT word sets and stay apart
-    assert length("דרך מצדה") < 300 < length("מצדה")
+
+
+def test_one_road_split_by_a_road_type_word_is_pooled():
+    """The same split, caused by OSM writing `דרך` on some ways of a road and not others:
+    `דרך מצדה` held 5 points and one anchor while `מצדה` held 225 points and 21. So
+    `דרך מצדה 69` projected off a single anchor on a stub and came out 585 m from the
+    street it names, and was rejected — three מצדה listings lost their house number.
+
+    Pooling the geometry is only half of it: anchors are keyed by street name too, so
+    both halves have to be pooled or the numbers stay split."""
+    import geocode
+    assert _street_length_m("דרך מצדה") == _street_length_m("מצדה") > 2000
+    anchors = geocode._load_anchors()
+    # the same house numbers under both spellings. Not the same POINTS: where both
+    # spellings already carried a number, each keeps its own survey rather than one
+    # arbitrarily overwriting the other.
+    assert set(anchors["דרך מצדה"]) == set(anchors["מצדה"]) and len(anchors["מצדה"]) > 20
+    assert (geocode.interpolate_house("דרך מצדה", "69")
+            == geocode.interpolate_house("מצדה", "69") is not None)
+
+
+def test_a_shared_word_bag_is_not_enough_to_pool():
+    """The guard that makes the pooling safe. `כיכר האבות` and `האבות` share a word bag
+    once the road-type word is dropped, and lie 2.5 km apart — welding those together is
+    exactly the multi-kilometre error the 200 m off-street guard exists to catch."""
+    import streets
+    assert streets._pool_key("כיכר האבות") == streets._pool_key("האבות")
+    assert streets.aliases("כיכר האבות") == ["כיכר האבות"]
+    assert _street_length_m("כיכר האבות") != _street_length_m("האבות")
 
 
 def test_an_area_key_steps_aside_for_a_house_number():

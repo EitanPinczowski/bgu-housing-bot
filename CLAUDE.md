@@ -132,6 +132,23 @@ SQLite + optional Google Sheets + Telegram alert`
     ~18 streets with no OSM addresses, because the numbering origin is not derivable
     from free data ("low numbers nearer the centre" holds for only 64% of streets, so
     guessing it lands at the wrong END). Refused past 200 m from the street it claims.
+- **ONE ROAD = ONE POOL, of geometry AND of anchors** (`streets._pools`, `streets.aliases`,
+  and the pooling loop at the end of `geocode._load_anchors`). OSM splits a single road
+  across two index entries two ways, and each fragment then keeps its own geometry *and*
+  its own house numbers:
+  - **word ORDER** — `ביאליק חיים נחמן` held 135 m, `חיים נחמן ביאליק` held 2,849 m of the
+    same street, nearest vertices **0 m** apart. 12 name-sets. House 122 then failed the
+    200 m check against a 135 m stub, and six ביאליק listings shared one dot.
+  - **a leading road-TYPE word** (`דרך`/`רחוב`/`שדרות`/`סמטת`/`כיכר`…) — `דרך מצדה` held
+    5 points and **1** anchor, `מצדה` held 225 and **21**. `דרך מצדה 69` projected off that
+    single anchor and came out **585 m** from the street it names. 10 pairs.
+  21 pools in total. **Pooling the geometry is only half the repair** — anchors, pins and
+  caches are keyed by street NAME, so the numbers stay split until `_load_anchors` unions
+  them too. Where both spellings already carry the same number, each keeps its own survey.
+  **The gate is that the fragments TOUCH** (`_MERGE_TOUCH_M = 50 m`). `כיכר האבות`/`האבות`
+  and `כיכר המדע`/`המדע` share a word bag and lie **2.5 km** apart; welding those is
+  exactly the multi-kilometre error the 200 m off-street guard exists to catch, and it
+  must not be introduced here to satisfy that guard elsewhere.
 - `load_osm_buildings.py` — `buildings.json`: 19,110 footprint CENTRES on a coarse grid
   index, from the same PBF. Only 3.7% of them carry a house number, which is why nothing
   in the pipeline had ever seen a building.
@@ -360,6 +377,24 @@ SQLite + optional Google Sheets + Telegram alert`
     tier/walk/score before→after: moving a dot changes the verdict, and that must not
     be silent. Scope "this address" instead calls the existing `geocode.add_pin` +
     `uncache`, which fixes every current and future listing there.
+  - **🎯 guided pinning: govmap PROPOSES, a person decides.** `pin_worklist()` orders the
+    imprecise listings by how many flats one pin would fix (a numbered pin becomes a
+    street anchor); `POST /api/propose` → `propose_location()` asks govmap and returns a
+    candidate, writing NOTHING. The candidate draws as a dashed ring, never a dot, so an
+    unconfirmed guess cannot be mistaken for a saved location. Accept commits through the
+    existing `relocate()`; "סימון ידני" falls through to tap-to-place; skip moves on.
+    - **Never auto-accept, and show govmap's OWN wording** (`govmap.address_detail`
+      returns the matched text with the point). govmap substitutes silently — `בני אור 999`
+      comes back as `בני אור 13` — and a person can only judge an answer they can read.
+      The measured substitutions are rejected before display, and a candidate inside the
+      no-housing mask is refused outright.
+    - **The queue advances in `commitPlace`, not in `acceptPin`**, so correcting by hand
+      moves on exactly like accepting does. Wired the other way, the manual path left the
+      flow stuck on a flat it had just placed.
+  - **The viewing-route planner** is the UI for `POST /api/route`, which had none for
+    weeks: tick flats in compare → order, per-leg minutes, total, and the real OSRM path.
+    Router down = "the order is an estimate" and **nothing drawn**; a straight line here
+    crosses the railway, the same lie `drawWalk` already refuses to tell.
   - **Amenity pins are PER-LISTING.** The map-wide layer can only carry fixed
     landmarks; "a stop with a bus to the train station" matches 428 stops, so it is
     skipped by the `_MAX_PINS_PER_TARGET` guard and has no useful map-wide form.

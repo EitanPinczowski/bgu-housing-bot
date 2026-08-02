@@ -150,12 +150,17 @@ store, and alert. Try a couple of real posts to sanity-check the extraction.
   anchors place every future listing on those streets locally. `--dry-run` shows exactly
   what it would ask for first. Your 📍 pins still override it.
 
-- **The fastest way to improve placement is the dashboard's 📍 button.** Pinning a
-  numbered flat teaches the geocoder where that number is, which then places every
-  other number on the street. Tick `מיקום משוער בלבד` and the page ranks the streets
-  where one pin fixes several flats at once. Pins land in `user_anchors.json`, which
-  wins over OSM and survives a rebuild; a tap more than 200 m from the street it claims
-  is refused so one slip cannot move a whole street.
+- **The fastest way to improve placement is the dashboard's 🎯 מיקומים button.** It walks
+  the imprecise listings best-first (a pin on a numbered address teaches the geocoder that
+  number, which then places every other number on the street — so flats-fixed-per-pin is
+  the order), asks govmap where each one is, and shows you the answer as a dashed ring.
+  **אישור** saves it, **סימון ידני** hands over to tap-to-place, **דילוג** moves on.
+  It never accepts by itself: govmap substitutes silently (`בני אור 999` comes back as
+  `בני אור 13`), so the message shows govmap's own wording next to the address from the
+  post and you decide. 📍 on a card is the same commit path with no proposal.
+  Pins land in `user_anchors.json`, which wins over OSM and survives a rebuild; a tap
+  more than 200 m from the street it claims is refused so one slip cannot move a whole
+  street.
 
 - **Optional — amenity & transit proximity.** `python load_amenities.py` builds
   `amenities.json`, and every alert then carries a line like
@@ -403,6 +408,20 @@ literally `אוניברסיטת בן גוריון`, and for a bare `שכונה �
 `pipeline._classify`, so it survives `replay --apply`, and the card reports what it did
 to the tier, walk and score — moving a dot changes the verdict, and that shouldn't be
 silent. `↩` undoes it.
+
+**Fixing a lot of them in one sitting.** 🎯 מיקומים walks the whole imprecise list,
+best-first, and asks govmap for each address so you are confirming an answer rather than
+hunting for a building. The candidate is a dashed ring, never a dot, so an unconfirmed
+guess can't be mistaken for something you saved; **אישור** commits it exactly as 📍 would
+(re-grade, address pin, street anchor), **סימון ידני** drops you into place-mode for that
+flat, **דילוג** skips. There is no auto-accept — govmap answers a nonexistent house
+number with a real one and a nonexistent street with somewhere in רמלה, so the bar shows
+its wording and you judge it.
+
+**Planning an afternoon of viewings.** Tick flats with the compare checkbox, open the
+compare panel and press `תכנן מסלול צפייה`: you get the walking order, the minutes for
+each leg, the total, and the real path on the map. With OSRM down it says the order is an
+estimate and draws nothing rather than a straight line through the railway.
 
 **Transport.** Opening a card pins *that listing's* 669 stops (both directions), its
 train-bound stop and the gym, each on a hairline back to the flat and each with its own
