@@ -284,8 +284,17 @@ SQLite + optional Google Sheets + Telegram alert`
   live from SQLite, which is the only way to poll, vote, or open it on a phone.
   - **A token is required on every route** — the page shows landlords' phone numbers and
     addresses. `DASHBOARD_TOKEN` in `.env`, else generated into
-    `data/dashboard_token.txt`. For away-from-home use **Tailscale**, not a public
-    tunnel. Don't add an unauthenticated mode.
+    `data/dashboard_token.txt`. Don't add an unauthenticated mode.
+  - **The live server is a HOME tool; the published snapshot is the phone.** Tailscale was
+    removed at the user's request (2026-08-02). Live = this PC or the same Wi-Fi, and it
+    is where writes happen (votes, notes, 📍 pinning) because they need the DB. Away from
+    home there is deliberately no live route — no tunnel, no VPN. The published page is
+    the answer and it is a **PWA**: `dashboard.build_share` emits `manifest.webmanifest`,
+    `sw.js` and `icon.svg` beside the snapshot and `publish.py` ships them, so it installs
+    to a home screen and opens with no signal. The worker is **network-first** with a
+    per-publish cache stamp — a cache-first PWA would be the 22-hour stale-server trap
+    again, silently and on a phone. **The live page emits neither** (`_pwa_head(snapshot)`
+    returns "" when live) for exactly that reason.
   - The image proxy serves **only URLs already in the DB**, keyed by hash — never a URL
     from the request, or it becomes an open relay. It caches to `data/images/` because
     Facebook URLs expire (only 8 of 350 listings have permanent Telegram file_ids).

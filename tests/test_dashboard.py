@@ -412,3 +412,22 @@ def test_the_tap_target_is_sized_in_screen_pixels(temp_db, monkeypatch, tmp_path
     assert "const unitsPerPx = view.w / (svgBox.width || 1);" in page
     assert "HIT_RADIUS_PX * unitsPerPx" in page
     assert ".hit{fill:transparent" in page      # invisible, but hittable
+
+
+def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
+                                                                 tmp_path):
+    """The published snapshot is the phone page now that Tailscale is gone, so it has to
+    install and work offline. The LIVE page must ship neither manifest nor worker: caching
+    a localhost tool is how you end up looking at yesterday's data without knowing, which
+    is exactly what the 22-hour server did."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    snap = dashboard.render(live=False, snapshot=True)
+    live = dashboard.render(live=True)
+    assert "manifest.webmanifest" in snap and "serviceWorker" in snap
+    assert "manifest.webmanifest" not in live and "serviceWorker" not in live
+    # network-first, or the phone pins itself to a stale build
+    sw = dashboard._service_worker("20260802-1200")
+    assert "fetch(e.request)" in sw and "caches.match" in sw
+    assert sw.index("fetch(e.request)") < sw.index("caches.match"), "must try network first"
+    assert "bgu-20260802-1200" in sw, "cache name must be stamped per publish"

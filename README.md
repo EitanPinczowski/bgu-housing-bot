@@ -358,11 +358,16 @@ home addresses. It comes from `DASHBOARD_TOKEN` in `.env`, or is generated once 
 `data/dashboard_token.txt` so a phone bookmark keeps working. There is deliberately no
 unauthenticated mode.
 
-**To reach it away from home, install [Tailscale](https://tailscale.com/) on the PC and
-the phone** and use the `100.x` URL the server prints. That is a private network between
-your own devices — unlike ngrok or a router port-forward, it puts no public URL on the
-internet holding other people's contact details. For same-Wi-Fi access you may need to
-allow the port once:
+**The live server is a home tool.** Use it on this PC, or from your phone on the same
+Wi-Fi via the `192.168.x` URL it prints. It is where writing happens — voting, notes, and
+the 📍 pinning that teaches the geocoder — because those need the database.
+
+**Away from home, use the published page instead** (see "A public URL that works when
+this PC is off", below). It installs to a phone home screen and opens with no signal, so
+it is the everyday way to browse; it is read-only by design, and no VPN, account or
+tunnel is involved. Tailscale is deliberately no longer part of the setup.
+
+For same-Wi-Fi access you may need to allow the port once:
 
 ```bash
 netsh advfirewall firewall add rule name="BGU dashboard" dir=in action=allow protocol=TCP localport=8777
@@ -424,14 +429,14 @@ which is exactly why it goes to the group only, never anywhere public.
 `update_schedule.cmd` registers **BGU Dashboard Share** to post it daily at 21:00, after
 the last scrape; `run_dashboard_share.cmd` is the same thing by hand.
 
-**Live**, if they need to vote and see new listings as they land: `tailscale share`, or
-invite their own Tailscale account to this one machine, and give them the token URL.
-That needs their account and this PC awake, which is why the daily file is the default
-rather than the only route.
+**Live**, if they are in the flat with you: the `192.168.x` URL with the token, on the
+same Wi-Fi. Off your network there is no live route by design — the published page below
+is the answer, and it is the one to send.
 
-### A public URL that works when this PC is off
+### A public URL that works when this PC is off — and installs like an app
 
-Tailscale and every tunnel still need the machine awake. For a link that doesn't:
+The live server needs the machine awake and the same network. For a link that needs
+neither:
 
 ```bash
 python dashboard.py --share --publish
@@ -451,6 +456,14 @@ publish step prints one line and does nothing.
 
 To point it at a different repo, change `SITE_REPO_URL` and delete `data/site` — the
 next publish re-clones.
+
+**Install it on the phone.** The published page ships a manifest and a service worker, so
+open it in the phone browser and choose *Add to Home Screen*: it then opens full-screen
+like an app and **still shows the last data with no signal** — on a bus, in a lift, or
+while this PC is off. The worker is network-first, so whenever you do have signal you get
+the current page and never a stale cached one; each publish stamps a new cache and evicts
+the previous. The live server deliberately ships neither, because caching a localhost
+tool is how you end up looking at yesterday without knowing it.
 
 Three things to know:
 

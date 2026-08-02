@@ -1696,7 +1696,8 @@ def render(live: bool, snapshot: bool = False) -> str:
     head = "".join(f'<th data-k="{k}">{html.escape(h)}</th>' for h, k in _HEAD)
     return f"""<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
 <title>BGU housing dashboard</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+{_pwa_head(snapshot)}
 <style>{_CSS}{map_listings.STREET_CSS}</style>
 <div class="wrap">
 <h1>לוח דירות — BGU</h1>
@@ -1963,6 +1964,67 @@ def build() -> str:
     return page
 
 
+# ---------- installable, and readable with no signal ----------
+# The published snapshot is now the everyday phone page (Tailscale was dropped), so it has
+# to behave like an app: open full-screen from the home screen, and still show the last
+# data in a lift or on a bus. The manifest and the worker are only emitted for the
+# SNAPSHOT — the live page is a localhost/LAN tool and caching it would be the 22-hour
+# stale-server trap all over again, but silent and on your phone.
+PWA_ICON = ("data:image/svg+xml;utf8,"
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+            "<rect width='64' height='64' rx='12' fill='%230b6bcb'/>"
+            "<circle cx='32' cy='26' r='9' fill='white'/>"
+            "<path d='M32 58c-9-13-16-20-16-28a16 16 0 1 1 32 0c0 8-7 15-16 28z' "
+            "fill='none' stroke='white' stroke-width='4'/></svg>")
+
+
+def _manifest(stamp: str) -> str:
+    return json.dumps({
+        "name": "לוח דירות — BGU", "short_name": "דירות BGU",
+        "start_url": "./", "scope": "./", "display": "standalone", "dir": "rtl",
+        "lang": "he", "background_color": "#0f1115", "theme_color": "#0b6bcb",
+        "icons": [{"src": PWA_ICON, "sizes": "any", "type": "image/svg+xml"}],
+        "version": stamp,
+    }, ensure_ascii=False)
+
+
+def _service_worker(stamp: str) -> str:
+    """Cache the shell so the page opens offline — but NEVER serve a stale page when the
+    network is available. A PWA that pins itself to an old build is the same failure as
+    the dashboard server that ran 22 hours on yesterday's code, except you cannot see it.
+    So: network first, cache only as the fallback, and a versioned cache name so a new
+    publish evicts the old one."""
+    return f"""const CACHE = 'bgu-{stamp}';
+self.addEventListener('install', e => {{ self.skipWaiting(); }});
+self.addEventListener('activate', e => e.waitUntil(
+  caches.keys().then(ks => Promise.all(
+    ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
+self.addEventListener('fetch', e => {{
+  if (e.request.method !== 'GET') return;
+  e.respondWith(
+    fetch(e.request).then(r => {{
+      const copy = r.clone();
+      caches.open(CACHE).then(c => c.put(e.request, copy));
+      return r;
+    }}).catch(() => caches.match(e.request, {{ignoreSearch: true}}))
+  );
+}});
+"""
+
+
+def _pwa_head(snapshot: bool) -> str:
+    if not snapshot:
+        return ""          # the live page must never be cached — see _service_worker
+    return """<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0b6bcb">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="icon.svg">
+<script>
+if ('serviceWorker' in navigator) addEventListener('load', () =>
+  navigator.serviceWorker.register('sw.js').catch(() => {}));
+</script>"""
+
+
 def build_share():
     """A dated copy to send to the people flat-hunting with you.
 
@@ -1973,8 +2035,15 @@ def build_share():
     path = config.DATA_DIR / f"dashboard-{dt.date.today().isoformat()}.html"
     page = render(live=False, snapshot=True)
     path.write_text(page, encoding="utf-8")
+    # The PWA companions ride alongside, stamped so a new publish evicts the old cache.
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
+    (config.DATA_DIR / "manifest.webmanifest").write_text(_manifest(stamp),
+                                                          encoding="utf-8")
+    (config.DATA_DIR / "sw.js").write_text(_service_worker(stamp), encoding="utf-8")
+    (config.DATA_DIR / "icon.svg").write_text(
+        PWA_ICON.split(",", 1)[1].replace("%23", "#"), encoding="utf-8")
     print(f"wrote {path}  ({len(page) // 1024} KB, "
-          f"{page.count('dedup_key')} listing references)")
+          f"{page.count('dedup_key')} listing references) + manifest/sw/icon")
     return path
 
 

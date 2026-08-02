@@ -166,6 +166,13 @@ def publish(snapshot: Path | None = None) -> int:
         (site / "robots.txt").unlink()          # the switch works in both directions
 
     (site / "index.html").write_text(page, encoding="utf-8")
+    # The PWA companions, so the published page installs to a phone home screen and
+    # still opens with no signal. This is the everyday phone page now that Tailscale is
+    # gone, so shipping index.html alone would leave the manifest 404ing.
+    for name in ("manifest.webmanifest", "sw.js", "icon.svg"):
+        src = config.DATA_DIR / name
+        if src.exists():
+            (site / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     # .nojekyll: GitHub Pages otherwise runs Jekyll, which ignores files starting
     # with an underscore and can mangle a hand-written page.
     (site / ".nojekyll").write_text("", encoding="utf-8")
