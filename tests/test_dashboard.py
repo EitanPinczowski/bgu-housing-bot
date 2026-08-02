@@ -629,6 +629,60 @@ def test_the_no_amber_carveout_is_drawn(temp_db, monkeypatch, tmp_path):
     assert ".noamber{fill:none" in dashboard.map_listings.STREET_CSS
 
 
+def test_colour_by_walk_time(temp_db, monkeypatch, tmp_path):
+    """walk_minutes is OSRM-measured and stored, and the only way to read it was to open
+    a card. Scaled to MAX_WALK_MINUTES, the threshold that decides AMBER from RED."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert '<option value="walk">' in page and "function walkColor(" in page
+    assert f"const MAX_WALK = {config.MAX_WALK_MINUTES};" in page
+    # no walk time is grey, not a guess
+    assert "if (m === null || m === undefined) return TIER_COLOR.UNKNOWN;" in page
+
+
+def test_you_are_here_never_leaves_the_browser(temp_db, monkeypatch, tmp_path):
+    """The position is read, drawn and used to sort — and never stored, never POSTed.
+    That is also why it works on the published snapshot, which is the copy you have with
+    you. Verified live: accuracy ring exactly 40 m for a 40 m fix."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "navigator.geolocation.watchPosition" in page
+    body = page[page.index("function toggleMe("):page.index("function metresFromMe(")]
+    assert "post(" not in body and "localStorage" not in body, \
+        "a position must not be sent anywhere or persisted"
+    # the accuracy ring is real metres, so a poor fix looks poor
+    assert "unitsPerMetre() * (me.acc || 0)" in page
+    # and the https caveat is spelled out to the user, not left to look like a bug
+    assert "https" in page[page.index("function toggleMe("):page.index("/* metres from")]
+
+
+def test_the_view_is_remembered_and_shareable(temp_db, monkeypatch, tmp_path):
+    """Layers have persisted since F4; the view never did, so the PWA reopened on the
+    whole city every time. A viewBox in the hash carries no personal data."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "const VIEW_KEY = 'bgu.view';" in page
+    assert "history.replaceState(null, '', '#v=' + v);" in page
+    # the hash wins over localStorage — it is what someone deliberately sent you
+    assert "location.hash.match(/[#&]v=([-\\d.,]+)/)" in page
+
+
+def test_a_zero_width_map_is_not_drawn_as_one_giant_cluster(temp_db, monkeypatch,
+                                                            tmp_path):
+    """Every px-based size divides by the map's width, and the `|| 1` fallbacks then make
+    one cluster cell 19,000 world units — all 312 listings collapse into a single badge
+    that reads like the data vanished. Seen for real in a collapsed pane."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "if (!svg.getBoundingClientRect().width) return;" in page
+    # and something has to bring it back — nothing listened for resize at all before
+    assert "addEventListener('resize'" in page
+
+
 def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
                                                                  tmp_path):
     """The published snapshot is the phone page now that Tailscale is gone, so it has to

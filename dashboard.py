@@ -322,6 +322,12 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
 /* ⭐ your own shortlist, findable without hovering 310 dots */
 .halo{fill:none;stroke:#f5a623;stroke-width:2.4;vector-effect:non-scaling-stroke;
       pointer-events:none}
+/* where you are standing. The accuracy ring is real metres, so a poor fix looks poor. */
+.me-dot{fill:#1a73e8;stroke:#fff;stroke-width:2;vector-effect:non-scaling-stroke;
+      pointer-events:none}
+.me-acc{fill:#1a73e8;fill-opacity:.12;stroke:#1a73e8;stroke-opacity:.45;stroke-width:1;
+      vector-effect:non-scaling-stroke;pointer-events:none}
+.mapbtns button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .hit{fill:transparent;cursor:pointer}
 .map svg.placing .hit{pointer-events:none}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
@@ -451,6 +457,16 @@ function scoreColor(s){
   const t = Math.max(0, Math.min(100, s || 0)) / 100;
   return 'hsl(' + Math.round(t * 130) + ' 65% ' + (42 + (1 - t) * 8) + '%)';
 }
+/* Colour by WALK TIME. walk_minutes is OSRM-measured and has been stored all along, and
+   the only way to read it was to open a card. Inverted ramp — near is green — and
+   scaled to MAX_WALK_MINUTES, the threshold that actually decides AMBER from RED.
+   A flat with no walk time keeps the UNKNOWN grey rather than being guessed at. */
+const MAX_WALK = __MAX_WALK__;
+function walkColor(m){
+  if (m === null || m === undefined) return TIER_COLOR.UNKNOWN;
+  const t = 1 - Math.max(0, Math.min(MAX_WALK, m)) / MAX_WALK;
+  return 'hsl(' + Math.round(t * 130) + ' 65% ' + (42 + (1 - t) * 8) + '%)';
+}
 function esc(s){ const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
 function passes(r){
@@ -479,6 +495,14 @@ function passes(r){
 function visible(){
   const rows = DATA.filter(passes);
   const k = sortCol;
+  // "nearest to me" is the actual flat-hunting question: you are standing on רגר and
+  // want to know which of these you can reach next. Only offered while a fix is live;
+  // flats with no coordinate sort last rather than pretending to be close.
+  if (k === '__near'){
+    rows.sort((a, b) => ((metresFromMe(a) ?? Infinity) -
+                         (metresFromMe(b) ?? Infinity)) * (sortDir < 0 ? -1 : 1));
+    return rows;
+  }
   rows.sort((a, b) => {
     let x = a[k], y = b[k];
     if (typeof x === 'string' || typeof y === 'string')
@@ -565,6 +589,90 @@ let slabelCache = null;
 const slabels = () => (slabelCache = slabelCache ||
                        document.querySelectorAll('.map svg .slabel'));
 
+/* ---------- you are here ----------
+   The one thing a phone can do that a desktop cannot, on a tool for walking around a
+   city. Entirely client-side: the position never leaves the browser, is never stored and
+   never reaches the server — so it works on the published snapshot too, which is the
+   copy you actually have with you.
+
+   Opt-in behind a button (browsers demand a gesture anyway). NOTE: geolocation needs a
+   SECURE CONTEXT — the published https page and 127.0.0.1 qualify, the LAN URL
+   (http://192.168.x.x:8777) does not and the browser will refuse there. Said in the
+   README rather than left to look like a bug. */
+let me = null;                     // {lat, lon, acc} or null
+let meWatch = null;
+
+function drawMe(){
+  const svg = document.querySelector('.map svg');
+  const old = document.getElementById('mepos');
+  if (old) old.remove();
+  if (!me || !svg) return;
+  const g = el('g');
+  g.id = 'mepos';
+  const [x, y] = project(me.lat, me.lon);
+  const box = svg.getBoundingClientRect();
+  const unitsPerPx = view.w / (box.width || 1);
+  // the accuracy circle is REAL metres — a 40 m fix should look like 40 m, not like a
+  // decoration, or the dot claims a precision the phone did not give us
+  const acc = el('circle');
+  acc.setAttribute('cx', x.toFixed(1)); acc.setAttribute('cy', y.toFixed(1));
+  acc.setAttribute('r', Math.max(unitsPerMetre() * (me.acc || 0), 0).toFixed(1));
+  acc.setAttribute('class', 'me-acc');
+  const dot = el('circle');
+  dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+  dot.setAttribute('r', (6 * unitsPerPx).toFixed(2));
+  dot.setAttribute('class', 'me-dot');
+  g.append(acc, dot);
+  svg.appendChild(g);
+}
+
+let sortBeforeMe = null;
+
+function toggleMe(){
+  const btn = $('mebtn');
+  if (meWatch !== null){                       // second press turns it off
+    navigator.geolocation.clearWatch(meWatch);
+    meWatch = null; me = null;
+    btn.classList.remove('on');
+    if (sortBeforeMe){ sortCol = sortBeforeMe.col; sortDir = sortBeforeMe.dir; }
+    sortBeforeMe = null;
+    drawMe(); render();
+    return;
+  }
+  if (!navigator.geolocation){ alert('הדפדפן לא תומך במיקום'); return; }
+  btn.classList.add('on');
+  meWatch = navigator.geolocation.watchPosition(pos => {
+    const first = !me;
+    me = {lat: pos.coords.latitude, lon: pos.coords.longitude,
+          acc: pos.coords.accuracy};
+    // On the FIRST fix, order the list by distance from here — that is the question you
+    // opened it to answer. Remember the previous sort and put it back on the way out,
+    // so this borrows the ordering rather than taking it over.
+    if (first){
+      sortBeforeMe = {col: sortCol, dir: sortDir};
+      sortCol = '__near'; sortDir = 1;
+    }
+    drawMe();
+    render();
+  }, err => {
+    meWatch = null;
+    btn.classList.remove('on');
+    alert(location.protocol === 'https:' || location.hostname === '127.0.0.1'
+      ? 'לא הצלחתי לקבל מיקום: ' + err.message
+      : 'מיקום דורש חיבור מאובטח (https). מהטלפון — פתחו את הדף המפורסם.');
+  }, {enableHighAccuracy: true, maximumAge: 15000, timeout: 15000});
+}
+
+/* metres from where you are standing to a listing, or null */
+function metresFromMe(r){
+  if (!me || r.lat === null || r.lat === undefined) return null;
+  const R = 6371000, rad = d => d * Math.PI / 180;
+  const dla = rad(r.lat - me.lat), dlo = rad(r.lon - me.lon);
+  const h = Math.sin(dla / 2) ** 2 +
+            Math.cos(rad(me.lat)) * Math.cos(rad(r.lat)) * Math.sin(dlo / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
 /* ---------- how far is that? ----------
    Metres per world unit, measured the same way walk_rings_svg does it: project a point
    0.01° due east of the map centre and divide. Reuses the page's own projection, so it
@@ -605,6 +713,7 @@ function rescaleForZoom(svg, k){
   svg.querySelectorAll('.dot').forEach(d => d.setAttribute('r', (5 / k).toFixed(2)));
   // halos are sized in screen px and only ever created by drawDots, which runs below
   drawScale(svg);
+  drawMe();                    // the accuracy ring is real metres, so it rescales too
   slabels().forEach(t => {
     if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
     t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
@@ -640,6 +749,35 @@ function applyView(){
   } else if (culls()){
     drawDots(lastRows);            // panned into new territory — see drawDots' culling
   }
+  rememberView();
+}
+
+/* ---------- come back to where you were ----------
+   Layer switches have persisted since F4; the VIEW never did, so the PWA reopened on
+   the whole city every time. It also goes in the URL hash, so a particular corner can
+   be sent to the people flat-hunting with you — a viewBox carries no personal data, so
+   this is safe on the public snapshot. Debounced: a pan fires applyView per frame. */
+const VIEW_KEY = 'bgu.view';
+let viewSaveTimer = null;
+function rememberView(){
+  clearTimeout(viewSaveTimer);
+  viewSaveTimer = setTimeout(() => {
+    const v = [view.x, view.y, view.w].map(n => Math.round(n)).join(',');
+    try { localStorage.setItem(VIEW_KEY, v); } catch (e) {}
+    history.replaceState(null, '', '#v=' + v);
+  }, 400);
+}
+
+function restoreView(){
+  // the hash wins over localStorage: it is what someone deliberately sent you
+  const src = (location.hash.match(/[#&]v=([-\d.,]+)/) || [])[1] ||
+              (() => { try { return localStorage.getItem(VIEW_KEY); } catch (e) { return null; } })();
+  if (!src) return false;
+  const [x, y, w] = src.split(',').map(Number);
+  if (![x, y, w].every(n => isFinite(n)) || w <= 0) return false;
+  view.w = w; view.h = w * (WORLD.h / WORLD.w); view.x = x; view.y = y;
+  applyView();
+  return true;
 }
 
 function zoomAt(px, py, factor){
@@ -974,16 +1112,23 @@ function drawDots(rows){
   const svg = document.querySelector('.map svg');
   if (!svg || !P) return;
   lastRows = rows;
+  // A map with no width cannot be clustered: every px-based size divides by it, and the
+  // `|| 1` fallbacks then make one cluster cell 19,000 world units, so all 312 listings
+  // collapse into a single badge that reads like the data vanished. Happens whenever the
+  // map is laid out at zero size — a hidden tab, a collapsed pane, print. Keep the last
+  // good drawing and wait; a resize will call back.
+  if (!svg.getBoundingClientRect().width) return;
   const old = document.getElementById('dots');
   if (old) old.remove();
   const g = el('g');
   g.id = 'dots';
-  const byScore = $('bycolor').value === 'score';
+  const colourBy = $('bycolor').value;
   const k = zoomFactor();
   const svgBox = svg.getBoundingClientRect();
   const unitsPerPx = view.w / (svgBox.width || 1);
-  const fill = r => byScore ? scoreColor(r.eff_score)
-                            : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
+  const fill = r => colourBy === 'score' ? scoreColor(r.eff_score)
+                  : colourBy === 'walk'  ? walkColor(r.walk_minutes)
+                  : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
   let n = 0, clusters = 0;
   const allGroups = clusterOf(rows);
   const box = drawnBox = cullBox();
@@ -2015,6 +2160,17 @@ initMapGestures();
 initLayers();
 initCard();
 initPlacing();
+$('mebtn').addEventListener('click', toggleMe);
+/* Everything sized in screen pixels — cluster cells, hit targets, halos, the scale bar —
+   divides by the map's rendered width, and nothing recomputed it when that width
+   changed. Rotating a phone left all of it stale until the next zoom. This is also what
+   brings the map back after it has been laid out at zero size (see drawDots). */
+let resizeTimer = null;
+addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { lastZoom = 0; applyView(); }, 120);
+});
+restoreView();          // after initLayers, which calls applyView with the world view
 const focusKey = new URLSearchParams(location.search).get('key');
 if (focusKey){
   const r = rowByKey(focusKey);
@@ -2150,7 +2306,8 @@ def render(live: bool, snapshot: bool = False) -> str:
   <label><input id="onlynew" type="checkbox"> חדשות בלבד</label>
   <label><input id="approx" type="checkbox"> מיקום משוער בלבד</label>
   <label>צבע <select id="bycolor"><option value="tier">אזור</option>
-    <option value="score">ציון</option></select></label>
+    <option value="score">ציון</option>
+    <option value="walk">זמן הליכה</option></select></label>
 </div>
 <div class="count"><span id="n"></span> · <span id="mapcount"></span></div>
 <div id="worklist" style="display:none"></div>
@@ -2162,6 +2319,7 @@ def render(live: bool, snapshot: bool = False) -> str:
     <button id="reset" title="איפוס תצוגה">איפוס</button>
     <button id="pinstart" style="display:none"
             title="עוברים על הדירות חסרות המיקום — govmap מציע, אתם מאשרים">🎯 מיקומים</button>
+    <button id="mebtn" title="להראות איפה אני, ולמיין לפי מרחק ממני">📍 אני</button>
   </div>
   <div id="boxchip" style="display:none">אזור מסומן
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
@@ -2197,7 +2355,7 @@ window.__LIVE__ = {str(bool(live)).lower()};
 window.__SNAPSHOT__ = {str(bool(snapshot)).lower()};
 window.__POLL__ = {config.DASHBOARD_POLL_SECONDS};
 </script>
-<script>{_JS}</script>
+<script>{_JS.replace("__MAX_WALK__", str(config.MAX_WALK_MINUTES))}</script>
 </html>"""
 
 
@@ -2443,7 +2601,9 @@ def _legend_html() -> str:
 {sw(tc["AMBER"], f'AMBER — עד {config.MAX_WALK_MINUTES} דק׳ הליכה לשער')}
 {sw(tc["RED"], "RED — מחוץ לטווח")}
 {sw(tc["UNKNOWN"], "לא זוהה מיקום")}
-<div class="li muted">בבחירת צבע לפי ציון: אדום=0 → ירוק=100</div>
+<div class="li muted">בבחירת צבע לפי ציון: אדום=0 → ירוק=100 ·
+  לפי זמן הליכה: ירוק=צמוד לשער → אדום={config.MAX_WALK_MINUTES} דק׳ ומעלה
+  (ללא זמן ידוע — אפור)</div>
 <div class="li"><span class="sw" style="background:{tc["GREEN"]}"></span>
   עיגול מלא — מספר בית מדויק</div>
 <div class="li"><span class="sw" style="background:transparent;border:2px solid
