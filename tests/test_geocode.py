@@ -774,3 +774,33 @@ def test_a_stale_process_cannot_wipe_the_geocode_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(geocode, "_cache", {k: v for k, v in list(full.items())[:299]})
     geocode._save_cache()
     assert len(json.loads(p.read_text(encoding="utf-8"))) == 299
+
+
+def test_one_road_split_by_word_order_is_pooled():
+    """OSM writes the same street's name in more than one word order, and each spelling
+    kept its own fragment: `ביאליק חיים נחמן` held 135 m while `חיים נחמן ביאליק` held
+    2,849 m of the SAME road, nearest vertices 0 m apart. A 135 m stub then failed every
+    distance check for house 122, so six ביאליק listings shared one dot."""
+    import geocode
+    import streets
+    def length(n):
+        segs = streets.geometry(n)
+        return sum(geocode._haversine_m(a[0], a[1], b[0], b[1])
+                   for s in segs for a, b in zip(s, s[1:]))
+    a, b = length("ביאליק חיים נחמן"), length("חיים נחמן ביאליק")
+    assert a == b > 2000, "both spellings must see the whole road"
+    # …and the merge must not weld together roads that merely share word order:
+    # דרך מצדה (166 m) and מצדה (6 km) are DIFFERENT word sets and stay apart
+    assert length("דרך מצדה") < 300 < length("מצדה")
+
+
+def test_an_area_key_steps_aside_for_a_house_number():
+    """`רגר 137, הבלוק` resolved to the slang QUARTER instead of house 137, even though
+    רגר is anchored 53-191. The static match already stood aside for street keys when the
+    address carried a number; area keys did not."""
+    import geocode
+    for addr in ("רגר 137, הבלוק", "מצדה 6, הבלוק", "יצחק אבינו 20, הבלוק"):
+        _pt, src = geocode.geocode_detailed(addr)
+        assert src not in ("static_area", "static"), f"{addr} was hijacked by the area key"
+    # a bare area name is still an area
+    assert geocode.geocode_detailed("הבלוק")[1] == "static_area"

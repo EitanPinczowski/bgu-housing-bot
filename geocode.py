@@ -355,7 +355,8 @@ def geocode_cached(location_text: Optional[str]):
             continue
         if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
             continue
-        if numbered and streets.known(k) and k in norm:
+        if numbered and (streets.known(k) or _static_source(key) == "static_area") \
+                and k in norm:
             skipped_street = skipped_street or coords
             continue
         pos = norm.find(k)
@@ -466,7 +467,12 @@ def _resolve_detailed(location_text: Optional[str]):
             continue
         if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
             continue                                        # don't let a nbhd centroid hijack a street
-        if numbered and streets.known(k) and k in norm:
+        # An AREA key must stand aside for a house number just as a street key does.
+        # `רגר 137, הבלוק` was resolving to the slang quarter instead of house 137, even
+        # though רגר is anchored 53-191 and would have placed it exactly — the trailing
+        # area name simply won the static match. ~7 listings.
+        if numbered and (streets.known(k) or _static_source(key) == "static_area") \
+                and k in norm:
             skipped_street_coords = skipped_street_coords or coords
             continue                                        # let the house number win
         pos = norm.find(k)

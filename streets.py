@@ -72,9 +72,45 @@ def _words_index() -> dict:
     return {k: sorted(v) for k, v in out.items()}
 
 
+# How close two same-words-different-order entries must come before we treat them as one
+# road. ביאליק's two halves touch at 0 m; a coincidence of word order between genuinely
+# separate roads would be hundreds of metres apart.
+_MERGE_TOUCH_M = 50.0
+
+
+def _nearest_m(a: list, b: list) -> float:
+    """Metres between the closest pair of vertices in two segment lists."""
+    import math
+    pa = [p for s in a for p in s]
+    pb = [p for s in b for p in s]
+    if not pa or not pb:
+        return float("inf")
+    best = float("inf")
+    for la, lo in pa:
+        scale = 111320.0 * math.cos(math.radians(la))
+        for lb, ob in pb:
+            d = math.hypot((lb - la) * 111320.0, (ob - lo) * scale)
+            if d < best:
+                best = d
+                if best == 0.0:
+                    return 0.0
+    return best
+
+
 @lru_cache(maxsize=1)
 def _geometry_index() -> dict:
-    """{real OSM name -> [segment, …]} where a segment is [[lat, lon], …]."""
+    """{real OSM name -> [segment, …]} where a segment is [[lat, lon], …].
+
+    OSM writes the same road's name in more than one word order, and each spelling then
+    keeps its own fragment: `ביאליק חיים נחמן` held 135 m while `חיים נחמן ביאליק` held
+    2,849 m of the SAME street — their nearest vertices are 0 m apart. A 135 m stub then
+    fails every distance check for a house at number 122, which is how six ביאליק
+    listings ended up sharing one dot. 12 name-sets in the index are split this way.
+
+    So entries whose names are the same words in a different order are pooled — but only
+    when their geometry actually TOUCHES. Welding two unrelated roads together because
+    they happen to share word order is precisely the class of error the 200 m guard
+    exists to catch, and it must not be introduced here to satisfy that guard elsewhere."""
     try:
         data = json.loads(_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -83,6 +119,24 @@ def _geometry_index() -> dict:
     for st in data.get("streets", []):
         if st.get("name"):
             out.setdefault(st["name"], []).extend(st.get("segments", []))
+
+    by_words: dict = {}
+    for name in out:
+        by_words.setdefault(" ".join(sorted(_norm(name).split())), []).append(name)
+    for names in by_words.values():
+        if len(names) < 2:
+            continue
+        # pool everything that touches the largest fragment; leave the rest alone
+        names.sort(key=lambda n: -sum(len(s) for s in out[n]))
+        main, merged = names[0], list(out[names[0]])
+        joined = [main]
+        for other in names[1:]:
+            if _nearest_m(out[main], out[other]) <= _MERGE_TOUCH_M:
+                merged.extend(out[other])
+                joined.append(other)
+        if len(joined) > 1:
+            for n in joined:
+                out[n] = merged            # every spelling now sees the whole road
     return out
 
 

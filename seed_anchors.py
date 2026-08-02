@@ -148,7 +148,23 @@ def _queries(length_m: float, wanted=()) -> list:
         + tail
 
 
-def _accept(street: str, text: str, pt) -> tuple:
+def _near_accepted(pt, found: dict) -> bool:
+    """Is `pt` within MAX_OFFSET_M of an address we have ALREADY accepted here?
+
+    OSM sometimes holds only a stub of a real road — `הבשור` is 48 m of geometry,
+    `סוסו הכהן` 223 m for a street with 7 listings on it — so measuring every candidate
+    against that stub rejects the whole street beyond its first block. Letting the
+    street's known extent grow along a chain of confirmed addresses uses the addresses
+    themselves as evidence of where the road goes, which is what they are. The chain must
+    still START from something within MAX_OFFSET_M of the real geometry, and `_one_road`
+    re-checks the finished set for the two-clump signature of two roads sharing a name."""
+    for other in found.values():
+        if geocode._haversine_m(pt[0], pt[1], other[0], other[1]) <= MAX_OFFSET_M:
+            return True
+    return False
+
+
+def _accept(street: str, text: str, pt, found: dict | None = None) -> tuple:
     """(number, (lat, lon)) if this result is really an address on `street`, else None.
 
     govmap renames as it answers (`ביאליק חיים נחמן` -> `ביאליק`, `סמטת קדש` -> `קדש`),
@@ -161,7 +177,7 @@ def _accept(street: str, text: str, pt) -> tuple:
     if real != street:
         return None
     off = geocode._off_street_m(street, pt[0], pt[1])
-    if off is not None and off > MAX_OFFSET_M:
+    if off is not None and off > MAX_OFFSET_M and not _near_accepted(pt, found or {}):
         return None
     # An address govmap places inside the campus or the hospital is a lecture hall, not a
     # flat — and as an anchor it drags its interpolated neighbours in after it.
@@ -215,7 +231,7 @@ def seed_street(street: str, length_m: float, wanted=()) -> dict:
         for kind, text, pt in govmap.search(f"{street} {n} באר שבע"):
             if kind != "address":
                 continue
-            got = _accept(street, text, pt)
+            got = _accept(street, text, pt, found)
             if got:
                 found[got[0]] = [round(got[1][0], 6), round(got[1][1], 6)]
     if not _one_road(street, found):
@@ -253,7 +269,8 @@ def seed_exact(pairs: list, existing: dict) -> int:
         for kind, text, pt in govmap.search(f"{st} {hn} באר שבע"):
             if kind != "address":
                 continue
-            got = _accept(st, text, pt)
+            # anchors already banked for this street extend its known reach
+            got = _accept(st, text, pt, existing.get(st) or {})
             if got:
                 break
         if got:
