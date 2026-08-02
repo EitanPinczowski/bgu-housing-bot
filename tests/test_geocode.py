@@ -812,6 +812,39 @@ def test_one_road_split_by_a_road_type_word_is_pooled():
             == geocode.interpolate_house("מצדה", "69") is not None)
 
 
+def test_a_railway_station_is_not_a_street():
+    """`תחנת רכבת צפון - אוניברסיטה` sat in the street index, and because a unique word
+    run wins in `_words_index`, `האוניברסיטה` canonicalised straight to it — so
+    `ליד האוניברסיטה` resolved to a platform 783 m from anywhere anyone lives."""
+    import streets
+    assert streets.canonical("האוניברסיטה") == (None, None)
+    assert streets.canonical("תחנת רכבת צפון - אוניברסיטה") == (None, None)
+    assert streets.geometry("תחנת רכבת צפון - אוניברסיטה") == []
+    assert streets.canonical("רגר")[0], "a real street must still resolve"
+
+
+def test_no_external_geocoder_may_answer_a_bare_proximity_phrase():
+    """Dropping the university from _LANDMARKS was only HALF of the 2026-08-01 decision.
+
+    The phrase still fell through to Overpass, which answered `ליד האוניברסיטה` with a
+    point outside the campus polygon — so the no-housing mask did not catch it either —
+    and two listings came back as AMBER MATCHes in the next replay.
+    `_plausible_external` cannot cover this: it abstains when there is no street to
+    measure against, which is exactly this case."""
+    import geocode
+    for vague in ("ליד האוניברסיטה", "בסמוך לסורוקה", "קרוב לאוניברסיטת בן גוריון",
+                  "ליד האוניברסיטה וסורוקה"):
+        assert geocode._is_bare_proximity(vague), vague
+    # A proximity phrase that also names a real STREET is a real address, so the
+    # external tiers must still run for it.
+    for real in ("רגר 5, ליד האוניברסיטה", "רינגלבלום ליד האוניברסיטה"):
+        assert not geocode._is_bare_proximity(real), real
+    # `ליד הבלוק` IS bare proximity, but הבלוק is a residential quarter we hold a point
+    # for, so the guard hands off to the landmark tier instead of refusing.
+    assert geocode._is_bare_proximity("ליד הבלוק")
+    assert geocode._descriptive_landmark("ליד הבלוק") is not None
+
+
 def test_a_shared_word_bag_is_not_enough_to_pool():
     """The guard that makes the pooling safe. `כיכר האבות` and `האבות` share a word bag
     once the road-type word is dropped, and lie 2.5 km apart — welding those together is

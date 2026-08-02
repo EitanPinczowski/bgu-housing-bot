@@ -208,7 +208,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 8      # 8: one road = one pool of geometry AND anchors
+GEOCODE_LOGIC_VERSION = 9      # 9: "near X" refuses; the railway station left the index
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -507,6 +507,24 @@ def _resolve_detailed(location_text: Optional[str]):
     if kind == "miss":
         return None, None                                   # recent negative — don't re-query
 
+    # 2b) "NEAR X" IS NOT AN ADDRESS, so no external geocoder may answer it.
+    #
+    # Removing the university from _LANDMARKS was only half of the 2026-08-01 decision:
+    # the phrase still fell through to Overpass, which answered `ליד האוניברסיטה` with a
+    # point
+    # outside the campus polygon — so the no-housing mask did not catch it either — and
+    # two listings came back as AMBER MATCHes in the next replay. `_plausible_external`
+    # cannot help: it ABSTAINS when there is no street to measure against, which is
+    # exactly this case.
+    #
+    # A pure proximity phrase names a RELATIONSHIP, not a place. If there is no street
+    # and no house number, the only honest answer is nothing — the listing goes to
+    # NEEDS_DATA where a person sees it. `_descriptive_landmark` below still runs, so
+    # `ליד הבלוק` (a real residential quarter we hold a point for) keeps working.
+    if _is_bare_proximity(location_text):
+        lm = _descriptive_landmark(location_text)
+        return (lm, "landmark") if lm else (None, None)
+
     # 3) external geocoders, most accurate first
     coords = source = None
     authoritative = True          # only cache a MISS if we actually reached a geocoder,
@@ -726,6 +744,22 @@ _LANDMARKS = (
 # "near / next to / opposite / close to" — the phrasings that make a landmark the
 # subject of the address rather than a passing mention.
 _NEAR_RE = re.compile(r"ליד|קרוב\s+ל|בסמוך|קרבת|צמוד\s+ל|מול\s+שער|במרחק")
+
+
+def _is_bare_proximity(location_text: Optional[str]) -> bool:
+    """Is this address ONLY a bearing off something — "near the university" — with no
+    street and no house number of its own?
+
+    Such a string is a relationship, not a place, and letting an external geocoder guess
+    at it is how eight listings once got a dot in the middle of a campus nobody can rent
+    in. Requires a proximity word AND no house number AND no street we can name, so
+    `רגר 5, ליד האוניברסיטה` and `ליד הבלוק ברינגלבלום` are both unaffected."""
+    text = _fold_quotes(location_text or "")
+    if not text or not _NEAR_RE.search(text):
+        return False
+    if _house_number(text):
+        return False
+    return not any(streets.canonical(c)[0] for c in _candidate_tokens(text))
 
 
 def _descriptive_landmark(location_text: Optional[str]):

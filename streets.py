@@ -33,6 +33,18 @@ FUZZY_CUTOFF = 0.82
 _PREFIXES = "הבלמוש"
 
 
+# Named ways in area_features.json that are NOT streets and must never answer an
+# address. `תחנת רכבת צפון - אוניברסיטה` is the railway station, and because
+# `_words_index` matches a unique word run, `האוניברסיטה` canonicalised straight to it —
+# so `ליד האוניברסיטה` resolved to a platform 783 m from anywhere you could live, and
+# came back as an AMBER MATCH. Measured 2026-08-02: exactly 1 of 1,174 entries.
+#
+# An explicit name, not a pattern on `תחנת`: one bad row is a fact, a heuristic is a
+# guess. The durable fix is for load_area_features.py to stop importing railway
+# features, which needs an Overpass run to regenerate area_features.json.
+_NOT_STREETS = frozenset(("תחנת רכבת צפון - אוניברסיטה",))
+
+
 def _norm(s: str) -> str:
     """Comparison form: drop gershayim/quotes/punctuation, collapse spaces."""
     s = (s or "").translate(str.maketrans("", "", "\"'״׳`,.-"))
@@ -50,7 +62,7 @@ def _index() -> dict:
     out = {}
     for st in data.get("streets", []):
         name = st.get("name")
-        if name:
+        if name and name not in _NOT_STREETS:
             out.setdefault(_norm(name), name)
     for key in list(out):                          # aliases never overwrite a real name
         bare = _strip_prefix(key)
@@ -125,7 +137,7 @@ def _raw_geometry() -> dict:
         return {}
     out: dict = {}
     for st in data.get("streets", []):
-        if st.get("name"):
+        if st.get("name") and st["name"] not in _NOT_STREETS:
             out.setdefault(st["name"], []).extend(st.get("segments", []))
     return out
 
