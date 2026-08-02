@@ -307,7 +307,16 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
        stroke-linecap:round;stroke-linejoin:round}
 .wr-cas{stroke:#fff;stroke-width:6}
 .wr{stroke:#7b1fa2;stroke-width:3}
-.dot{cursor:pointer}.dot.hi{stroke:#111;stroke-width:2.5}
+/* strokes in SCREEN px, not world units: a dot's radius counter-scales but its outline
+   used to be given in viewBox units, so it swelled as you zoomed in */
+.dot{cursor:pointer;vector-effect:non-scaling-stroke}
+/* the table-hover highlight. It used to set stroke:#111, which overrode an approx dot's
+   tier-coloured outline and destroyed the hollow/solid precision signal at exactly the
+   moment you were looking closely at one flat. A shadow highlights without repainting. */
+.dot.hi{stroke-width:3.2;filter:drop-shadow(0 0 3px rgba(0,0,0,.85))}
+/* ⭐ your own shortlist, findable without hovering 310 dots */
+.halo{fill:none;stroke:#f5a623;stroke-width:2.4;vector-effect:non-scaling-stroke;
+      pointer-events:none}
 .hit{fill:transparent;cursor:pointer}
 .map svg.placing .hit{pointer-events:none}
 .cl{cursor:zoom-in}.cl text{pointer-events:none;user-select:none}
@@ -542,6 +551,7 @@ const slabels = () => (slabelCache = slabelCache ||
    gated only drawDots. */
 function rescaleForZoom(svg, k){
   svg.querySelectorAll('.dot').forEach(d => d.setAttribute('r', (5 / k).toFixed(2)));
+  // halos are sized in screen px and only ever created by drawDots, which runs below
   slabels().forEach(t => {
     if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
     t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
@@ -823,6 +833,31 @@ function mkHit(r, x, y, unitsPerPx){
   return h;
 }
 
+/* TWO extra channels on the dot, and only two.
+   The payload already carries saved, contacted, broker, stale, first_seen, note and
+   photos, and none of them changed the dot — you could not find your own ⭐ among 310
+   without hovering each one. But a dot is ~4px on a phone and already encodes tier (or
+   score) as fill and precision as hollow/solid, so it can carry two more things, not
+   seven. Broker, stale, notes and photos each have a filter and a line in the card;
+   they stay there. */
+const DOT_FADED = '0.4';        // contacted: recede, don't disappear
+/* SCREEN pixels, not viewBox units — the same trap mkHit records. Sized in world units
+   the ring measured 7px around a 4px dot at 375px wide (1.5px of gold a side) while
+   looking fine on a desktop, because the map renders ~0.36px per unit in a narrow pane.
+   unitsPerPx converts, so the ring is the same size on every screen. */
+const HALO_PX = 7, CL_HALO_PX = 10;
+
+function mkHalo(r, x, y, unitsPerPx){
+  if (!r.saved) return null;
+  const h = el('circle');
+  h.setAttribute('cx', x.toFixed(1));
+  h.setAttribute('cy', y.toFixed(1));
+  h.setAttribute('r', (HALO_PX * unitsPerPx).toFixed(2));
+  h.setAttribute('class', 'halo');
+  if (r.contacted) h.setAttribute('opacity', DOT_FADED);
+  return h;
+}
+
 function mkDot(r, x, y, k, colour){
   /* Hollow = we do not actually know where this flat is, only its street or
      neighbourhood. Solid = a house number. Same tier colour either way, so the
@@ -836,14 +871,24 @@ function mkDot(r, x, y, k, colour){
   c.setAttribute('fill', approx ? 'var(--bg)' : colour);
   c.setAttribute('fill-opacity', approx ? '0.95' : '0.85');
   c.setAttribute('stroke', approx ? colour : '#fff');
-  c.setAttribute('stroke-width', (approx ? 2.2 / k : 1).toFixed(2));
+  c.setAttribute('stroke-width', approx ? '2.2' : '1');   // px — see .dot in the CSS
+  if (r.contacted) c.setAttribute('opacity', DOT_FADED);
   c.dataset.key = r.dedup_key;
   const t = el('title');
   t.textContent = (r.address || '—') + ' | ' + r.location_tier + ' | ⭐' + r.eff_score +
                   (r.price_per_room ? ' | ' + r.price_per_room + '₪' : '') +
-                  (approx ? ' | מיקום משוער' : '');
+                  (approx ? ' | מיקום משוער' : '') +
+                  (r.saved ? ' | ⭐ שמור' : '') + (r.contacted ? ' | 📵 יצרתי קשר' : '');
   c.appendChild(t);
   return c;
+}
+
+/* the halo sits UNDER its dot, so append them as a pair wherever a dot is drawn */
+function addDot(parent, r, x, y, k, colour, unitsPerPx){
+  parent.appendChild(mkHit(r, x, y, unitsPerPx));
+  const halo = mkHalo(r, x, y, unitsPerPx);
+  if (halo) parent.appendChild(halo);
+  parent.appendChild(mkDot(r, x, y, k, colour));
 }
 
 /* ---------- draw only what can be seen ----------
@@ -905,8 +950,7 @@ function drawDots(rows){
   for (const b of groups){
     if (b.rows.every(r => fanned.has(r.dedup_key))) continue;             // drawn below
     if (b.rows.length === 1){
-      g.appendChild(mkHit(b.rows[0], b.x, b.y, unitsPerPx));
-      g.appendChild(mkDot(b.rows[0], b.x, b.y, k, fill(b.rows[0])));
+      addDot(g, b.rows[0], b.x, b.y, k, fill(b.rows[0]), unitsPerPx);
       continue;
     }
     // one badge for the group, coloured by its best listing so a cluster hiding a
@@ -953,6 +997,18 @@ function drawDots(rows){
     h.setAttribute('r', Math.max(10 / k, HIT_RADIUS_PX * unitsPerPx).toFixed(2));
     h.setAttribute('class', 'clhit');
     grp.append(h, c, t, ttl);
+    // A BADGE MUST CARRY THE HALO TOO, or the feature helps almost never: measured at
+    // 1x, 253 of 312 listings sit inside a badge, so a ⭐ flat would be invisible in
+    // 81% of cases — exactly the ones you cannot find by eye. Gold therefore means
+    // "your shortlist is here", whether that is one flat or one of nine.
+    if (b.rows.some(r => r.saved)){
+      const halo = el('circle');
+      halo.setAttribute('cx', b.x.toFixed(1));
+      halo.setAttribute('cy', b.y.toFixed(1));
+      halo.setAttribute('r', (CL_HALO_PX * unitsPerPx).toFixed(2));
+      halo.setAttribute('class', 'halo cl-halo');
+      grp.insertBefore(halo, c);
+    }
     g.appendChild(grp);
   }
   for (const f of fans) drawSpider(g, f, k, fill, unitsPerPx);
@@ -991,8 +1047,7 @@ function drawSpider(g, spider, k, fill, unitsPerPx){
     leg.setAttribute('y2', y.toFixed(1));
     leg.setAttribute('class', 'spider-leg');
     grp.appendChild(leg);
-    grp.appendChild(mkHit(r, x, y, unitsPerPx));
-    grp.appendChild(mkDot(r, x, y, k, fill(r)));
+    addDot(grp, r, x, y, k, fill(r), unitsPerPx);
   });
   g.appendChild(grp);
 }
@@ -2283,6 +2338,10 @@ def _legend_html() -> str:
   עיגול מלא — מספר בית מדויק</div>
 <div class="li"><span class="sw" style="background:transparent;border:2px solid
   {tc["GREEN"]}"></span> עיגול חלול — מיקום משוער (מרכז רחוב/שכונה)</div>
+<div class="li"><span class="sw" style="background:{tc["GREEN"]};box-shadow:0 0 0 2.4px
+  #f5a623"></span> טבעת זהב — ⭐ שמור (גם על קבוצה שיש בה שמור)</div>
+<div class="li"><span class="sw" style="background:{tc["GREEN"]};opacity:.4"></span>
+  דהוי — 📵 כבר יצרתי קשר</div>
 <div class="li muted">מספר בעיגול = כמה דירות שם. באותה נקודה בדיוק — לחיצה פורשת
   אותן, כי זום לא יפריד ביניהן.</div>
 <h4>רקע</h4>

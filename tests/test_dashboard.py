@@ -440,6 +440,39 @@ def test_panning_does_no_zoom_work_and_dots_are_culled(temp_db, monkeypatch, tmp
         "counting in both loops double-counts every listing in view"
 
 
+def test_the_dot_shows_saved_and_contacted(temp_db, monkeypatch, tmp_path):
+    """saved/contacted shipped in the payload and changed nothing about the dot, so
+    finding your own shortlist meant hovering 310 of them.
+
+    Two extra channels only — a dot is ~4px on a phone and already encodes tier as fill
+    and precision as hollow/solid. And the ring is sized in SCREEN px: in viewBox units
+    it measured 7px around a 4px dot at 375px wide, the same trap mkHit records."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert "function mkHalo(" in page and "if (!r.saved) return null;" in page
+    assert "HALO_PX * unitsPerPx" in page and "CL_HALO_PX * unitsPerPx" in page
+    assert "const HALO_PX = 7, CL_HALO_PX = 10;" in page
+    assert "if (r.contacted) c.setAttribute('opacity', DOT_FADED);" in page
+    # a badge must carry it too: at 1x, 253 of 312 listings sit inside one
+    assert "if (b.rows.some(r => r.saved)){" in page
+    # broker/stale/notes/photos deliberately stay off the dot
+    assert "r.broker" not in page[page.index("function mkDot("):page.index("function addDot(")]
+
+
+def test_the_hover_highlight_keeps_the_precision_signal(temp_db, monkeypatch, tmp_path):
+    """`.dot.hi` set stroke:#111, which repainted an approx dot's tier-coloured outline
+    and destroyed the hollow/solid signal exactly when you were looking closely at one
+    flat — and its stroke-width was in world units, so it swelled as you zoomed."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    hi = page[page.index(".dot.hi{"):page.index("\n", page.index(".dot.hi{"))]
+    assert "stroke:#111" not in hi, "must not repaint the precision stroke"
+    assert "drop-shadow" in hi
+    assert ".dot{cursor:pointer;vector-effect:non-scaling-stroke}" in page
+
+
 def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
                                                                  tmp_path):
     """The published snapshot is the phone page now that Tailscale is gone, so it has to
