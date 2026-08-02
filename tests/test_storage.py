@@ -287,11 +287,44 @@ def _extract(addr, price=None, avail=None, total=None, contact=None):
 
 
 def test_addr_key_only_for_numbered_address():
-    assert storage._addr_key(_extract("רינגלבלום 1")) == "addr:רינגלבלום 1"
+    # the key is now the CANONICAL street + number, not the post's wording, so assert
+    # the contract rather than one literal spelling
+    assert storage._addr_key(_extract("רינגלבלום 1")).startswith("addr:")
+    assert storage._addr_key(_extract("רינגלבלום 1")).endswith("|1")
     assert storage._addr_key(_extract("שכונה ב")) is None          # bare neighborhood
     assert storage._addr_key(_extract("רחוב קדש")) is None         # street, no number
     assert any(k.startswith("addr:") for k in storage.dedup_keys(_extract("רינגלבלום 1")))
     assert not any(k.startswith("addr:") for k in storage.dedup_keys(_extract("שכונה ב")))
+
+
+def test_one_flat_described_two_ways_is_one_key():
+    """Scrubbing whitespace was not enough: landlords describe one flat many ways and
+    each phrasing minted its own key, so the same flat was stored twice. Measured over
+    399 listings on 2026-08-02 — 11 duplicate pairs, all of them this."""
+    def key(addr):
+        return storage.make_dedup_key(_extract(addr, contact="050-8220245"))
+    for a, b in (("רגר 93, הבלוק", "רגר 93, גבול בין שכונה ב' ל-שכונה ד', הבלוק"),
+                 ("ברגר 155", "רגר 155"),                    # a ב proclitic
+                 ("רחוב סוסו הכהן 6", "סוסו הכהן 6"),          # a road-type word
+                 ("ו' הישנה, בן מתיתיהו 13", "בן מתיתיהו 13, ו' הישנה"),   # order
+                 ("רח' וינגייט 64", "רחוב וינגייט 64")):       # an abbreviation
+        assert key(a) == key(b), f"{a!r} vs {b!r}"
+    # …and the 2026-07-29 rule is untouched: still phone + NUMBERED address
+    assert key("רגר 93") != key("רגר 95"), "different flats must not merge"
+    assert key("רחוב קדש") == "phone:508220245", "no number -> phone alone, as before"
+    assert (storage.make_dedup_key(_extract("רגר 93", contact="0501111111")) !=
+            storage.make_dedup_key(_extract("רגר 93", contact="0502222222")))
+
+
+def test_a_flat_already_stored_is_not_re_alerted():
+    """`seen` is full of keys built from the raw wording. Once the address part became
+    `street|number` those stopped matching, so a repost of a known flat would have looked
+    brand new and alerted again — for every listing in the table."""
+    e = _extract("רגר 93, הבלוק", contact="050-8220245")
+    keys = storage.dedup_keys(e)
+    assert storage.make_dedup_key(e) in keys
+    assert "phone:508220245|רגר 93, הבלוק" in keys, "the legacy key must still be checked"
+    assert "addr:רגר 93, הבלוק" in keys
 
 
 def test_multikey_collapses_phone_and_field_flip(temp_db):
@@ -409,14 +442,39 @@ def test_rekey_migration_carries_votes(temp_db):
                                         score=80, extract=e))
     storage.set_mark("phone:501234567", "u1", "saved")
     assert storage.rekey_phone_listings() == 1
-    new = "phone:501234567|רגר 164"
-    assert new == storage.make_dedup_key(e)                    # matches what code computes
+    new = storage.make_dedup_key(e)          # whatever the current key format is
+    assert new.startswith("phone:501234567|") and new.endswith("|164")
     c = sqlite3.connect(temp_db)
     assert c.execute("SELECT COUNT(*) FROM listings WHERE dedup_key=?", (new,)).fetchone()[0] == 1
     assert c.execute("SELECT COUNT(*) FROM listings WHERE dedup_key='phone:501234567'"
                      ).fetchone()[0] == 0
     assert storage.effective_score(new, base=80) > 80          # the ⭐ came along
     assert storage.rekey_phone_listings() == 0                 # idempotent
+
+
+def test_merge_never_collapses_two_different_landlords(temp_db):
+    """One address is NOT one flat. Grouping by address alone survived while the key
+    held the post's raw wording; once it became `street|number`, far more rows collide —
+    and in a student building several landlords advertise different flats at the same
+    number. Measured 2026-08-02: 11 of 40 colliding groups held more than one contact,
+    17 rows, and merging them would have deleted real listings."""
+    a = _extract("וינגייט 64, שכונה ג", price=1500, contact="054-3376992")
+    b = _extract("רחוב וינגייט 64", price=1800, contact="052-4708225")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-a", score=80,
+                                        extract=a))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-b", score=70,
+                                        extract=b))
+    assert storage.merge_duplicate_listings() == 0, "different contacts must not merge"
+
+    # …but the case this exists for still works: one contact, and a read that missed it.
+    # A DIFFERENT address, or these would join the two-landlord group above.
+    c = _extract("סוסו הכהן 6", price=1500, contact="054-3376992")
+    d = _extract("רחוב סוסו הכהן 6", price=1500)                 # no contact on this read
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-c", score=80,
+                                        extract=c))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-d", score=60,
+                                        extract=d))
+    assert storage.merge_duplicate_listings() == 1
 
 
 def test_rekey_leaves_bare_address_rows_alone(temp_db):

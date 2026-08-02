@@ -163,21 +163,85 @@ def _content_hash_key(e: ListingExtract) -> str:
 _ADDR_STRIP = str.maketrans("", "", "״׳'`\"‘’“”")
 
 
-def _norm_addr(address: Optional[str]) -> Optional[str]:
-    """Normalized form of a NUMBERED street address (one that carries a house
-    number), or None. Collapsing whitespace and dropping quote marks makes the same
-    flat's address stable across reads. Bare streets/neighborhoods (no house number,
-    e.g. 'רחוב קדש', 'שכונה ב') return None on purpose — different flats share those,
-    so they must NOT collapse together."""
+def _norm_addr_raw(address: Optional[str]) -> Optional[str]:
+    """The pre-2026-08-02 normalisation: whitespace collapsed, quote marks dropped.
+
+    Kept because it is the form every key already in `seen` and in `listings` was
+    written with. `dedup_keys` still emits it so an existing flat is recognised and
+    does not re-alert under its new key."""
     if not address or not any(ch.isdigit() for ch in address):
         return None
     norm = re.sub(r"\s+", " ", address.translate(_ADDR_STRIP)).strip().lower()
     return norm or None
 
 
+def _norm_addr(address: Optional[str]) -> Optional[str]:
+    """Identity of a NUMBERED street address: `canonical street|number`, else None.
+
+    THE ADDRESS PART OF A DEDUP KEY MUST BE THE STREET AND THE NUMBER, NOT THE POST'S
+    WORDING. Scrubbing whitespace is not enough — landlords describe one flat many
+    ways, and each phrasing minted its own key, so the same flat was stored twice.
+    Measured 2026-08-02 over 399 listings: 11 duplicate pairs, every one of them a
+    phrasing difference over an identical (phone, street, number):
+
+        רגר 93, הבלוק          vs  רגר 93, גבול בין שכונה ב' ל-שכונה ד', הבלוק
+        ברגר 155               vs  רגר 155                (a ב proclitic)
+        רחוב סוסו הכהן 6        vs  סוסו הכהן 6            (a road-type word)
+        ו' הישנה, בן מתיתיהו 13 vs  בן מתיתיהו 13, ו' הישנה  (component order)
+        רח' וינגייט 64          vs  רחוב וינגייט 64         (an abbreviation)
+
+    Every one of those is already solved by `streets.canonical`, which is what the
+    geocoder resolves addresses with — so dedup now agrees with the map about what
+    counts as the same place.
+
+    This does NOT relax the 2026-07-29 rule that identity is phone + NUMBERED address
+    rather than the phone alone: a bare street or neighbourhood still returns None, so
+    it still collapses on the phone and two different flats never merge. It only stops
+    one flat's two descriptions from counting as two.
+
+    When the street cannot be resolved we fall back to the old scrubbed text, so an
+    address the index does not know behaves exactly as it did before."""
+    raw = _norm_addr_raw(address)
+    if not raw:
+        return None
+    m = re.search(r"\b(\d{1,4})\b", address)
+    if not m:
+        return raw
+    # lazy: keeps storage's import graph free of the geocoding stack, and only the
+    # dedup path pays for loading the street index
+    try:
+        import geocode
+        import streets
+        cands = list(geocode._candidate_tokens(address)[:2])
+        # THE STREET IS THE WORDS JUST BEFORE THE NUMBER. `_candidate_tokens` splits on
+        # punctuation, so it hands back whole phrases: `רגר 93 פינתי עם שלמה המלך`
+        # resolves to nothing and the key fell back to raw text — which is how the very
+        # duplicate that started this (רגר 93, twice) survived the first fix. Take the
+        # text up to the house number and its last comma-segment, which is the street in
+        # both `רגר 93 פינתי…` and `ו' הישנה, בן מתיתיהו 13`.
+        head = address[:m.start()]
+        tail = re.split(r"[,/|]", head)[-1].strip()
+        if tail:
+            cands.append(tail)
+        for cand in cands:
+            real, _how = streets.canonical(cand)
+            if real:
+                return f"{real}|{m.group(1)}".lower()
+    except Exception:
+        pass
+    return raw
+
+
 def _addr_key(e: ListingExtract) -> Optional[str]:
     norm = _norm_addr(e.street_address_or_neighborhood)
     return "addr:" + norm if norm else None
+
+
+def _digits_key(contact: Optional[str]) -> Optional[str]:
+    """The last 9 digits of a contact string, or None. Same rule as _phone_key, but
+    from a stored `contact` column rather than an extract."""
+    digits = re.sub(r"\D", "", contact or "")
+    return digits[-9:] if len(digits) >= 7 else None
 
 
 def _phone_key(e: ListingExtract) -> Optional[str]:
@@ -221,6 +285,17 @@ def dedup_keys(e: ListingExtract) -> list:
     ak = _addr_key(e)
     if ak and ak not in keys:
         keys.append(ak)
+    # THE LEGACY FORMS, or every flat already stored would re-alert. `seen` and the
+    # listings table are full of keys built from the post's raw wording; once the
+    # address part became `street|number` those stopped matching, and a repost of a
+    # known flat would have looked brand new. Same shape as the callback-token
+    # fallback: recognise the old key, mint the new one.
+    phone = _phone_key(e)
+    raw = _norm_addr_raw(e.street_address_or_neighborhood)
+    if raw:
+        for legacy in (f"{phone}|{raw}" if phone else None, "addr:" + raw):
+            if legacy and legacy not in keys:
+                keys.append(legacy)
     return keys
 
 
@@ -988,6 +1063,19 @@ def merge_duplicate_listings() -> int:
         removed = 0
         for grp in groups.values():
             if len(grp) < 2:
+                continue
+            # ONE ADDRESS IS NOT ONE FLAT. Grouping by address alone was survivable while
+            # _norm_addr kept the post's raw wording and collisions were rare; once the
+            # address became `canonical street|number`, far more rows collide — and in a
+            # student building several different landlords advertise different flats at
+            # the same number. Measured 2026-08-02: of 40 colliding groups, 11 held more
+            # than one contact, 17 rows in all, and merging them would have DELETED real
+            # listings (וינגייט 64 alone has three separate landlords).
+            # So: merge only what one contact posted. Rows with no contact still merge
+            # into a phoned row — that is the original phone-vs-hash case this exists for
+            # — but two known, different contacts never collapse.
+            phones = {_digits_key(r[5]) for r in grp if _digits_key(r[5])}
+            if len(phones) > 1:
                 continue
             keep = max(grp, key=richness)[0]
             for r in grp:
