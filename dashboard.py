@@ -526,6 +526,41 @@ let view = {...WORLD};
 const zoomFactor = () => WORLD.w / view.w;
 let lastRows = [], lastZoom = 0;
 
+/* The street/neighbourhood/amenity labels are STATIC backdrop markup — build_base_svg
+   emits them once and nothing ever rebuilds them — so the NodeList is cached instead of
+   re-queried. It is also the largest node set on the page (264 measured). */
+let slabelCache = null;
+const slabels = () => (slabelCache = slabelCache ||
+                       document.querySelectorAll('.map svg .slabel'));
+
+/* PANNING MUST NOT DO ZOOM WORK.
+   Everything below that divides by `k` — dot radii, label font sizes, which labels are
+   legible, the pin candidate — is a function of the ZOOM FACTOR ALONE. A pan changes
+   neither. This used to run on every pointermove: querySelectorAll('.dot') plus
+   querySelectorAll('.slabel') and a write to all 419 of them, per frame, to produce
+   values identical to the previous frame's. The `lastZoom` guard already existed but
+   gated only drawDots. */
+function rescaleForZoom(svg, k){
+  svg.querySelectorAll('.dot').forEach(d => d.setAttribute('r', (5 / k).toFixed(2)));
+  slabels().forEach(t => {
+    if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
+    t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
+    // reveal names as they become legible: arteries at 1x, side streets once you're
+    // zoomed in among them (see map_listings.street_labels_svg)
+    const mz = +t.dataset.minzoom || 1;
+    t.style.display = (k >= mz) ? '' : 'none';
+  });
+  // clusters are a function of zoom too, so they are rebuilt on the same signal
+  drawDots(lastRows);
+  // AFTER drawDots, which re-appends #dots: the proposed point has to stay on top of
+  // the dots it is about, and counter-scale so it stays a ring rather than a blob
+  const cand = document.getElementById('pincand');
+  if (cand){
+    cand.querySelectorAll('circle').forEach(c => c.setAttribute('r', (12 / k).toFixed(2)));
+    svg.appendChild(cand);
+  }
+}
+
 function applyView(){
   const svg = document.querySelector('.map svg');
   if (!svg) return;
@@ -536,27 +571,11 @@ function applyView(){
   view.y = Math.max(0, Math.min(WORLD.h - view.h, view.y));
   svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
   const k = zoomFactor();
-  svg.querySelectorAll('.dot').forEach(d => d.setAttribute('r', (5 / k).toFixed(2)));
-  svg.querySelectorAll('.slabel').forEach(t => {
-    if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
-    t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
-    // reveal names as they become legible: arteries at 1x, side streets once you're
-    // zoomed in among them (see map_listings.street_labels_svg)
-    const mz = +t.dataset.minzoom || 1;
-    t.style.display = (k >= mz) ? '' : 'none';
-  });
-  // clusters are a function of zoom, so they have to be rebuilt when it changes —
-  // but not while panning, which would redraw 350 nodes on every pointermove
   if (Math.abs(Math.log(k / (lastZoom || k))) > 0.01 || !lastZoom){
     lastZoom = k;
-    drawDots(lastRows);
-  }
-  // AFTER drawDots, which re-appends #dots: the proposed point has to stay on top of
-  // the dots it is about, and counter-scale so it stays a ring rather than a blob
-  const cand = document.getElementById('pincand');
-  if (cand){
-    cand.querySelectorAll('circle').forEach(c => c.setAttribute('r', (12 / k).toFixed(2)));
-    svg.appendChild(cand);
+    rescaleForZoom(svg, k);
+  } else if (culls()){
+    drawDots(lastRows);            // panned into new territory — see drawDots' culling
   }
 }
 
@@ -827,6 +846,32 @@ function mkDot(r, x, y, k, colour){
   return c;
 }
 
+/* ---------- draw only what can be seen ----------
+   drawDots used to build every group in the world no matter where the view was: at 12x
+   that is a few hundred nodes for the handful on screen, rebuilt on every filter
+   keystroke, vote, poll tick and zoom step.
+
+   The box is deliberately larger than the viewport, so an ordinary pan reveals dots that
+   are already drawn and costs nothing; a redraw happens only once the window leaves the
+   box it was drawn for (`culls()`). At 1x the box covers the world, so nothing changes
+   there — this only bites when zoomed in, which is exactly when it was wasteful. */
+const CULL_MARGIN = 0.6;              // extra screens on each side
+let drawnBox = null;                  // the box #dots was last built for
+
+function cullBox(){
+  const mx = view.w * CULL_MARGIN, my = view.h * CULL_MARGIN;
+  return {x0: view.x - mx, y0: view.y - my,
+          x1: view.x + view.w + mx, y1: view.y + view.h + my};
+}
+
+function culls(){
+  // has the visible window left the box the dots were drawn for? If so what is on
+  // screen may be incomplete and has to be rebuilt.
+  if (!drawnBox) return false;
+  return view.x < drawnBox.x0 || view.y < drawnBox.y0 ||
+         view.x + view.w > drawnBox.x1 || view.y + view.h > drawnBox.y1;
+}
+
 function drawDots(rows){
   const svg = document.querySelector('.map svg');
   if (!svg || !P) return;
@@ -842,21 +887,28 @@ function drawDots(rows){
   const fill = r => byScore ? scoreColor(r.eff_score)
                             : (TIER_COLOR[r.location_tier] || TIER_COLOR.UNKNOWN);
   let n = 0, clusters = 0;
-  const groups = clusterOf(rows);
+  const allGroups = clusterOf(rows);
+  const box = drawnBox = cullBox();
+  // count from EVERY group, render only the ones in the box: the counter reports how
+  // many listings are on the map, not how many happen to be under the window
+  for (const b of allGroups){
+    n += b.rows.length;
+    if (b.rows.length > 1) clusters++;
+  }
+  const groups = allGroups.filter(b => b.x >= box.x0 && b.x <= box.x1 &&
+                                       b.y >= box.y0 && b.y <= box.y1);
   const fans = activeFans(groups);
   const fanned = new Set();
   fans.forEach(f => f.rows.forEach(r => fanned.add(r.dedup_key)));
   // a group tighter than one cluster cell at MAX zoom can never be split by zooming
   const tightSpan = CLUSTER_PX * ((WORLD.w / 12) / (svgBox.width || 1));
   for (const b of groups){
-    n += b.rows.length;
     if (b.rows.every(r => fanned.has(r.dedup_key))) continue;             // drawn below
     if (b.rows.length === 1){
       g.appendChild(mkHit(b.rows[0], b.x, b.y, unitsPerPx));
       g.appendChild(mkDot(b.rows[0], b.x, b.y, k, fill(b.rows[0])));
       continue;
     }
-    clusters++;
     // one badge for the group, coloured by its best listing so a cluster hiding a
     // strong match doesn't read as background noise
     const best = b.rows.reduce((a, r) => (r.eff_score > a.eff_score ? r : a), b.rows[0]);
@@ -1067,7 +1119,18 @@ function drawWorklist(){
       .join(' ');
 }
 
-const rowByKey = k => DATA.find(r => r.dedup_key === k);
+/* An index, not a scan. rowByKey is called on every hover, every dot click, every table
+   row and once per stop in drawRoute; a linear DATA.find over 400 rows inside a
+   pointermove handler is the kind of thing that only shows up on a phone. Rebuilt
+   whenever DATA is replaced (see setData). */
+let _byKey = null;
+const rowByKey = k => (_byKey = _byKey ||
+    new Map(DATA.map(r => [r.dedup_key, r]))).get(k);
+
+function setData(rows){
+  DATA = rows;
+  _byKey = null;
+}
 
 async function post(path, body){
   if (!window.__LIVE__){
@@ -1091,12 +1154,24 @@ function afterFilter(){
   if (cb && cb.checked) fitTo(visible());
 }
 
+/* Typing is the one filter that fires per KEYSTROKE, and each one re-runs passes() over
+   every row, rebuilds the table, rebuilds every dot and — with autofit on — animates the
+   map. Debounced so a word costs one pass instead of one per letter; the toggles and
+   selects are single events and stay immediate. */
+const FILTER_DEBOUNCE_MS = 150;
+let filterTimer = null;
+function afterFilterSoon(){
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(afterFilter, FILTER_DEBOUNCE_MS);
+}
+
 ['q', 'st', 'tier', 'maxp', 'minr', 'stale', 'nobroker', 'saved', 'onlynew', 'approx']
   .forEach(id => {
     const node = $(id);
     if (!node) return;
-    const ev = (node.type === 'checkbox' || node.tagName === 'SELECT') ? 'change' : 'input';
-    node.addEventListener(ev, afterFilter);
+    const typed = !(node.type === 'checkbox' || node.tagName === 'SELECT');
+    node.addEventListener(typed ? 'input' : 'change',
+                          typed ? afterFilterSoon : afterFilter);
   });
 $('bycolor').addEventListener('change', render);
 
@@ -1770,7 +1845,7 @@ async function poll(){
     if (sig !== window.__VER__){
       window.__VER__ = sig;
       const d = await (await fetch('/api/listings.json?token=' + encodeURIComponent(TOKEN))).json();
-      DATA = d.listings;
+      setData(d.listings);
       render();
     }
   } catch (e){ /* server stopped or PC asleep — keep showing what we have */ }

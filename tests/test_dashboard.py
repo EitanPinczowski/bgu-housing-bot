@@ -414,6 +414,32 @@ def test_the_tap_target_is_sized_in_screen_pixels(temp_db, monkeypatch, tmp_path
     assert ".hit{fill:transparent" in page      # invisible, but hittable
 
 
+def test_panning_does_no_zoom_work_and_dots_are_culled(temp_db, monkeypatch, tmp_path):
+    """A pan does not change the zoom factor, so counter-scaling every dot radius and
+    every one of the 264 .slabel font-sizes on each pointermove produced values identical
+    to the previous frame's. Measured before/after on the live page: 0.24 -> 0.005 ms at
+    1x, 0.38 -> 0.108 ms at 8x, and 260 -> 101 rendered nodes at 8x.
+
+    The counter must still report EVERY listing on the map, not the culled subset —
+    getting that wrong once made it read 556 of 456."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    # the expensive work sits behind the zoom guard, not in applyView's body
+    assert "function rescaleForZoom(" in page
+    body = page[page.index("function applyView("):page.index("function zoomAt(")]
+    assert ".slabel" not in body and "'.dot'" not in body, \
+        "applyView must not touch dots or labels on a pan"
+    assert "rescaleForZoom(svg, k)" in body
+    # labels are static backdrop markup, so the NodeList is cached, not re-queried
+    assert "slabelCache = slabelCache ||" in page
+    # culling renders a box bigger than the viewport, and counts outside it
+    assert "const CULL_MARGIN" in page and "function cullBox()" in page
+    assert "for (const b of allGroups){" in page
+    assert page.count("n += b.rows.length;") == 1, \
+        "counting in both loops double-counts every listing in view"
+
+
 def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
                                                                  tmp_path):
     """The published snapshot is the phone page now that Tailscale is gone, so it has to
