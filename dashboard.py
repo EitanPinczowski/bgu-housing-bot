@@ -300,6 +300,11 @@ details.list .scroll{border:0;border-top:1px solid var(--line);border-radius:0}
        padding:0 3px}
 #boxrect{fill:#3367d6;fill-opacity:.13;stroke:#3367d6;stroke-width:1.4;
        stroke-dasharray:5,4;vector-effect:non-scaling-stroke;pointer-events:none}
+/* Without this, no zoom level tells you whether two dots are 100 m or 1 km apart —
+   which is the entire question when choosing between flats. */
+#scalebar{position:absolute;inset-inline-end:10px;bottom:26px;z-index:14;font-size:11px;
+       color:var(--fg);opacity:.85;pointer-events:none;user-select:none;text-align:center}
+#scalebar .bar{height:5px;border:1.5px solid currentColor;border-top:0;margin-top:1px}
 #walknote{position:absolute;inset-inline-start:8px;bottom:28px;z-index:15;font-size:11.5px;
        background:var(--bg);opacity:.94;padding:2px 8px;border-radius:99px;
        border:1px solid var(--line)}
@@ -560,6 +565,35 @@ let slabelCache = null;
 const slabels = () => (slabelCache = slabelCache ||
                        document.querySelectorAll('.map svg .slabel'));
 
+/* ---------- how far is that? ----------
+   Metres per world unit, measured the same way walk_rings_svg does it: project a point
+   0.01° due east of the map centre and divide. Reuses the page's own projection, so it
+   cannot drift from what is drawn.
+
+   Redrawn only when the zoom changes (it rides the guard below), so it costs nothing on
+   a pan — the bar is a function of scale, and a pan does not change scale. */
+const SCALE_STEPS = [25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
+
+function unitsPerMetre(){
+  const la = P.max_lat - (view.y + view.h / 2 - P.pad) / P.scale;
+  const [x0] = project(la, P.min_lon);
+  const [x1] = project(la, P.min_lon + 0.01);
+  return Math.abs(x1 - x0) / (0.01 * 111320 * Math.cos(la * Math.PI / 180));
+}
+
+function drawScale(svg){
+  const txt = $('scaletxt'), bar = $('scalebardash');
+  if (!txt || !bar || !P) return;
+  const box = svg.getBoundingClientRect();
+  const pxPerUnit = (box.width || 1) / view.w;
+  const pxPerM = unitsPerMetre() * pxPerUnit;
+  // the roundest distance that still fits a bar of ~90px or less
+  let m = SCALE_STEPS[0];
+  for (const s of SCALE_STEPS){ if (s * pxPerM <= 90) m = s; }
+  bar.style.width = (m * pxPerM).toFixed(0) + 'px';
+  txt.textContent = m >= 1000 ? (m / 1000) + ' ק״מ' : m + ' מ׳';
+}
+
 /* PANNING MUST NOT DO ZOOM WORK.
    Everything below that divides by `k` — dot radii, label font sizes, which labels are
    legible, the pin candidate — is a function of the ZOOM FACTOR ALONE. A pan changes
@@ -570,6 +604,7 @@ const slabels = () => (slabelCache = slabelCache ||
 function rescaleForZoom(svg, k){
   svg.querySelectorAll('.dot').forEach(d => d.setAttribute('r', (5 / k).toFixed(2)));
   // halos are sized in screen px and only ever created by drawDots, which runs below
+  drawScale(svg);
   slabels().forEach(t => {
     if (!t.dataset.fs) t.dataset.fs = t.getAttribute('font-size') || '11';
     t.setAttribute('font-size', (+t.dataset.fs / k).toFixed(2));
@@ -2130,6 +2165,7 @@ def render(live: bool, snapshot: bool = False) -> str:
   </div>
   <div id="boxchip" style="display:none">אזור מסומן
     <button id="boxclear" title="בטל את סימון האזור">✕</button></div>
+  <div id="scalebar"><span id="scaletxt"></span><div class="bar" id="scalebardash"></div></div>
   <div id="noloc" style="display:none"></div>
   <div id="walknote" style="display:none"></div>
   <div id="placebar" style="display:none">📍 הקישו על המיקום הנכון של
@@ -2424,10 +2460,12 @@ def _legend_html() -> str:
 {ln("border-top-width:2.4px;border-color:#c8ccd2", "עורק ראשי · קו דק = רחוב פנימי")}
 {sw("#3949ab", "אוניברסיטת בן גוריון")}
 {sw("#ad1457", "סורוקה")}
-<div class="li">★ שערי הקמפוס · 🚌 קו 669 · 🚆 לרכבת · 🏋️ חדר כושר</div>
+<div class="li">★ שערי הקמפוס (השם מופיע בזום) — כל חישוב AMBER נמדד אליהם</div>
+<div class="li">🚌 קו 669 · 🚆 לרכבת · 🏋️ חדר כושר</div>
 <h4>שכבות</h4>
 {lay("streets", "רחובות ושמותיהם", True)}
 {lay("nbhd", "גבולות שכונות", True)}
+{lay("gates", "שערי הקמפוס", True)}
 {lay("amen", "סימוני תחבורה וחדר כושר", True)}
 {lay("rings", f"טבעות הליכה 5/10/15/{config.MAX_WALK_MINUTES} דק׳ מהשערים", False)}
 <h4>התנהגות</h4>

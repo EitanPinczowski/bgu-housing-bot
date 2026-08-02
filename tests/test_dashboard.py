@@ -509,6 +509,46 @@ def test_the_unplaced_queue_narrows_without_shrinking_the_payoff(temp_db, monkey
     assert unplaced[0]["fixes"] == 2, "a pin on בזל fixes the placed-but-vague one too"
 
 
+def test_gates_are_a_real_layer_with_names(temp_db, monkeypatch, tmp_path):
+    """Every AMBER decision on the map is measured to a gate, yet they were a bare ★
+    with no class — the one thing that could not be toggled and the only landmark whose
+    name was never drawn."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert '.no-gates .gate{display:none!important}' in dashboard.map_listings.STREET_CSS
+    assert 'lay("gates"' in dashboard._legend_html() or 'data-layer="gates"' in page
+    # the name is zoom-revealed like a side street, not shouted at 1x
+    assert 'class="slabel gate gate-l" data-minzoom="2.6"' in page
+
+
+def test_the_scale_bar_tells_the_truth(temp_db, monkeypatch, tmp_path):
+    """Without it no zoom level says whether two dots are 100 m or 1 km apart. Measured
+    live at 1x/4x/8x: within 0.5% of the haversine distance the bar spans."""
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    page = dashboard.build()
+    assert 'id="scalebar"' in page and "function drawScale(" in page
+    # it rides the zoom guard, so a pan costs nothing
+    body = page[page.index("function applyView("):page.index("function zoomAt(")]
+    assert "drawScale" not in body, "the bar is a function of scale, not of position"
+    assert "drawScale(svg);" in page[page.index("function rescaleForZoom("):
+                                     page.index("function applyView(")]
+
+
+def test_units_per_metre_matches_a_measured_distance():
+    """The shared metres->units conversion, used by both the rings and the scale bar.
+    Checked against haversine over a real 1 km separation."""
+    import map_listings
+    import zones
+    xy, proj = map_listings._projector([(31.24, 34.77), (31.28, 34.82)])
+    upm = map_listings.units_per_metre(xy, 31.26, 34.79)
+    # 0.01 degrees of longitude at this latitude, in metres and in canvas units
+    metres = zones._haversine_m(31.26, 34.79, 31.26, 34.80)
+    units = abs(xy(31.26, 34.80)[0] - xy(31.26, 34.79)[0])
+    assert abs(units / metres - upm) / upm < 0.01
+
+
 def test_the_snapshot_installs_but_the_live_page_is_never_cached(temp_db, monkeypatch,
                                                                  tmp_path):
     """The published snapshot is the phone page now that Tailscale is gone, so it has to

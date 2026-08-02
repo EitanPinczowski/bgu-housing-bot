@@ -167,6 +167,8 @@ STREET_CSS = """
 .no-streets .st,.no-streets .st-l{display:none!important}
 .no-nbhd .nbhd,.no-nbhd .nbhd-l,.no-nbhd .nbhd-abc{display:none!important}
 .no-amen .amen{display:none!important}
+.no-gates .gate{display:none!important}
+.gate-l{fill:#5d4037;paint-order:stroke;stroke:#fff;stroke-width:2.6px}
 """
 
 
@@ -360,11 +362,18 @@ def build_base_svg(placed=None):
         svg.append(f'<text class="nbhd-abc" x="{lx:.0f}" y="{ly:.0f}" font-size="18" '
                    f'fill="#3367d6" text-anchor="middle" font-weight="bold">'
                    f'{html.escape(letter)}</text>')
-    # gates
+    # Gates. Every AMBER decision on the map keys off the walk to one of these, yet they
+    # were a bare ★ glyph with no class — the only thing here that could not be toggled,
+    # and the only landmark with no name drawn.
     for la, lo, name in gates:
         gx, gy = xy(la, lo)
-        svg.append(f'<text x="{gx:.1f}" y="{gy:.1f}" font-size="16" text-anchor="middle" '
+        svg.append(f'<text class="slabel gate" data-minzoom="1" x="{gx:.1f}" '
+                   f'y="{gy:.1f}" font-size="16" text-anchor="middle" '
                    f'dominant-baseline="central">★<title>{html.escape(name)}</title></text>')
+        # the name only once you are zoomed in among them, like a side street
+        svg.append(f'<text class="slabel gate gate-l" data-minzoom="2.6" x="{gx:.1f}" '
+                   f'y="{gy - 11:.1f}" font-size="10" text-anchor="middle">'
+                   f'{html.escape(name)}</text>')
     # amenity pins (the 669 stops, the bus to the train, the gym)
     for la, lo, icon, name in pins:
         px, py = xy(la, lo)
@@ -380,6 +389,18 @@ def build_base_svg(placed=None):
     return "".join(svg), projection
 
 
+def units_per_metre(xy, lat: float, lon: float) -> float:
+    """Canvas units per metre on the ground, measured rather than derived.
+
+    Projects a point 0.01° due east and divides. Measured this way so it works with any
+    `xy` callable — area_map's differently-padded projector included — instead of
+    depending on the projection params dict. (Only correct because `_projector` already
+    applied the cos(lat) squeeze, so x and y share one scale.)"""
+    x0, _ = xy(lat, lon)
+    x1, _ = xy(lat, lon + 0.01)
+    return abs(x1 - x0) / (0.01 * 111320 * math.cos(math.radians(lat)))
+
+
 def walk_rings_svg(xy):
     """5/10/15/20-minute walking contours around each campus gate.
 
@@ -392,10 +413,8 @@ def walk_rings_svg(xy):
     metres_per_min = config.WALK_SPEED_M_PER_MIN / config.WALK_DETOUR_FACTOR
     for g in config.GATES.values():
         cx, cy = xy(g["lat"], g["lon"])
+        px_per_m = units_per_metre(xy, g["lat"], g["lon"])
         for minutes in (5, 10, 15, config.MAX_WALK_MINUTES):
-            # convert metres to canvas units via a point due east of the gate
-            east = xy(g["lat"], g["lon"] + 0.01)
-            px_per_m = abs(east[0] - cx) / (0.01 * 111320 * math.cos(math.radians(g["lat"])))
             r = minutes * metres_per_min * px_per_m
             last = minutes == config.MAX_WALK_MINUTES
             out.append(f'<circle class="ring{" ring-max" if last else ""}" '
