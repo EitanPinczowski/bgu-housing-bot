@@ -24,9 +24,11 @@ The page lists OTHER PEOPLE'S phone numbers and home addresses. Therefore:
     is a Python substring test, not a LIKE).
   * There are exactly the routes in _ROUTES. No filesystem serving, no directory listing.
 
-For access away from home use **Tailscale** — a private network between your own devices
-— rather than a public tunnel or a router port-forward. Traffic inside a tailnet is
-already WireGuard-encrypted, and no public URL exists to be found or indexed.
+THIS SERVER IS A HOME TOOL AND HAS NO REMOTE ROUTE, BY DECISION (user, 2026-08-02).
+Live means this PC or the same Wi-Fi, and it is where the writes happen — votes, notes,
+📍 pinning — because they need the DB. Away from home the answer is the published
+snapshot (`python dashboard.py --share` + `publish.py`), which is a PWA and works with
+no signal. Do not add a tunnel, a port-forward, or a VPN back in.
 """
 from __future__ import annotations
 import hashlib
@@ -256,18 +258,6 @@ def _lan_ip() -> str:
         s.close()
 
 
-def _tailscale_ip():
-    """The 100.x tailnet address if Tailscale is up, else None."""
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if ip.startswith("100."):
-                return ip
-    except Exception:
-        pass
-    return None
-
-
 def main() -> int:
     port = config.DASHBOARD_PORT
     if "--port" in sys.argv:
@@ -278,12 +268,11 @@ def main() -> int:
     print(f"BGU dashboard on port {port} — token required on every request\n")
     print(f"  this machine : http://127.0.0.1:{port}/?token={tok}")
     print(f"  same Wi-Fi   : http://{_lan_ip()}:{port}/?token={tok}")
-    ts = _tailscale_ip()
-    if ts:
-        print(f"  Tailscale    : http://{ts}:{port}/?token={tok}   <- use this from anywhere")
-    else:
-        print("  Tailscale    : not detected (install it for access away from home;\n"
-              "                 prefer it over a public tunnel — see the README)")
+    # No remote line, deliberately: this is a home tool. Away from home the answer is
+    # the published snapshot, so say so rather than leaving a gap someone fills with a
+    # tunnel.
+    print("\n  Away from home: python dashboard.py --share --send, then publish.py")
+    print("  (the live server is LAN-only on purpose — no tunnel, no VPN)")
     print("\n  Ctrl-C to stop.")
 
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

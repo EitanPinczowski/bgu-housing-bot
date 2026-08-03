@@ -9,9 +9,8 @@ REM The console prints the URLs with the token already in them.
 REM
 REM   shell:startup  ->  shortcut to this file (Run: minimized)
 REM
-REM For access away from home, install Tailscale and use the 100.x URL it
-REM prints — a private network between your own devices, rather than a
-REM public tunnel. See the README.
+REM This server is LAN-only on purpose — no tunnel, no VPN. Away from home,
+REM use the published snapshot (run_dashboard_share.cmd + publish.py).
 REM
 REM Stop it by closing this window.
 REM ===================================================================

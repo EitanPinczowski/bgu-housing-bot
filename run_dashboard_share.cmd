@@ -8,7 +8,8 @@ REM No account, no install, opens on a phone straight from the chat.
 REM
 REM It is a SNAPSHOT: write buttons are removed and a dated banner says so,
 REM so a three-day-old copy is never mistaken for live data. For live data
-REM and shared voting, use the server (run_dashboard.cmd) over Tailscale.
+REM and shared voting, use the server (run_dashboard.cmd) at home or on the
+REM same Wi-Fi - there is deliberately no remote route to it.
 REM
 REM The file carries landlords' phone numbers and addresses. It goes to the
 REM group only ('group' target in notifier.send_document) - the same place

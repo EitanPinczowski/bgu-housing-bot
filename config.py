@@ -279,8 +279,8 @@ AMENITIES_PATH = ROOT / "amenities.json"
 # DASHBOARD_TOKEN in .env; if absent, one is generated into data/dashboard_token.txt
 # on first run so a phone bookmark keeps working across restarts.
 #
-# For access away from home use Tailscale (a private network between your own
-# devices) rather than a public tunnel or a port-forward — see the README.
+# The live server is LAN-ONLY by decision (user, 2026-08-02): no tunnel, no VPN.
+# Away from home the answer is the published snapshot — see publish.py.
 # ---------------------------------------------------------------------------
 DASHBOARD_PORT = 8777              # 5000 is OSRM
 DASHBOARD_POLL_SECONDS = 45        # how often an open page checks /api/version
