@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 import time
 
+from pydantic import BaseModel
+
 import config
 from models import ListingExtract
 
@@ -69,15 +71,29 @@ def _image_part(url: str):
     return types.Part.from_bytes(data=r.content, mime_type=mime)
 
 
+def with_comments(post_text: str, comments: str | None) -> str:
+    """Compose the text the model sees. Shared by `extract` and `extract_many` so a
+    batched read can never see a different string from a single one — the prompt has
+    a rule about the `[תגובות למודעה]` section, and two copies of this would drift."""
+    if comments:
+        return post_text + "\n\n[תגובות למודעה]:\n" + comments
+    return post_text
+
+
+def _pace_gemini() -> None:
+    """Client-side min-interval so we stay under the free-tier requests-per-minute."""
+    global _last_gemini_call
+    gap = config.GEMINI_MIN_INTERVAL_SEC - (time.monotonic() - _last_gemini_call)
+    if gap > 0:
+        time.sleep(gap)
+    _last_gemini_call = time.monotonic()
+
+
 def _extract_gemini(post_text: str, images=None) -> ListingExtract:
     from google import genai
     from google.genai import types
 
-    global _last_gemini_call
-    gap = config.GEMINI_MIN_INTERVAL_SEC - (time.monotonic() - _last_gemini_call)
-    if gap > 0:                      # stay under the free-tier requests-per-minute
-        time.sleep(gap)
-    _last_gemini_call = time.monotonic()
+    _pace_gemini()
 
     contents = [_SYSTEM_HE, "\n\nהמודעה:\n" + post_text]
     if images:                       # OCR path — the ad text is in the picture
@@ -182,6 +198,16 @@ _consecutive_errors = 0
 ocr_used = 0
 
 
+def _set_primary_exhausted(why: str) -> None:
+    """Latch the primary off for the rest of this run. Shared by the single-post and
+    batched paths so a quota error found by a batch behaves exactly like one found by
+    a single call — otherwise the next batch pays Gemini's slow retry-backoff again."""
+    global _primary_exhausted
+    _primary_exhausted = True
+    fb = getattr(config, "LLM_FALLBACK_PROVIDER", None)
+    print(f"[llm] {config.LLM_PROVIDER} {why} — using {fb} for the rest of this run.")
+
+
 def fallback_budget_spent() -> bool:
     """Has this run served as many posts locally as it is allowed to?
 
@@ -197,8 +223,7 @@ def fallback_budget_spent() -> bool:
 
 def extract(post_text: str, comments: str | None = None, images=None) -> ListingExtract:
     global _primary_exhausted, fallback_used, _consecutive_errors, ocr_used
-    if comments:
-        post_text = post_text + "\n\n[תגובות למודעה]:\n" + comments
+    post_text = with_comments(post_text, comments)
     primary = config.LLM_PROVIDER
     fallback = getattr(config, "LLM_FALLBACK_PROVIDER", None)
 
@@ -235,3 +260,107 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
             else:
                 print(f"[llm] {primary} error, using {fallback} for this post: {exc}")
         return _run(fallback, post_text)
+
+
+# --- batched extraction ----------------------------------------------------------
+# The free tier meters REQUESTS PER DAY, not tokens, and these posts are tiny —
+# measured over the 4,935-post archive: p50 316 chars, p90 602, max 1,784. Five in
+# one request is ~3 KB, nowhere near a context limit, and costs ONE request instead
+# of five. That is the whole reason this exists: on 2026-08-02 the bot made ~865
+# calls against a ~1,000/day ceiling, and batching turns that into ~175.
+
+class _IndexedExtract(BaseModel):
+    """One post's extract, tagged with WHICH post it belongs to.
+
+    The index is not decoration. Without it a model that returns four objects for
+    five posts, or reorders them, would silently shift every listing onto the wrong
+    post — wrong phone, wrong address, wrong flat — and nothing downstream could
+    detect it. With it, any mismatch is caught and the batch is redone one by one."""
+    index: int
+    listing: ListingExtract
+
+
+def _validate_batch(items, n: int) -> list[ListingExtract]:
+    """Every post answered EXACTLY ONCE, or we trust none of it.
+
+    Raises rather than repairing. A batch that answered 4 objects for 5 posts, or
+    repeated an index, has told us it lost track of which post is which — and a
+    silently mis-attributed listing (right flat, wrong phone and address) is the one
+    failure nothing downstream can detect. Redoing the batch one by one costs a few
+    requests; getting it wrong costs a wrong alert, permanently."""
+    by_index = {it.index: it.listing for it in items}
+    if len(items) != n or set(by_index) != set(range(n)):
+        raise ValueError(f"batch answered indices {sorted(by_index)} for {n} posts")
+    return [by_index[i] for i in range(n)]
+
+
+def _extract_gemini_many(texts: list[str]) -> list[ListingExtract]:
+    """One Gemini request for N posts. Raises if the answer doesn't line up."""
+    from google import genai
+    from google.genai import types
+
+    _pace_gemini()
+    numbered = "\n\n".join(f"### פוסט {i}\n{t}" for i, t in enumerate(texts))
+    instruction = (
+        f"\n\nלפניך {len(texts)} פוסטים נפרדים, כל אחד מסומן ב'### פוסט N'.\n"
+        "נתח כל פוסט בנפרד לפי הכללים למעלה והחזר מערך JSON עם בדיוק "
+        f"{len(texts)} איברים, אחד לכל פוסט.\n"
+        "בכל איבר: index = מספר הפוסט כפי שמסומן, listing = תוצאת הניתוח שלו.\n"
+        "אל תערבב מידע בין פוסטים — כל פוסט עומד בפני עצמו."
+    )
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    resp = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=[_SYSTEM_HE, instruction, "\n\nהפוסטים:\n" + numbered],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=list[_IndexedExtract],
+            temperature=0.0,
+        ),
+    )
+    items = getattr(resp, "parsed", None)
+    if items is None:
+        import json
+        items = [_IndexedExtract.model_validate(o) for o in json.loads(resp.text)]
+
+    return _validate_batch(items, len(texts))
+
+
+def extract_many(posts: list[tuple[str, str | None]]) -> list[ListingExtract]:
+    """Extract N posts, ideally in one Gemini request. `posts` is (text, comments).
+
+    ALWAYS RETURNS ONE RESULT PER POST, IN ORDER. Any doubt about the batch — a short
+    answer, a duplicate or missing index, a validation error, any exception — and the
+    whole batch is redone through the ordinary per-post `extract()`, which keeps its
+    own fallback ladder. Quota is spent twice only on that failure path, which is the
+    right trade: a mis-attributed listing is silent and permanent, a retry is neither.
+
+    Gemini only. The local model keeps the single-post path — array-shaped structured
+    output is where small local models are least reliable, and there is no quota
+    reason to batch a provider that has no quota.
+    """
+    global fallback_used
+
+    def one_by_one(why: str | None = None) -> list[ListingExtract]:
+        if why:
+            print(f"[llm] batch of {len(posts)} fell back to single calls: {why}")
+        return [extract(t, comments=c) for t, c in posts]
+
+    if not posts:
+        return []
+    # Nothing to batch, or nothing to batch WITH: a lone post is already one request,
+    # and once Gemini is exhausted `extract` routes to the local model, which does not
+    # batch. Both go straight down the ordinary path — no wasted request, no new code
+    # path for the case that already worked.
+    if len(posts) == 1 or _primary_exhausted or config.LLM_PROVIDER != "gemini":
+        return one_by_one()
+
+    texts = [with_comments(t, c) for t, c in posts]
+    try:
+        return _extract_gemini_many(texts)
+    except Exception as exc:
+        # A quota error must LATCH exactly as it does for a single post, or the next
+        # batch pays Gemini's slow retry-backoff all over again.
+        if _is_quota_error(exc):
+            _set_primary_exhausted(f"quota reached on a batch of {len(posts)}")
+        return one_by_one(str(exc)[:120])

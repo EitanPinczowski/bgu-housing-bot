@@ -130,3 +130,116 @@ def test_ocr_not_spent_on_text_only_posts(monkeypatch):
     monkeypatch.setattr(llm, "_run", lambda p, t, images=None: seen.append(images) or "OK")
     llm.extract("a normal text post")
     assert seen == [None] and llm.ocr_used == 0
+
+
+# --- batched extraction (llm.extract_many) ----------------------------------------
+
+def _batch_setup(monkeypatch):
+    """Gemini live, local fallback available, nothing exhausted."""
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    monkeypatch.setattr(llm, "_consecutive_errors", 0)
+    monkeypatch.setattr(llm, "fallback_used", 0)
+
+
+def _mk(addr):
+    from models import ListingExtract
+    return ListingExtract(is_apartment_ad=True, street_address_or_neighborhood=addr)
+
+
+def _posts(n):
+    return [(f"post {i}", None) for i in range(n)]
+
+
+def test_a_batch_is_one_request_and_keeps_post_order(monkeypatch):
+    """The whole point: 5 posts, 1 request. Order must survive or every listing
+    lands on the wrong post."""
+    _batch_setup(monkeypatch)
+    seen, singles = [], []
+    monkeypatch.setattr(llm, "_extract_gemini_many",
+                        lambda texts: seen.append(texts) or [_mk(t) for t in texts])
+    monkeypatch.setattr(llm, "extract", lambda *a, **k: singles.append(a) or _mk("SINGLE"))
+    out = llm.extract_many(_posts(5))
+    assert len(seen) == 1 and len(seen[0]) == 5          # ONE request for five posts
+    assert not singles                                    # and no per-post calls
+    assert [o.street_address_or_neighborhood for o in out] == [f"post {i}" for i in range(5)]
+
+
+def test_a_short_or_reordered_answer_is_refused():
+    """A model that answers 4 objects for 5 posts, or repeats an index, would shift
+    listings onto the wrong posts — wrong phone, wrong address — undetectably."""
+    import pytest
+    from models import ListingExtract
+
+    def items(indices):
+        return [llm._IndexedExtract(index=i,
+                                    listing=ListingExtract(is_apartment_ad=True))
+                for i in indices]
+
+    for bad in ([0, 1, 2, 3],            # too few
+                [0, 1, 2, 3, 3],         # duplicate index
+                [0, 1, 2, 3, 9],         # index out of range
+                [0, 1, 2, 3, 4, 5]):     # too many
+        with pytest.raises(ValueError):
+            llm._validate_batch(items(bad), 5)
+
+    # …and a correct answer is accepted, in post order, however it arrives
+    ok = llm._validate_batch(items([4, 0, 3, 1, 2]), 5)
+    assert len(ok) == 5
+
+
+def test_any_batch_failure_redoes_the_posts_one_by_one(monkeypatch):
+    """Never lose a post to a bad batch — quota is spent twice only on this path."""
+    _batch_setup(monkeypatch)
+    singles = []
+
+    def boom(texts):
+        raise ValueError("batch answered [0, 1] for 4 posts")
+
+    monkeypatch.setattr(llm, "_extract_gemini_many", boom)
+    monkeypatch.setattr(llm, "extract",
+                        lambda t, comments=None, images=None: singles.append(t) or _mk(t))
+    out = llm.extract_many(_posts(4))
+    assert len(out) == 4 and len(singles) == 4           # every post still extracted
+    assert [o.street_address_or_neighborhood for o in out] == [f"post {i}" for i in range(4)]
+
+
+def test_a_quota_error_on_a_batch_latches_like_a_single_one(monkeypatch):
+    """Otherwise the next batch pays Gemini's slow retry-backoff all over again."""
+    _batch_setup(monkeypatch)
+    monkeypatch.setattr(llm, "_extract_gemini_many",
+                        lambda texts: (_ for _ in ()).throw(RuntimeError("429 RESOURCE_EXHAUSTED")))
+    monkeypatch.setattr(llm, "extract", lambda *a, **k: _mk("x"))
+    llm.extract_many(_posts(3))
+    assert llm._primary_exhausted is True
+
+
+def test_the_local_model_never_batches(monkeypatch):
+    """Array structured-output is where small local models are least reliable, and a
+    provider with no quota has nothing to gain."""
+    _batch_setup(monkeypatch)
+    monkeypatch.setattr(llm, "_primary_exhausted", True)     # Gemini gone -> local
+    batched = []
+    monkeypatch.setattr(llm, "_extract_gemini_many", lambda texts: batched.append(texts))
+    monkeypatch.setattr(llm, "extract", lambda *a, **k: _mk("local"))
+    llm.extract_many(_posts(5))
+    assert batched == []                                      # never even attempted
+
+
+def test_a_lone_post_does_not_take_the_batch_path(monkeypatch):
+    """One post is already one request; batching it just adds a way to fail."""
+    _batch_setup(monkeypatch)
+    batched = []
+    monkeypatch.setattr(llm, "_extract_gemini_many", lambda texts: batched.append(texts))
+    monkeypatch.setattr(llm, "extract", lambda *a, **k: _mk("single"))
+    assert len(llm.extract_many(_posts(1))) == 1
+    assert batched == []
+
+
+def test_batched_text_is_composed_exactly_like_single_text():
+    """The prompt has a rule about the [תגובות למודעה] section; two copies of this
+    composition would drift and the batched read would see a different string."""
+    assert llm.with_comments("body", "c1") == "body\n\n[תגובות למודעה]:\nc1"
+    assert llm.with_comments("body", None) == "body"
+    assert llm.with_comments("body", "") == "body"
