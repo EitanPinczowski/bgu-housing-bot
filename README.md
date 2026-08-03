@@ -188,6 +188,30 @@ only affect the displayed walk time, not the in/out decision.
 All thresholds live at the top of `config.py`
 (price ≤ 2000/room, ≥ 2 rooms free, ≤ 4 roommates, ≤ 25 min walk).
 
+### Landmarks (הבלוק, מגדלי דוד, …)
+
+Posts name places that no map service knows. Draw each one as a **named shape** in Google
+My Maps, export KML/KMZ, and import it:
+
+```bash
+python load_landmarks_from_kmz.py "path\to\Untitled layer.kmz"
+```
+
+The drawn size decides how precisely the bot may place a flat there — **the polygon is the
+uncertainty**. Under 150 m across it counts as a real address (`הבלוק` is 123 m); up to
+400 m it is street-level (`אביסרור` is 299 m); bigger is treated like a neighbourhood.
+A landmark you have not drawn keeps its old behaviour, so importing a survey can never
+make an existing one worse.
+
+Two rules follow from this and are worth knowing:
+
+- **A street beats a neighbourhood.** `שלמה המלך, שכונה ג` is placed on שלמה המלך, not on
+  the middle of שכונה ג — it used to be 1,070 m out.
+- **"Near X" is not "at X".** `ליד הבלוק` is deliberately imprecise, while `הבלוק` is not;
+  and if a post says both (`ליד הבלוק, מגדלי דוד`), the one it is *at* wins.
+
+After importing, run `python replay.py` and read the diff before `--apply`.
+
 ### The Gemini free-tier quota
 
 The daily allowance **resets at 10:00 Israel time** (it is midnight US Pacific), not at

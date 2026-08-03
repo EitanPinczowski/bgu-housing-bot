@@ -139,6 +139,45 @@ SQLite + optional Google Sheets + Telegram alert`
     were affected. `MIN_SCORE_WITHOUT_ADDRESS` must stay below `MIN_ALERT_SCORE`, or
     every placeless listing good enough to alert about would be deleted before it could be.
   - Deliberately narrower than it could be: a bare `שכונה ד` scoring 97 **stays**.
+- **A LANDMARK IS AS PRECISE AS ITS SURVEY SAYS** (`landmarks.json`, from the user's
+  hand-drawn KMZ via `load_landmarks_from_kmz.py`). `geocode._static_source` grades from
+  the DRAWN EXTENT, not from a hand-kept list, because guessing is wrong both ways:
+  | measured diagonal | grade | example |
+  |---|---|---|
+  | ≤150 m | `static` (precise) | `הבלוק` 123, `מגדלי דוד` 115, `מרכז הנגב` 135 |
+  | ≤400 m | `static_street` | `אביסרור` 299 |
+  | >400 m or unsurveyed | `static_area` | `שכונה ד` (2,375 m) |
+  - **`הבלוק` IS A PLACE — 85 × 96 m.** It sat in `_AREA_KEYS` as "the whole student
+    quarter, several streets across" and so was graded `area`, i.e. not a location at all.
+    **MEASURED DEAD END, DO NOT REPEAT: deriving an area's size from the STREET CENTROIDS
+    that co-occur with it in addresses gave ~680 m and made הבלוק look no better than
+    `שכונה ג`.** That proxy is invalid — `אברהם אבינו` is long and its midpoint lies well
+    outside the part of it inside הבלוק. Only a survey answers this.
+  - The polygon centroid beats the pin it was first placed with (`הבלוק` 67 m,
+    `אביסרור` 89 m). A key with no polygon behaves exactly as before.
+  - **A HOUSE NUMBER STILL BEATS EVERY LANDMARK** — ~13 m vs the tightest 115 m. The
+    stand-aside rule tests `k in landmarks()`, NOT the `static_area` grade: surveying
+    הבלוק took it out of that grade and silently re-broke `רגר 137, הבלוק`.
+- **A NAMED STREET BEATS A CO-OCCURRING NEIGHBOURHOOD** (user's rule: "a street is okay").
+  The area key stood aside for a house number only, so 13 listings drew 364–1,070 m from
+  the street their own post names (`שלמה המלך, שכונה ג` worst). Now 0 m–144 m; unplaced
+  32 → 18. Two traps in that gate:
+  - **It must ignore FUZZY street matches.** `האוני` fuzzy-matches the street `הגאונים`,
+    so "near the university" looked like a street address and skipped the only key that
+    could place it. A gate that discards a working placement has to be certain.
+  - **It records NO fallback.** If the named street cannot be resolved the honest answer
+    is NEEDS_DATA, not the centroid just rejected — otherwise `שלמה המלך, שכונה ג` quietly
+    returns to being 1,070 m wrong and a nonsense address answers with the first `שכונה`.
+- **"NEAR X" IS NOT "AT X", AND A POST NAMES BOTH** (`_near_governs`; user, 2026-08-03).
+  The static table answers several tiers before `_is_bare_proximity` runs, so
+  `ליד מגדלי דוד` returned the building's own point graded `static`. 0 of 321 listings say
+  "near" today — this exists because grading הבלוק precise turns tomorrow's `ליד הבלוק`
+  into a confident wrong dot.
+  - **A key the flat is AT beats one it is only NEAR, whatever the word order.**
+    `ליד הבלוק, מגדלי דוד` is NEAR הבלוק and AT מגדלי דוד; ranking by position answered
+    with הבלוק and graded the lot `area`, discarding the address the post gave.
+  - **The lookback stops at a separator.** A plain 14-char window before `מגדלי דוד`
+    reached over the comma, found הבלוק's `ליד`, and marked both as bearings.
 - **Hand-pinned landmark coordinates the user supplied** (`geocode.STATIC_TABLE`, and they
   grade `exact`, so the rules above keep them): `מגדלי דוד` (31.255349, 34.803121),
   `אביסרור` (31.254823, 34.798264), `מרכז הנגב` (31.259132, 34.795781). **`מרכז הנגב` is
