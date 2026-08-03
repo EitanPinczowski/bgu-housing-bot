@@ -1019,3 +1019,30 @@ def test_the_proximity_word_must_govern_the_landmark():
     _pt, src = geocode.geocode_detailed("רגר 5, ליד הבלוק")
     assert src not in ("static", "static_area"), src
     assert geocode.has_location(src)
+
+
+def test_a_landmark_the_flat_is_AT_beats_one_it_is_only_NEAR():
+    """Posts name several places at once, and the bearing belongs to exactly one of them.
+    `ליד הבלוק, מגדלי דוד` is NEAR הבלוק and AT מגדלי דוד. Ranking purely by position
+    answered with the landmark it was near and graded the whole address `area`, throwing
+    away the address the post actually gave. Word order must not decide this."""
+    import geocode
+    for addr in ("מגדלי דוד, ליד הבלוק", "ליד הבלוק, מגדלי דוד"):
+        pt, src = geocode.geocode_detailed(addr)
+        assert src == "static", addr
+        assert pt == geocode.landmark_point("מגדלי דוד"), addr
+    # …and the mirror image resolves to the other one
+    pt, src = geocode.geocode_detailed("ליד מגדלי דוד, הבלוק")
+    assert src == "static" and pt == geocode.landmark_point("הבלוק")
+    # only when EVERY match is a bearing does it degrade to an area
+    assert geocode.geocode_detailed("דירה ליד הבלוק")[1] == "static_area"
+
+
+def test_the_bearing_lookback_stops_at_a_separator():
+    """The window that decides "is this a bearing" must not reach over a comma into the
+    previous place's proximity word."""
+    import geocode
+    n = geocode._normalize
+    assert geocode._near_governs(n("דירה ליד הבלוק"), n("הבלוק")) is True
+    assert geocode._near_governs(n("ליד הבלוק, מגדלי דוד"), n("מגדלי דוד")) is False
+    assert geocode._near_governs(n("ליד הבלוק, מגדלי דוד"), n("הבלוק")) is True

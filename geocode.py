@@ -104,11 +104,21 @@ def _near_governs(norm_text: str, norm_key: str) -> bool:
 
     Position matters, not mere presence: `רגר 5, ליד הבלוק` names a real street and is a
     real address that happens to mention a bearing, while `ליד הבלוק` alone is only the
-    bearing. Looking just before the matched key is what tells them apart."""
+    bearing. Looking just before the matched key is what tells them apart.
+
+    THE LOOKBACK STOPS AT A SEPARATOR, because a post names several places at once and a
+    bearing belongs to exactly one of them. `ליד הבלוק, מגדלי דוד` is NEAR הבלוק and AT
+    מגדלי דוד; a plain 14-character window reached back over the comma, found הבלוק's
+    `ליד`, and marked מגדלי דוד as a bearing too — so the address the post actually gave
+    was discarded and the flat drew on the landmark it was merely near."""
     pos = norm_text.find(norm_key)
     if pos <= 0:
         return False
-    return bool(_NEAR_RE.search(norm_text[max(0, pos - 14):pos]))
+    window = norm_text[max(0, pos - 14):pos]
+    cut = max(window.rfind(sep) for sep in (",", ".", "|", "/", "،"))
+    if cut != -1:
+        window = window[cut + 1:]
+    return bool(_NEAR_RE.search(window))
 
 
 def landmark_point(key: Optional[str]):
@@ -591,6 +601,7 @@ def _resolve_detailed(location_text: Optional[str]):
                        for c, (real, how) in
                        ((c, streets.canonical(c)) for c in _candidate_tokens(location_text or "")))
     best_pos, best_coords, best_key = None, None, None
+    near_pos, near_coords, near_key = None, None, None   # keys the flat is only NEAR
     # Last-resort coords from a key we deliberately stepped over, WITH the grade that key
     # honestly deserves. It used to be a bare coordinate labelled `static_street`, which
     # was fine while only street keys were skipped — now neighbourhood centroids are
@@ -629,27 +640,40 @@ def _resolve_detailed(location_text: Optional[str]):
             if skipped_street_coords is None:
                 skipped_street_coords, skipped_grade = coords, _static_source(key)
             continue                                        # let the house number win
+        # A KEY THE FLAT IS ONLY *NEAR* LOSES TO ONE IT IS *AT*, whatever the word order.
+        # A post often names both — `ליד הבלוק, מגדלי דוד` is AT מגדלי דוד and NEAR
+        # הבלוק. Ranking purely by position answered with the landmark it is near, and
+        # then graded the whole thing `area`, so the address it actually gave was thrown
+        # away. Governed keys are collected separately and only used if nothing ungoverned
+        # matched at all.
+        governed = _near_governs(norm, k)
         pos = norm.find(k)
         if pos != -1:                                       # forward: key inside the address
-            if best_pos is None or pos < best_pos:
+            if governed:
+                if near_pos is None or pos < near_pos:
+                    near_pos, near_coords, near_key = pos, coords, key
+            elif best_pos is None or pos < best_pos:
                 best_pos, best_coords, best_key = pos, coords, key
-        elif len(norm) >= _MIN_REVERSE_MATCH and norm in k and best_coords is None:
+        elif (len(norm) >= _MIN_REVERSE_MATCH and norm in k
+              and best_coords is None and not governed):
             best_pos, best_coords, best_key = 10 ** 6, coords, key   # reverse: lowest
+    # An AT-key if we have one; otherwise the best NEAR-key, downgraded.
+    # "NEAR X" IS NOT "AT X", and it is easy to miss because the static table answers
+    # several tiers before `_is_bare_proximity` would ever be consulted: `ליד מגדלי דוד`
+    # returned the building's own point graded `static`, claiming the flat IS there.
+    # Nothing in the current 321 listings says "near", so this fires on nothing today —
+    # it is here because grading `הבלוק` precise turns tomorrow's `ליד הבלוק` from a
+    # vague blob into a confident wrong dot. `מגדלי דוד, סורוקה` has no proximity word
+    # and keeps its precise grade.
+    near_only = best_coords is None and near_coords is not None
+    if near_only:
+        best_coords, best_key = near_coords, near_key
     if best_coords is not None:
         # a whole-neighbourhood key is an AREA centroid, not a place — see _static_source
-        src = _static_source(best_key)
+        src = "static_area" if near_only else _static_source(best_key)
         # A DRAWN OUTLINE'S CENTRE BEATS A DROPPED PIN. `הבלוק` moved 67 m and `אביסרור`
         # 89 m onto their surveyed centroids.
         best_coords = landmark_point(best_key) or best_coords
-        # "NEAR X" IS NOT "AT X" — and it is easy to miss, because the static table
-        # answers several tiers before `_is_bare_proximity` would ever be consulted.
-        # `ליד מגדלי דוד` was returning the building's own point graded `static`,
-        # claiming the flat IS there. Nothing in the current 321 listings says "near",
-        # so this fires on nothing today; it is here because grading `הבלוק` precise
-        # turns tomorrow's `ליד הבלוק` from a vague blob into a confident wrong dot.
-        # `מגדלי דוד, סורוקה` has no proximity word and keeps its precise grade.
-        if _near_governs(norm, _normalize(best_key)):
-            src = "static_area"
         return best_coords, src
 
     # 1b) house-number interpolation — local, free and more precise than any street-level
