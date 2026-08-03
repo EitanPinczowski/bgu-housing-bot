@@ -243,3 +243,69 @@ def test_batched_text_is_composed_exactly_like_single_text():
     assert llm.with_comments("body", "c1") == "body\n\n[תגובות למודעה]:\nc1"
     assert llm.with_comments("body", None) == "body"
     assert llm.with_comments("body", "") == "body"
+
+
+# --- the daily budget, keyed on the 10:00 quota window ----------------------------
+
+def test_the_window_is_10am_israel_not_midnight():
+    """THE WHOLE POINT. Google's free bucket resets at midnight US Pacific = 10:00
+    here (measured 2026-08-03: the 08:00 run was EXHAUSTED, the 11:09 run was fine).
+    A calendar-day counter would zero at midnight and hand the 08:00 run a budget it
+    does not have — worse than no counter at all."""
+    from datetime import datetime
+
+    import dates
+    assert dates.quota_window(datetime(2026, 8, 3, 9, 59)) == "2026-08-02"
+    assert dates.quota_window(datetime(2026, 8, 3, 10, 0)) == "2026-08-03"
+    assert dates.quota_window(datetime(2026, 8, 4, 9, 59)) == "2026-08-03"
+    # …and midnight does NOT start a new one
+    assert (dates.quota_window(datetime(2026, 8, 3, 23, 59))
+            == dates.quota_window(datetime(2026, 8, 4, 0, 1)))
+
+
+def test_the_budget_survives_a_process_restart(monkeypatch, tmp_path):
+    """Each scheduled run is a new process; a counter in memory would never bind."""
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 3)
+    for _ in range(3):
+        llm._spend_budget()
+    assert llm.budget_state()[1] == 3            # read back from disk
+    assert llm.budget_spent() is True
+
+
+def test_a_stale_window_reads_as_zero(monkeypatch, tmp_path):
+    """No cleanup job: yesterday's entry is simply not this window."""
+    import json
+    p = tmp_path / "b.json"
+    p.write_text(json.dumps({"window": "1999-01-01", "calls": 9999}), encoding="utf-8")
+    monkeypatch.setattr(llm, "_BUDGET_PATH", p)
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 10)
+    assert llm.budget_state()[1] == 0
+    assert llm.budget_spent() is False
+
+
+def test_spending_the_budget_takes_the_same_path_as_a_429(monkeypatch, tmp_path):
+    """It must latch the primary off and route to the fallback, exactly like a real
+    quota error — that is what makes Part 1's run cap fire and end the run cleanly."""
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 2)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    monkeypatch.setattr(llm, "fallback_used", 0)
+    calls = []
+    monkeypatch.setattr(llm, "_run",
+                        lambda p, t, images=None: calls.append(p) or f"{p}_OK")
+    assert llm.extract("a") == "gemini_OK"
+    assert llm.extract("b") == "gemini_OK"
+    assert llm.extract("c") == "openai_compatible_OK"   # budget spent -> fallback
+    assert llm._primary_exhausted is True
+    assert llm.fallback_used == 1
+
+
+def test_a_zero_budget_disables_the_ceiling(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 0)
+    for _ in range(50):
+        llm._spend_budget()
+    assert llm.budget_spent() is False

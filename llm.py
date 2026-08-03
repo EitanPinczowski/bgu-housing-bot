@@ -198,6 +198,42 @@ _consecutive_errors = 0
 ocr_used = 0
 
 
+# --- the daily budget, counted against the 10:00 quota window ----------------------
+# Each scheduled run is a NEW PROCESS, so the count has to live on disk or every run
+# would start from zero and the ceiling would never bind.
+_BUDGET_PATH = config.DATA_DIR / "llm_budget.json"
+
+
+def budget_state() -> tuple[str, int]:
+    """(window, calls used) for the CURRENT quota window. A window that has rolled
+    over reads as 0 — no cleanup job, the stale entry is simply not this window."""
+    import dates
+    window = dates.quota_window()
+    try:
+        import json
+        d = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
+        return window, int(d.get("calls", 0)) if d.get("window") == window else 0
+    except Exception:
+        return window, 0
+
+
+def _spend_budget(n: int = 1) -> None:
+    """Record n primary-provider requests against the current window."""
+    import json
+    window, used = budget_state()
+    try:
+        _BUDGET_PATH.write_text(json.dumps({"window": window, "calls": used + n}),
+                                encoding="utf-8")
+    except Exception as exc:                      # a counter must never break a run
+        print(f"[llm] could not record budget: {exc}")
+
+
+def budget_spent() -> bool:
+    """Have we used this window's self-imposed allowance?"""
+    cap = getattr(config, "LLM_DAILY_BUDGET", 0)
+    return bool(cap) and budget_state()[1] >= cap
+
+
 def _set_primary_exhausted(why: str) -> None:
     """Latch the primary off for the rest of this run. Shared by the single-post and
     batched paths so a quota error found by a batch behaves exactly like one found by
@@ -234,11 +270,18 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
         use_img = images[:1]
         ocr_used += 1
 
+    # Our own ceiling, checked BEFORE Google's. Stopping a little early is what keeps
+    # the local fallback available for genuine surprises instead of spending it on a
+    # quota we could see coming.
+    if not _primary_exhausted and budget_spent():
+        _set_primary_exhausted(f"daily budget of {config.LLM_DAILY_BUDGET} spent")
+
     if _primary_exhausted and fallback:
         fallback_used += 1
         return _run(fallback, post_text)          # text-only
     try:
         result = _run(primary, post_text, use_img)
+        _spend_budget()
         _consecutive_errors = 0
         return result
     except Exception as exc:
@@ -357,7 +400,9 @@ def extract_many(posts: list[tuple[str, str | None]]) -> list[ListingExtract]:
 
     texts = [with_comments(t, c) for t, c in posts]
     try:
-        return _extract_gemini_many(texts)
+        out = _extract_gemini_many(texts)
+        _spend_budget()          # ONE request, however many posts were in it
+        return out
     except Exception as exc:
         # A quota error must LATCH exactly as it does for a single post, or the next
         # batch pays Gemini's slow retry-backoff all over again.

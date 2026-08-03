@@ -250,6 +250,15 @@ LOCAL_FALLBACK_MAX_POSTS_PER_RUN = 40
 # A wrong batch mis-attributes a whole listing — right flat, wrong phone and address —
 # so this is not a knob to turn hopefully.
 LLM_BATCH_SIZE = 1
+# A CLIENT-SIDE DAILY CEILING, so we stop BEFORE Google does. Hitting the real 429 is
+# what makes a run fall through to the local model and crawl; stopping ourselves a
+# little early leaves the fallback for genuine surprises. Under the ~1,000/day observed
+# ceiling with room for OCR calls and retries.
+# Counted against the QUOTA WINDOW (10:00 Israel to 10:00 — see dates.quota_window),
+# never the calendar day: a midnight-reset counter would hand the 08:00 run a full
+# budget it does not have, which is worse than no counter at all.
+# 0 disables the ceiling and leaves only Google's own 429.
+LLM_DAILY_BUDGET = 900
 
 # ---------------------------------------------------------------------------
 # Geocoding. Static name table is primary (see geocode.py) for slang/

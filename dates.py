@@ -31,3 +31,34 @@ def month_of(lease_start: Optional[str]) -> Optional[int]:
         if name in s:
             return num
     return None
+
+
+# --- the Gemini free-tier quota window --------------------------------------------
+# Google's free daily buckets reset at MIDNIGHT US PACIFIC, which is 10:00 in Israel —
+# not local midnight. Measured 2026-08-03: the 08:00 run was RESOURCE_EXHAUSTED while
+# the 11:09 run did 233 fresh posts on Gemini, so the reset falls between them, and the
+# 08:00 run is always spending the PREVIOUS day's leftovers.
+#
+# Anything that counts calls against the daily allowance MUST key on this window and
+# not on date.today(): a calendar-day counter would zero itself at midnight, hand the
+# 08:00 run a full budget it does not have, and be worse than no counter at all.
+QUOTA_RESET_HOUR_LOCAL = 10
+
+
+def quota_window(now=None) -> str:
+    """Which daily quota window `now` (local time) falls in, as 'YYYY-MM-DD'.
+
+    The window starting at 10:00 on the 3rd is named '2026-08-03' and runs until 10:00
+    on the 4th, so 09:59 on the 4th still belongs to '2026-08-03'."""
+    from datetime import datetime, timedelta
+    now = now or datetime.now()
+    start = now if now.hour >= QUOTA_RESET_HOUR_LOCAL else now - timedelta(days=1)
+    return start.strftime("%Y-%m-%d")
+
+
+def quota_window_resets_at(now=None):
+    """When the current window ends (a local datetime) — for showing 'resets in Xh'."""
+    from datetime import datetime, time, timedelta
+    now = now or datetime.now()
+    day = now.date() if now.hour < QUOTA_RESET_HOUR_LOCAL else now.date() + timedelta(days=1)
+    return datetime.combine(day, time(QUOTA_RESET_HOUR_LOCAL, 0))

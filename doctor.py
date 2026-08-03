@@ -348,6 +348,32 @@ def _check_gemini():
     return ("gemini", SKIP, "not the configured provider", "")
 
 
+def _check_llm_budget():
+    """How much of this window's Gemini allowance is gone, and when it comes back.
+
+    Worth a row of its own because the failure is invisible until it bites: a run that
+    has no quota does not stop, it silently drops to the local model at ~63 s/post and
+    holds the scraper lock (2026-08-03: 5h12m, and the day's next two runs skipped).
+    The window is 10:00 Israel to 10:00, NOT the calendar day — see dates.quota_window.
+    """
+    import llm
+    cap = getattr(config, "LLM_DAILY_BUDGET", 0)
+    if not cap:
+        return ("llm budget", SKIP, "no client-side ceiling (LLM_DAILY_BUDGET=0)", "")
+    window, used = llm.budget_state()
+    import dates
+    resets = dates.quota_window_resets_at()
+    hrs = max(0.0, (resets - datetime.now()).total_seconds() / 3600)
+    msg = f"{used}/{cap} used in window {window} · resets in {hrs:.1f}h"
+    if used >= cap:
+        return ("llm budget", FAIL, msg,
+                "the client-side ceiling is spent — runs will use the local model "
+                "until the window resets; that is expected, not a fault to fix now")
+    if used >= 0.85 * cap:
+        return ("llm budget", WARN, msg, "")
+    return ("llm budget", PASS, msg, "")
+
+
 def _check_sheets():
     from sheets import _cred_path
     sid, cred = os.environ.get("GOOGLE_SHEET_ID"), _cred_path()
@@ -392,7 +418,8 @@ def chains() -> list:
 def checks() -> list:
     out = [_check_config()]
     out += _check_data_files()
-    out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(), _check_sheets(),
+    out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(),
+            _check_llm_budget(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
             _check_wake_timers(), _check_hot_scheduled(), _check_geocode_placement(),
             _check_dashboard_fresh()]
