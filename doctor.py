@@ -220,18 +220,33 @@ def _check_last_run():
 def _check_wedged_scraper():
     """Is a scrape running but STUCK? Judged by progress (the heartbeat), never by how
     long it has been running — a local-LLM fallback run legitimately takes hours, and
-    killing those would throw away real work."""
+    killing those would throw away real work.
+
+    A stale heartbeat only means something while a run is LIVE. The heartbeat file
+    survives the run that wrote it, so between scheduled runs its age just keeps
+    growing: on 2026-08-03 this row FAILed with "no progress for 31 min" at 13:30 while
+    the 08:00 run had finished cleanly at 13:11 and `last run` PASSed 0.5h ago — two
+    rows contradicting each other about the same healthy machine."""
     import scraper
     age = scraper.heartbeat_age()
     if age is None:
         return ("scraper progress", SKIP, "no run has reported progress yet", "")
     mins = age / 60
-    if mins > config.STALL_MINUTES:
-        return ("scraper progress", FAIL,
-                f"no progress for {mins:.0f} min (limit {config.STALL_MINUTES})",
-                "a run is wedged — the next run clears it automatically, or kill the pid "
-                "in data/scraper.heartbeat")
-    return ("scraper progress", PASS, f"last progress {mins:.0f} min ago", "")
+    if mins <= config.STALL_MINUTES:
+        return ("scraper progress", PASS, f"last progress {mins:.0f} min ago", "")
+    running = scraper.run_in_progress()
+    if running is False:
+        return ("scraper progress", PASS, "idle (no run in progress)", "")
+    if running is None:
+        # couldn't ask the OS: report the doubt, don't spend the alarm on it
+        return ("scraper progress", WARN,
+                f"no progress for {mins:.0f} min; couldn't tell if a run is live",
+                "check for a running main.py; if one is stuck, kill the pid in "
+                "data/scraper.heartbeat")
+    return ("scraper progress", FAIL,
+            f"no progress for {mins:.0f} min (limit {config.STALL_MINUTES})",
+            "a run is wedged — the next run clears it automatically, or kill the pid "
+            "in data/scraper.heartbeat")
 
 
 def _listener_running() -> bool:

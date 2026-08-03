@@ -591,6 +591,17 @@ SQLite + optional Google Sheets + Telegram alert`
   - Windows can leave a process `TerminateProcess` accepts but never reaps; those are
     unkillable until a reboot. Measured: the profile still opens with them present, so
     the reaper says so and continues rather than refusing to run.
+  - **A STALE HEARTBEAT ONLY MEANS SOMETHING WHILE A RUN IS LIVE.** The file is never
+    cleared on exit, so between scheduled runs its age just keeps growing. `is_wedged()`
+    is safe because `_clear_wedged_holder` calls it only when a live process HOLDS the
+    lock; `doctor`'s `scraper progress` row had no such guard and FAILed on an idle
+    machine — 2026-08-03 13:30, "no progress for 31 min", the 08:00 run finished cleanly
+    at 13:11, no `main.py` process anywhere, and the same report's `last run` row said
+    PASS 0.5h ago. It now consults `scraper.run_in_progress()`, which matches the
+    heartbeat's pid against **that pid's own command line** (`main.py`) — never a
+    process name, same rule as `reap_orphan_browsers`, because `python.exe` says nothing
+    about whose script it is. "Couldn't ask the OS" returns None and reports WARN: a
+    failed query is not evidence of a hang.
 - `setup_always_on.cmd` — run ONCE as Administrator. The `BGU *` tasks ship with
   "wake the computer" OFF, so a run due while the PC sleeps is silently skipped —
   the real cause of "why didn't it run". Also fixes battery wake timers/sleep.

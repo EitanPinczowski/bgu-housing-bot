@@ -75,6 +75,7 @@ def test_listener_check(monkeypatch):
 
 def test_wedged_scraper_check(monkeypatch):
     import scraper
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: True)
     # a run that reported progress recently is healthy even if it started hours ago
     monkeypatch.setattr(scraper, "heartbeat_age", lambda: 45.0)
     assert doctor._check_wedged_scraper()[1] == doctor.PASS
@@ -86,6 +87,26 @@ def test_wedged_scraper_check(monkeypatch):
     # never run -> SKIP, not a false alarm
     monkeypatch.setattr(scraper, "heartbeat_age", lambda: None)
     assert doctor._check_wedged_scraper()[1] == doctor.SKIP
+
+
+def test_stale_heartbeat_is_only_a_wedge_while_a_run_is_live(monkeypatch):
+    """The heartbeat file outlives the run that wrote it, so between scheduled runs its
+    age only grows. On 2026-08-03 that FAILed at 13:30 ("no progress for 31 min") with
+    no main.py process anywhere and the 08:00 run finished cleanly at 13:11 — the same
+    doctor run's `last run` row said PASS 0.5h ago."""
+    import scraper
+    monkeypatch.setattr(scraper, "heartbeat_age",
+                        lambda: (doctor.config.STALL_MINUTES + 10) * 60)
+    # stale heartbeat + a live run = the genuine wedge this check exists for
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: True)
+    assert doctor._check_wedged_scraper()[1] == doctor.FAIL
+    # stale heartbeat + nothing running = an idle machine, which is the normal state
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    name, status, detail, rem = doctor._check_wedged_scraper()
+    assert status == doctor.PASS and "idle" in detail
+    # can't tell -> say so; a failed process query is not evidence of a hang
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: None)
+    assert doctor._check_wedged_scraper()[1] == doctor.WARN
 
 
 def test_fix_starts_osrm_when_down(monkeypatch):

@@ -84,9 +84,65 @@ def heartbeat_pid() -> Optional[int]:
 
 
 def is_wedged() -> bool:
-    """True if a run is holding the lock but has made no progress for STALL_MINUTES."""
+    """True if a run is holding the lock but has made no progress for STALL_MINUTES.
+
+    Only ever consulted while the lock IS held by a live process (_clear_wedged_holder),
+    so a stale heartbeat there really does mean a hung run. Anyone asking without that
+    guarantee — doctor.py — must pair it with run_in_progress() below."""
     age = heartbeat_age()
     return age is not None and age > config.STALL_MINUTES * 60
+
+
+# The scraper's own python process, identified by its COMMAND LINE. Never by process
+# name: "python.exe" says nothing about whose script it is, the same reason
+# _profile_browser_pids filters chrome.exe by the profile path (36 of the 39 chrome.exe
+# processes on this machine were the user's own). main.py is the only entry point that
+# beats the heartbeat.
+_RUN_CMDLINE_MARKERS = ("main.py",)
+
+
+def _pid_command_line(pid: int) -> Optional[str]:
+    """The command line of one pid: "" if no such process, None if we couldn't ask.
+
+    The two empty-ish answers are deliberately different — "the process is gone" is a
+    fact, "PowerShell didn't answer" is not, and a caller that conflates them turns a
+    failed query into a health verdict."""
+    ps = (f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}' "
+          "-ErrorAction SilentlyContinue; if ($p) { $p.CommandLine }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
+                              "-Command", ps],
+                             capture_output=True, text=True, timeout=25)
+    except Exception as exc:
+        print(f"[scraper] could not query pid {pid}: {exc}")
+        return None
+    if out.returncode != 0:
+        return None
+    return (out.stdout or "").strip()
+
+
+def run_in_progress() -> Optional[bool]:
+    """Is a scrape actually RUNNING right now? None when we can't tell.
+
+    A stale heartbeat with nothing running is an IDLE MACHINE — the normal state
+    between scheduled runs — not a wedge. Measured 2026-08-03 13:30: the 08:00 run had
+    ended cleanly at 13:11 (all 15 groups, exit 0), no main.py process existed, and
+    doctor still reported "no progress for 31 min" while its own `last run` row said
+    PASS 0.5h ago. The heartbeat file is never cleared on exit, so its age alone can
+    only say when a run last worked, never whether one is working now.
+
+    The pid in the heartbeat is checked against the process that currently holds it, so
+    a pid recycled by something unrelated doesn't count as a live scrape either."""
+    pid = heartbeat_pid()
+    if pid is None:
+        return False
+    cmd = _pid_command_line(pid)
+    if cmd is None:
+        return None                      # couldn't ask — say so rather than guess
+    if not cmd:
+        return False                     # the run that wrote the heartbeat has exited
+    low = cmd.lower()
+    return any(marker in low for marker in _RUN_CMDLINE_MARKERS)
 
 
 # --- single-instance lock -----------------------------------------------------

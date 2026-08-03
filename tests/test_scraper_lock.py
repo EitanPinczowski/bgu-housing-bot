@@ -76,6 +76,74 @@ def test_clear_wedged_holder_kills_a_stalled_run(tmp_path, monkeypatch):
     assert any(c[0] == "tasklist" for c in cmds)        # death is verified, not assumed
 
 
+# --- is a run actually running? -----------------------------------------------------
+def _fake_ps(monkeypatch, stdout, returncode=0):
+    class R:
+        pass
+
+    def fake_run(cmd, **kw):
+        R.stdout, R.returncode = stdout, returncode
+        return R
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+
+
+def test_run_in_progress_reads_the_heartbeat_pids_own_command_line(tmp_path, monkeypatch):
+    """The heartbeat file outlives its run, so its age can only say when a run last
+    worked — never whether one is working now."""
+    _hb(tmp_path, monkeypatch)
+    (tmp_path / "scraper.heartbeat").write_text(f"4242 {time.time():.0f} x",
+                                                encoding="utf-8")
+    _fake_ps(monkeypatch, '"C:\\python.exe" -u main.py --live\n')
+    assert scraper.run_in_progress() is True
+    # the pid is gone: PowerShell finds no such process and prints nothing
+    _fake_ps(monkeypatch, "")
+    assert scraper.run_in_progress() is False
+    # the pid was recycled by something that is not ours -> not a scrape
+    _fake_ps(monkeypatch, '"C:\\chrome.exe" --profile-directory=Default\n')
+    assert scraper.run_in_progress() is False
+
+
+def test_run_in_progress_says_unknown_rather_than_guessing(tmp_path, monkeypatch):
+    """"couldn't ask" and "nothing is running" must not collapse into one answer — the
+    caller spends a health verdict on the difference."""
+    _hb(tmp_path, monkeypatch)
+    (tmp_path / "scraper.heartbeat").write_text(f"4242 {time.time():.0f} x",
+                                                encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("powershell missing")
+
+    monkeypatch.setattr(scraper.subprocess, "run", boom)
+    assert scraper.run_in_progress() is None
+    _fake_ps(monkeypatch, "", returncode=1)          # the query itself failed
+    assert scraper.run_in_progress() is None
+    # no heartbeat at all -> nothing is running (doctor SKIPs before it ever asks)
+    monkeypatch.setattr(scraper, "_HEARTBEAT_PATH", tmp_path / "gone.heartbeat")
+    assert scraper.run_in_progress() is False
+
+
+def test_a_live_run_is_matched_by_command_line_not_process_name(tmp_path, monkeypatch):
+    """Same rule as _profile_browser_pids: "python.exe" says nothing about whose script
+    it is running."""
+    _hb(tmp_path, monkeypatch)
+    (tmp_path / "scraper.heartbeat").write_text(f"4242 {time.time():.0f} x",
+                                                encoding="utf-8")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+
+        class R:
+            stdout, returncode = '"C:\\python.exe" -u main.py --live --hot\n', 0
+        return R
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    assert scraper.run_in_progress() is True          # a --hot run counts too
+    joined = " ".join(seen["cmd"])
+    assert "ProcessId=4242" in joined and "CommandLine" in joined
+
+
 # --- recovering from a hung run ----------------------------------------------------
 def test_browser_reaping_is_scoped_to_our_own_profile(monkeypatch):
     """The user's own Chrome is normally running — 36 of 39 chrome.exe processes when
