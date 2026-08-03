@@ -22,7 +22,7 @@ import sheets
 import storage
 import streets
 import zones
-from models import PipelineResult, Status
+from models import ListingExtract, PipelineResult, Status
 
 
 # Invisible bidirectional-control characters Facebook injects into RTL (Hebrew)
@@ -360,6 +360,71 @@ def _missing_critical(e) -> bool:
             or geocode.is_bare_neighborhood(e.street_address_or_neighborhood))
 
 
+def is_ocr_post(raw_text: str, images: Optional[list]) -> bool:
+    """A post that is really a PHOTO of the ad — tiny caption plus an image.
+
+    Its text lives in the picture, so the keyword pre-filter and text-signature dedup
+    (which key on the text) are meaningless and would wrongly drop or collapse it. The
+    URL dedup and the post-LLM key dedup still apply, so re-reads never re-alert."""
+    return bool(getattr(config, "SCRAPER_OCR_IMAGE_ONLY", False) and images
+                and len((raw_text or "").strip()) < config.OCR_MIN_TEXT_CHARS)
+
+
+def pre_llm_verdict(raw_text: str,
+                    source_url: Optional[str] = None,
+                    group: Optional[str] = None,
+                    images: Optional[list] = None,
+                    commit: bool = True) -> Optional[PipelineResult]:
+    """The verdict for this post if it can be decided WITHOUT the LLM, else None.
+
+    PURE — it reads the DB but writes nothing. `mark_seen` / `mark_url_seen` stay in
+    `process_post`, after the extraction, so asking this question twice is free and
+    asking it early cannot make a post look "seen" before it has been read.
+
+    That matters because main.py asks it BEFORE choosing which posts to send to
+    Gemini as a batch: these four gates already spare ~27% of posts an LLM call
+    (measured 2026-08-03: 255 processed, 186 calls), and batching only what survives
+    keeps that saving instead of paying for it again.
+    """
+    images = images or []
+    raw_text = _strip_bidi(raw_text)
+    ocr = is_ocr_post(raw_text, images)
+
+    # 0) URL-level dedup. A scraper re-sees the same posts near the top of a group;
+    #    skipping them saves an API call each, which matters on the free tier's tight
+    #    daily quota. Only in commit mode (a dry run must classify everything).
+    #    Cross-posts with a different URL are still caught by the phone/content dedup.
+    if commit and source_url and storage.is_url_seen(source_url):
+        return PipelineResult(status=Status.DROP, reason="already seen (url)",
+                              source_url=source_url, group=group)
+
+    # 0b) Cheap keyword pre-filter: a post with no housing word at all isn't a rental
+    #     ad (lost pet, furniture sale, chit-chat). Not marked url-seen: re-checking
+    #     is free (just a keyword scan).
+    if (config.PREFILTER_KEYWORDS and not ocr
+            and not any(k in raw_text for k in config.PREFILTER_KEYWORDS)):
+        return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
+                              source_url=source_url, group=group, images=images)
+
+    # 0c) Text-signature dedup. A comment-less post has no permalink to dedup on, so
+    #     it's re-read every run; without this, inconsistent extraction (phone found
+    #     one run, not the next) makes a second row with a different dedup_key.
+    #     (Skipped for OCR posts — their text is too thin to sign reliably.)
+    if commit and not ocr and storage.is_seen(_text_sig(raw_text)):
+        return PipelineResult(status=Status.DROP, reason="already seen (text)",
+                              source_url=source_url, group=group, images=images)
+
+    # 0d) Fuzzy cross-post dedup: a near-identical repost of a flat we already stored
+    #     (same text, different permalink, phone shown in only one copy -> different
+    #     exact keys) is caught by text similarity, saving the row and the LLM call.
+    if commit:
+        dup = storage.find_similar(_tokens(raw_text))
+        if dup:
+            return PipelineResult(status=Status.DROP, reason=f"cross-post duplicate of {dup}",
+                                  source_url=source_url, group=group, images=images)
+    return None
+
+
 def process_post(raw_text: str,
                  source_url: Optional[str] = None,
                  group: Optional[str] = None,
@@ -367,7 +432,8 @@ def process_post(raw_text: str,
                  comments: Optional[str] = None,
                  age_hours: Optional[float] = None,
                  commit: bool = True,
-                 alert: bool = True) -> PipelineResult:
+                 alert: bool = True,
+                 extract: Optional[ListingExtract] = None) -> PipelineResult:
     """Run one post through the funnel.
 
     commit=True  (default, manual mode / --live scraper): persist state —
@@ -378,59 +444,29 @@ def process_post(raw_text: str,
     alert=False (batch mode): save/persist as usual but DON'T send the per-post
         Telegram alert — the caller (main.py) collects results and sends one
         ranked, capped batch at the end of the run instead.
+    extract= an already-extracted ListingExtract: skip the LLM call and classify
+        this instead. That is how main.py spends ONE Gemini request on five posts
+        (llm.extract_many) — the quota is the binding constraint, see that function.
+        The pre-LLM gates still run here regardless, so supplying an extract can
+        never smuggle a post past dedup.
     """
     images = images or []
     raw_text = _strip_bidi(raw_text)      # kill FB's invisible RTL control chars
     comments = _strip_bidi(comments)
+    ocr = is_ocr_post(raw_text, images)
 
-    # OCR path: a post that is really a PHOTO of the ad — tiny caption + an image.
-    # Its text lives in the picture, so the keyword pre-filter and text-signature
-    # dedup below (which key on the text) are meaningless and would wrongly drop or
-    # collapse it; skip them and let the LLM read the image instead. The URL dedup
-    # and the post-LLM key dedup still apply, so re-reads never re-alert.
-    ocr = (getattr(config, "SCRAPER_OCR_IMAGE_ONLY", False) and bool(images)
-           and len((raw_text or "").strip()) < config.OCR_MIN_TEXT_CHARS)
-
-    # 0) URL-level dedup BEFORE the LLM. A 2×/day scraper re-sees the same posts
-    #    near the top of a group; skipping them here saves an API call each,
-    #    which matters on the free tier's tight daily quota. Only in commit mode
-    #    (a dry run must classify everything). Cross-posts with a different URL
-    #    still get caught by the phone/content dedup below.
-    if commit and source_url and storage.is_url_seen(source_url):
-        return PipelineResult(status=Status.DROP, reason="already seen (url)",
-                              source_url=source_url, group=group)
-
-    # 0b) Cheap keyword pre-filter BEFORE the LLM: a post with no housing word at
-    #     all isn't a rental ad (lost pet, furniture sale, chit-chat) — drop it
-    #     without spending an LLM call. Saves Gemini quota and the slow local
-    #     fallback. Not marked url-seen: re-checking is free (just a keyword scan).
-    if (config.PREFILTER_KEYWORDS and not ocr
-            and not any(k in raw_text for k in config.PREFILTER_KEYWORDS)):
-        return PipelineResult(status=Status.NOT_AD, reason="no housing keywords (pre-filter)",
-                              source_url=source_url, group=group, images=images)
-
-    # 0c) Text-signature dedup BEFORE the LLM. A comment-less post has no permalink
-    #     to dedup on, so it's re-read every run; without this, inconsistent
-    #     extraction (phone found one run, not the next) makes a second row with a
-    #     different dedup_key. Keying on the post text collapses those. (Skipped for
-    #     OCR posts — their text is too thin to sign reliably.)
+    # The gates that can answer WITHOUT the LLM. Always run here, even when the
+    # caller already ran them to decide what to batch (main.py does): they are pure,
+    # they cost 4.4 ms, and running them unconditionally means no caller can skip
+    # dedup by supplying `extract`.
+    early = pre_llm_verdict(raw_text, source_url=source_url, group=group,
+                            images=images, commit=commit)
+    if early is not None:
+        return early
     sig = _text_sig(raw_text)
-    if commit and not ocr and storage.is_seen(sig):
-        return PipelineResult(status=Status.DROP, reason="already seen (text)",
-                              source_url=source_url, group=group, images=images)
-
-    # 0d) Fuzzy cross-post dedup BEFORE the LLM: a near-identical repost of a flat
-    #     we already stored (same text, but a different permalink and the phone
-    #     shown in only one copy -> different exact keys) is caught here by text
-    #     similarity, saving both the duplicate row and the LLM call.
-    toks = _tokens(raw_text)
-    if commit:
-        dup = storage.find_similar(toks)
-        if dup:
-            return PipelineResult(status=Status.DROP, reason=f"cross-post duplicate of {dup}",
-                                  source_url=source_url, group=group, images=images)
 
     e = _postprocess_extract(
+        extract if extract is not None else
         llm.extract(raw_text, comments=comments, images=(images if ocr else None)),
         raw_text, comments)
 

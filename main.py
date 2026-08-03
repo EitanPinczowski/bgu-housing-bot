@@ -242,7 +242,25 @@ def run(dry_run: bool, hot: bool = False) -> None:
             _record_scrape(url)          # count this read toward the daily coverage
             if posts:
                 groups_with_posts += 1
-            for post in posts:
+            # POSTS ARE EXTRACTED IN BATCHES, because the free tier meters REQUESTS
+            # per day and five of these posts fit in one (see llm.extract_many).
+            # `pending` holds posts that survived the pre-LLM gates and are waiting
+            # for a batch to fill up.
+            pending: list = []
+
+            def flush(pending=pending, url=url):
+                """Extract the buffered posts in one request, then classify each."""
+                nonlocal total_posts, posts_with_link, fallback_capped
+                if not pending:
+                    return
+                extracts = llm.extract_many([(p["text"], p.get("comments") or "")
+                                             for p in pending])
+                for post, e in zip(pending, extracts):
+                    _handle(post, url, extract=e)
+                pending.clear()
+
+            def _handle(post, url, extract=None):
+                nonlocal total_posts, posts_with_link
                 total_posts += 1
                 # progress heartbeat: a slow LLM (local fallback can take ~200s/post) is
                 # fine, a run that stops beating for STALL_MINUTES is wedged and gets
@@ -260,6 +278,7 @@ def run(dry_run: bool, hot: bool = False) -> None:
                         age_hours=post.get("age_hours"),
                         commit=not dry_run,
                         alert=not batch,        # batch: defer the ping to run's end
+                        extract=extract,        # already extracted, in a batch
                     )
                     counts[res.status.value] += 1
                     if res.status.value in ("MATCH", "NEEDS_DATA"):
@@ -272,6 +291,7 @@ def run(dry_run: bool, hot: bool = False) -> None:
                     print(f"[main] pipeline error on a post: {exc}")
                     counts["ERROR"] += 1
 
+            for post in posts:
                 # THE LOCAL FALLBACK IS A LIFEBOAT, NOT THE ENGINE. Once Gemini's
                 # quota is gone every post costs ~63s locally, and a run that keeps
                 # going holds the scraper lock for hours — on 2026-08-03 that cost
@@ -279,12 +299,36 @@ def run(dry_run: bool, hot: bool = False) -> None:
                 # fresh quota. Stop while the day is still salvageable. Nothing is
                 # lost: these posts were never marked seen, so the next run reads
                 # them, and by then the quota may have reset (10:00 Israel).
+                # Checked at the TOP of the iteration on purpose: the early-verdict
+                # path below ends in `continue`, so a check at the bottom would be
+                # skipped by exactly the posts that are cheapest to notice it on.
                 if llm.fallback_budget_spent():
                     fallback_capped = (
                         f"local fallback cap reached ({llm.fallback_used} posts) — "
                         f"ending the run so the next one can start")
                     print(f"[main] {fallback_capped}")
                     break
+                # Ask the cheap gates FIRST and don't put their posts in a batch:
+                # they already spare ~27% of posts an LLM call, and batching them
+                # would pay for what we just saved. `pre_llm_verdict` is pure, and
+                # process_post re-runs it anyway, so this cannot skip dedup.
+                early = pipeline.pre_llm_verdict(
+                    post["text"], source_url=post.get("permalink"), group=url,
+                    images=post.get("images") or [], commit=not dry_run)
+                if early is not None or pipeline.is_ocr_post(post["text"],
+                                                            post.get("images")):
+                    # OCR posts also go singly: they need the image path, which is
+                    # Gemini-only and separately capped per run.
+                    _handle(post, url)
+                    continue
+                pending.append(post)
+                if len(pending) >= config.LLM_BATCH_SIZE:
+                    flush()
+
+            # A partial batch must never cross a group boundary — otherwise the last
+            # few posts of a group wait for the next group to fill the buffer, and
+            # the final group's remainder is dropped on the floor entirely.
+            flush()
 
             if fallback_capped:
                 break

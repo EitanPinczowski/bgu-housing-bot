@@ -228,6 +228,16 @@ LLM_MAX_CONSECUTIVE_ERRORS = 3
 # Ollama, which fits comfortably inside the gap between runs. Posts left unread are
 # never marked seen, so the next run picks them up: work is deferred, not lost.
 LOCAL_FALLBACK_MAX_POSTS_PER_RUN = 40
+# HOW MANY POSTS GO INTO ONE GEMINI REQUEST. The free tier meters REQUESTS PER DAY,
+# not tokens, so this divides daily usage directly: measured 2026-08-02, ~865 calls
+# against a ~1,000/day ceiling becomes ~175 at 5.
+# The posts are small enough that this is nearly free — over the 4,935-post archive,
+# p50 316 chars, p90 602, max 1,784, so five is ~3 KB. Raising it further trades a
+# shrinking quota saving against a growing blast radius: every failed batch is redone
+# post by post, and a bigger batch gives the model more chances to lose track of which
+# result belongs to which post (which `llm._validate_batch` catches, at the cost of
+# re-doing the lot). 1 disables batching entirely.
+LLM_BATCH_SIZE = 5
 
 # ---------------------------------------------------------------------------
 # Geocoding. Static name table is primary (see geocode.py) for slang/
@@ -576,6 +586,9 @@ def validate() -> None:
         problems.append(f"MIN_SCORE_WITHOUT_ADDRESS ({MIN_SCORE_WITHOUT_ADDRESS}) >= "
                         f"MIN_ALERT_SCORE ({MIN_ALERT_SCORE}) — every placeless listing "
                         "good enough to alert about would be deleted first")
+    if LLM_BATCH_SIZE < 1:
+        problems.append(f"LLM_BATCH_SIZE ({LLM_BATCH_SIZE}) must be >= 1 "
+                        "(1 disables batching; 0 or less would extract nothing)")
     if LOCAL_FALLBACK_MAX_POSTS_PER_RUN < 1:
         problems.append(f"LOCAL_FALLBACK_MAX_POSTS_PER_RUN "
                         f"({LOCAL_FALLBACK_MAX_POSTS_PER_RUN}) must be >= 1 — 0 would "
