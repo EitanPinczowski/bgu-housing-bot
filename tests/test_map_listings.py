@@ -149,9 +149,78 @@ def test_labels_are_revealed_by_zoom_not_all_at_once():
     assert 'data-minzoom="' in out and 'class="slabel st-l"' in out
 
 
+def test_prominence_is_the_polyline_not_the_distance_between_the_ends():
+    """`חיבת ציון` measured 13.8 px end-to-end against 84.5 px of real geometry, so it
+    was never named at any zoom. A street that doubles back covers ground even when it
+    finishes near where it started."""
+    zig = [[31.2600, 34.7900], [31.2600, 34.7910], [31.2602, 34.7910],
+           [31.2602, 34.7900], [31.2604, 34.7900], [31.2604, 34.7910],
+           [31.2606, 34.7910], [31.2606, 34.7900], [31.2608, 34.7900]]
+    straight = [[31.2600, 34.7900], [31.2608, 34.7900]]     # 96 px of line vs 16, both
+    #                                                         ending 16 px from the start
+    _p, labels = map_listings.streets_svg(_xy, _BOUNDS, {"landmarks": [], "streets": [
+        {"name": "מפותל", "main": False, "segments": [zig]},
+        {"name": "ישר", "main": False, "segments": [straight]}]})
+    mz = {n: m for _pos, n, _main, m in labels}
+    assert mz["מפותל"] == 1.0        # 92 px of street: legible at 1x
+    assert mz["ישר"] > 5             # genuinely 12 px: only once you're in among it
+
+
+def test_a_roundabout_is_named_from_its_segments_together():
+    """`כיכר האבות` is six pieces, none longer than 4.9 px but ~20 px in total, and it
+    is the densest listing cluster on the map. Judging a street by its longest single
+    piece left it anonymous."""
+    ring = [[[31.2600 + i * 3e-4, 34.7900], [31.2602 + i * 3e-4, 34.7900]]
+            for i in range(6)]                               # 6 x 4 px = 24 px total
+    _p, labels = map_listings.streets_svg(_xy, _BOUNDS, {"landmarks": [], "streets": [
+        {"name": "כיכר", "main": False, "segments": ring},
+        {"name": "בודד", "main": False, "segments": [ring[0]]}]})
+    names = [n for _pos, n, _main, _mz in labels]
+    assert "כיכר" in names           # 24 px of street, in six pieces
+    assert "בודד" not in names       # one 4 px piece is genuinely too little
+
+
+def test_no_label_asks_for_more_zoom_than_the_map_has():
+    """dashboard.applyView clamps at 12x, so a minzoom above that is the same as no
+    label at all. This binds the label rule to that ceiling: change the floor or the
+    target and this fails rather than silently emitting labels nobody can reach."""
+    assert map_listings._MAX_LABEL_ZOOM <= 12
+    # …and the constants must not be able to produce one on their own either
+    worst = map_listings._LABEL_TARGET_PX / map_listings._LABEL_MIN_PX
+    assert worst <= map_listings._MAX_LABEL_ZOOM
+    tiny = [{"name": f"רחוב {i}", "main": False,
+             "segments": [[[31.2600 + i * 1e-4, 34.7900],
+                           [31.2607 + i * 1e-4, 34.7900]]]} for i in range(40)]
+    _p, labels = map_listings.streets_svg(_xy, _BOUNDS,
+                                          {"landmarks": [], "streets": tiny})
+    assert labels and all(mz <= map_listings._MAX_LABEL_ZOOM
+                          for _pos, _n, _main, mz in labels)
+
+
+def test_a_street_in_the_zone_outranks_a_longer_one_outside_it(monkeypatch):
+    """The cap used to be spent on long roads out in the desert that no flat is on.
+    The green/amber area is the part of the map anyone reads, so it is named first and
+    length only breaks ties."""
+    monkeypatch.setattr(map_listings, "_LABEL_CAP", 2)
+    monkeypatch.setattr(map_listings, "_in_zone", lambda seg: seg[0][1] < 34.795)
+    streets = [{"name": "מדברי ארוך", "main": True,          # far the longest, out of zone
+                "segments": [[[31.2500, 34.8000], [31.2700, 34.8000]]]},
+               {"name": "מדברי שני", "main": True,
+                "segments": [[[31.2500, 34.8100], [31.2690, 34.8100]]]},
+               {"name": "בתוך האזור", "main": False,          # short, but where the flats are
+                "segments": [[[31.2600, 34.7900], [31.2610, 34.7900]]]}]
+    _p, labels = map_listings.streets_svg(_xy, _BOUNDS,
+                                          {"landmarks": [], "streets": streets})
+    names = [n for _pos, n, _main, _mz in labels]
+    assert names[0] == "בתוך האזור"          # in-zone first, whatever its length
+    assert "מדברי שני" not in names          # the cap falls on the out-of-zone tail
+
+
 def test_label_count_is_capped():
+    # the step has to keep every one of them INSIDE _BOUNDS, or culling caps the list
+    # before the cap does and the test passes for the wrong reason
     many = [{"name": f"רחוב {i}", "main": False,
-             "segments": [[[31.250 + i * 1e-4, 34.790], [31.250 + i * 1e-4, 34.800]]]}
+             "segments": [[[31.250 + i * 5e-5, 34.790], [31.250 + i * 5e-5, 34.800]]]}
             for i in range(map_listings._LABEL_CAP + 60)]
     _p, labels = map_listings.streets_svg(_xy, _BOUNDS,
                                           {"landmarks": [], "streets": many})

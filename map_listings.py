@@ -114,9 +114,29 @@ _MINOR = (2.2, 0.9, "#68727d", 0.6, 200)
 # thresholds — every one an artery, because a residential street never spans 200 px of
 # a 1000 px canvas covering ~4 km. So emit down to a much shorter run and let each
 # label carry the zoom at which it becomes legible.
-_LABEL_MIN_PX = 25            # shortest visible run that can ever earn a name
-_LABEL_CAP = 250              # keep the file sane; longest runs win
+# Lowered from 25, and now measured against the street's TOTAL drawn length rather than
+# its longest single segment. Together with the polyline change below that takes the
+# green/amber area from 81 of 98 streets ever named to 96, and from 31 named at 1x to
+# 49. Among the recovered is `כיכר האבות`, the densest listing cluster on the map. A
+# short street still deserves its name; what it does not deserve is a name at 1x, and
+# _MAX_LABEL_ZOOM below handles that.
+_LABEL_MIN_PX = 12
+# Raised from 250 as headroom, not as the fix: on the dashboard's current viewport only
+# 197 labels are emitted, so the cap does not bind there at all and the naming gains
+# below come from the length rules instead. It DOES bind on a wider viewport (~412
+# streets drawn), and there it discarded in-zone streets outright. Each extra label is
+# one <text> hidden until its own data-minzoom, so the cost is bytes, not clutter.
+_LABEL_CAP = 450
 _LABEL_TARGET_PX = 90         # a name shows once its run reaches this on screen
+# A minzoom the map cannot reach is the same as no label at all — the dashboard clamps
+# at 12x (dashboard.applyView), and judging `כיכר האבות` by its longest segment (3.4 px)
+# asked for 26x. Measuring the total instead is what actually fixed that, so with the
+# constants above this clamp cannot currently fire: the floor caps the ratio at
+# 90/12 = 7.5. It stays as the COUPLING between the label rule and the map's zoom
+# ceiling — a later change to the floor or the target must not be able to reintroduce a
+# label nobody can ever zoom to. test_no_label_asks_for_more_zoom_than_the_map_has holds
+# the two ends together.
+_MAX_LABEL_ZOOM = 8.0
 _LANDMARK_STYLE = {"university": ("#3949ab", "אוניברסיטת בן גוריון"),
                    "hospital": ("#ad1457", "סורוקה")}
 
@@ -204,6 +224,19 @@ def _path_d(xy, seg) -> str:
     return "M" + " ".join(f"{x:.1f},{y:.1f}" for x, y in (xy(la, lo) for la, lo in seg))
 
 
+def _in_zone(seg) -> bool:
+    """Does any of this run lie in the green or amber area — the part of the map anyone
+    is actually reading? Sampled rather than exhaustive: a handful of vertices is plenty
+    to tell a street in the zone from one out in the desert, and `classify_effective` is
+    called ~5x per street rather than once per point."""
+    import zones
+    step = max(1, len(seg) // 5)
+    for la, lo in seg[::step]:
+        if zones.classify_effective(la, lo) in ("GREEN", "AMBER"):
+            return True
+    return False
+
+
 def streets_svg(xy, bounds, feats=None):
     """(path markup, label list) for every street with geometry inside `bounds`.
 
@@ -214,23 +247,39 @@ def streets_svg(xy, bounds, feats=None):
     for st in (feats or features()).get("streets", []):
         main = st.get("main", True)                    # old files had arteries only
         into = arteries if main else minors
-        best_seg, best_len = None, 0.0
+        best_seg, best_len, total_len = None, 0.0, 0.0
         for seg in st.get("segments", []):
             if not any(_in_bounds(la, lo, bounds) for la, lo in seg):
                 continue
             into.append(_path_d(xy, seg))
-            (ax, ay), (bx, by) = xy(*seg[0]), xy(*seg[-1])
-            seglen = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+            # THE POLYLINE, not the straight line between its ends. Measuring
+            # end-to-end badly understates a curved or L-shaped street — `חיבת ציון`
+            # came out 13.8 px against 84.5 px of real geometry and so was never
+            # labelled at any zoom; 22 drawn streets had >=90 px of polyline but <90 px
+            # end to end.
+            pts = [xy(la, lo) for la, lo in seg]
+            seglen = sum(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+                         for a, b in zip(pts, pts[1:]))
+            total_len += seglen
             if seglen > best_len:
                 best_len, best_seg = seglen, seg
-        if best_seg and best_len >= _LABEL_MIN_PX:
+        # HOW PROMINENT the street is, is the total it draws; WHERE the name goes is its
+        # longest single piece. `כיכר האבות` is a roundabout — six segments, none longer
+        # than 4.9 px but ~20 px in total — and judging it by the longest piece kept the
+        # densest listing cluster on the map anonymous. Same error as measuring a curved
+        # street end-to-end, one level up.
+        if best_seg and total_len >= _LABEL_MIN_PX:
             # the zoom at which this run is long enough on screen to read. An artery
             # spanning the view shows at 1x; a 30 px side street waits until ~3x.
-            minzoom = max(1.0, round(_LABEL_TARGET_PX / best_len, 1))
+            minzoom = min(_MAX_LABEL_ZOOM,
+                          max(1.0, round(_LABEL_TARGET_PX / total_len, 1)))
             labels.append((xy(*best_seg[len(best_seg) // 2]), st["name"], main,
-                           minzoom, best_len))
-    # cap by run length so the longest (most useful) names survive
-    labels.sort(key=lambda item: item[4], reverse=True)
+                           minzoom, total_len, _in_zone(best_seg)))
+    # IN-ZONE STREETS OUTRANK THE CAP. Sorting on length alone discarded 9 green/amber
+    # streets — including `כיכר האבות`, the densest listing cluster on the map — in
+    # favour of long roads out in the desert that no flat is on. The zone is the part of
+    # the map anyone reads, so it is named first and length only breaks ties.
+    labels.sort(key=lambda item: (item[5], item[4]), reverse=True)
     labels = [item[:4] for item in labels[:_LABEL_CAP]]
 
     out = []
