@@ -873,6 +873,38 @@ def test_the_two_hand_supplied_student_blocks():
         assert geocode.geocode_detailed(spelling)[0] == (31.254823, 34.798264), spelling
 
 
+def test_a_descriptive_tail_does_not_hide_the_street():
+    """A post often ends the address with what the flat is LIKE rather than where it is,
+    and `_SPLIT_RE` only splits on punctuation, so the lot was glued into one token:
+    `וינגייט 74 שכונה ג קומה שניה` produced the candidate `וינגייט קומה שניה`, matching
+    no street, although `canonical("וינגייט")` is exact."""
+    import geocode
+    import streets
+    for addr, want in (("וינגייט 74 שכונה ג קומה שניה", "וינגייט"),
+                       ("רחוב אביה השופט 4 שכונה ד ( ו הישנה), באר שבע", "אביה השופט"),
+                       ("מצדה 17 (מול הפארק)", "מצדה")):
+        tok = geocode._candidate_tokens(addr)
+        assert tok, addr
+        assert streets.canonical(tok[0])[0] == want, f"{addr} -> {tok}"
+    # the parenthetical case only works because the tail is stripped BEFORE the split —
+    # _SPLIT_RE breaks on `מול` and would tear `(מול הפארק)` in half
+    assert "(" not in " ".join(geocode._candidate_tokens("מצדה 17 (מול הפארק)"))
+
+
+def test_several_hits_that_are_one_road_is_not_ambiguity():
+    """`קלישר` matched both `צבי קלישר` and `קלישר הרב צבי` — two OSM spellings of one
+    street, measured 0.0 m apart — and the uniqueness rule threw it away. The honorific
+    kept their word bags apart so they never pooled either."""
+    import streets
+    assert streets._pool_key("צבי קלישר") == streets._pool_key("קלישר הרב צבי")
+    real, how = streets.canonical("קלישר")
+    assert real in ("צבי קלישר", "קלישר הרב צבי") and how == "word"
+    # …and a genuine ambiguity still refuses: these two are 2,652 m apart, so they never
+    # pool, and answering either one would be a guess
+    assert streets._nearest_m(streets._raw_geometry()["ז'בוטינסקי"],
+                              streets._raw_geometry()["יוהנה זבוטינסקי"]) > 1000
+
+
 def test_a_shared_word_bag_is_not_enough_to_pool():
     """The guard that makes the pooling safe. `כיכר האבות` and `האבות` share a word bag
     once the road-type word is dropped, and lie 2.5 km apart — welding those together is

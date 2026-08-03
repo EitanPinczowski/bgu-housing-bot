@@ -97,15 +97,21 @@ _MERGE_TOUCH_M = 50.0
 # and are rejected by the same touch test that catches a word-order coincidence.
 _ROAD_TYPES = frozenset(("דרך", "רחוב", "שדרות", "שדרת", "סמטת", "סמטה", "שביל",
                          "כביש", "כיכר", "ככר"))
+# Honorifics OSM carries on some spellings of a road and not others, exactly like the
+# road-type words above: `צבי קלישר` and `קלישר הרב צבי` are the SAME road — measured
+# 0.0 m apart — but the `הרב` kept their word bags different, so they never pooled and
+# `קלישר` stayed ambiguous and unresolvable.
+_TITLES = frozenset(("הרב", "רב", "ד\"ר", "דר", "פרופ", "פרופסור", "הרבי"))
 
 
 def _pool_key(name: str) -> str:
-    """The bag of words that identifies a ROAD, ignoring word order and any leading
-    road-type word. Two entries sharing this key are candidates to be pooled — the
-    touch test below decides whether they actually are."""
+    """The bag of words that identifies a ROAD, ignoring word order, any leading
+    road-type word, and any honorific. Two entries sharing this key are candidates to be
+    pooled — the touch test below decides whether they actually are."""
     parts = _norm(name).split()
     while len(parts) > 1 and parts[0] in _ROAD_TYPES:
         parts = parts[1:]
+    parts = [p for p in parts if p not in _TITLES] or parts
     return " ".join(sorted(parts))
 
 
@@ -228,8 +234,61 @@ def canonical(name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     words = _words_index()                         # 3) UNIQUE word match ('רגר' -> 'שדרות יצחק רגר')
     for cand in filter(None, (n, bare)):
         hits = words.get(cand)
-        if hits and len(hits) == 1 and len(cand) >= 3:
+        if not hits or len(cand) < 3:
+            continue
+        if len(hits) == 1:
             return hits[0], "word"
+        # SEVERAL HITS THAT ARE ONE ROAD IS NOT AMBIGUITY. `קלישר` matched both
+        # `צבי קלישר` and `קלישר הרב צבי` — two OSM spellings of a single street whose
+        # geometries touch at 0.0 m — and the uniqueness rule threw it away. When every
+        # hit belongs to the same pool, answer with the pool's primary name.
+        # `זבוטינסקי` still refuses: `ז'בוטינסקי` and `יוהנה זבוטינסקי` are 2,652 m
+        # apart, so they never pooled, and refusing is the right answer there.
+        pool = _pools().get(hits[0])
+        if pool and all(h in pool for h in hits):
+            return pool[0], "word"
+    # 3b) A WORD RUN INSIDE the candidate. The street is often buried in a longer phrase
+    # the tokenizer cannot know to cut: `הרב יוסף סוסו הכהן 15` and
+    # `רחוב יצחק רגר בנייני היוקרה 5` both name a street the index holds, wrapped in an
+    # honorific or a building name. `_words_index` already maps every 1-3 word run of
+    # every real street name, so ask it about the candidate's own runs, longest first.
+    #
+    # A ONE-WORD RUN MUST BE A WHOLE STREET NAME; a longer run may be part of one.
+    # Exact-index matching does not by itself prevent the `ברגר` -> `ברנר` class of
+    # error: `מרכז הנגב 2` (a shopping mall) matched the run `מרכז` and resolved to the
+    # street `מרכז אורן`, a different place entirely — a common noun picking a street.
+    # Caught by auditing every address this tier newly resolved, which is the only way
+    # to see it. `מרכז` appears in the index only INSIDE `מרכז אורן`, while `רמב"ם` is a
+    # street in its own right, and that is exactly the line between the two.
+    for cand in filter(None, (n, bare)):
+        parts = cand.split()
+        if len(parts) < 2:
+            continue
+        for size in range(min(len(parts), 3), 0, -1):
+            if size == len(parts):
+                continue                   # the whole token — tiers 1-3 already tried it
+            for i in range(len(parts) - size + 1):
+                run = " ".join(parts[i:i + size])
+                if len(run) < 4:
+                    continue
+                if size == 1:
+                    # …and it must be the street's OWN name, not one of the prefix
+                    # aliases `_index` adds. `כיכר אבות` dissected to `אבות`, which is an
+                    # alias for `האבות` — a street 2,506 m away. `רמב"ם` passes because
+                    # it normalises to itself.
+                    hit = idx.get(run)
+                    if hit and _norm(hit) == run:
+                        return hit, "word"
+                    continue
+                hits = words.get(run)
+                if not hits:
+                    continue
+                if len(hits) == 1:
+                    return hits[0], "word"
+                pool = _pools().get(hits[0])
+                if pool and all(h in pool for h in hits):
+                    return pool[0], "word"
+
     for cand in filter(None, (n, bare)):           # 4) fuzzy, strict cutoff, last resort
         m = difflib.get_close_matches(cand, list(idx), n=1, cutoff=FUZZY_CUTOFF)
         if m:

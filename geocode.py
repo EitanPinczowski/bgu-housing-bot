@@ -672,9 +672,24 @@ def _google_places(location_text: str) -> Optional[Tuple[float, float]]:
 _OVERPASS_STRIP = re.compile(
     r"\d+(?:/\d+)?|שכונ[הת]\s*[א-י]?['׳]?|רחוב|רח['׳]|שדרות|שדרה|שד['׳]|דרך|סמטת|סמטה|שביל|רחבת|רחבה|כיכר|משעול")
 
+# TAILS THAT ARE NOT PART OF A STREET NAME. A post often ends the address with what the
+# flat is like rather than where it is — a floor, an entrance, a parenthetical aside —
+# and `_SPLIT_RE` only splits on punctuation, so the whole lot was glued into one token:
+# `וינגייט 74 שכונה ג קומה שניה` produced the candidate `וינגייט קומה שניה`, which
+# matches no street, even though `canonical("וינגייט")` is exact. Measured over the
+# listings table, this and the parenthetical below are the two cheapest recall wins left.
+_TAIL_STRIP = re.compile(
+    r"\([^)]*\)"                                   # "(כיכר האבות)", "( ו הישנה)"
+    r"|\bקומ[הת]\s*\S*"                            # קומה שניה / קומה 2 / קומת קרקע
+    r"|\bכניס[הת]\s*\S*"                           # כניסה ב
+    r"|\bדיר[הת]\s+\d+"                            # דירה 4
+    r"|\bמעל\s+\S+"                                # מעל הסופר
+)
+
 
 def _overpass_name(location_text: str) -> str:
     s = _CITY_RE.sub(" ", location_text)                    # "…, באר שבע" pollutes the query
+    s = _TAIL_STRIP.sub(" ", s)                             # "קומה שניה", "(ו' הישנה)"
     s = _OVERPASS_STRIP.sub(" ", s)
     s = s.translate(str.maketrans("", "", '"\\/,'))         # keep the QL string safe; drop commas
     return re.sub(r"\s+", " ", s).strip()
@@ -689,6 +704,7 @@ _KEEP_TYPE_STRIP = re.compile(r"\d+(?:/\d+)?|שכונ[הת]\s*[א-י]?['׳]?")
 
 def _typed_name(location_text: str) -> str:
     s = _CITY_RE.sub(" ", location_text)
+    s = _TAIL_STRIP.sub(" ", s)
     s = _KEEP_TYPE_STRIP.sub(" ", s)
     s = s.translate(str.maketrans("", "", '"\\/,'))
     return re.sub(r"\s+", " ", s).strip()
@@ -708,7 +724,9 @@ def _candidate_tokens(location_text: Optional[str]) -> list:
     the local street index (fixing ה/ב prefixes and misspellings). De-duped, order-stable."""
     if not location_text:
         return []
-    base = _CITY_RE.sub(" ", location_text)
+    # Strip the descriptive tail BEFORE splitting: `_SPLIT_RE` breaks on `מול`, so
+    # `מצדה 17 (מול הפארק)` was torn into `מצדה (` and `הפארק)` and neither resolved.
+    base = _TAIL_STRIP.sub(" ", _CITY_RE.sub(" ", location_text))
     out: list = []
 
     def add(tok):
@@ -755,7 +773,14 @@ _NEAR_RE = re.compile(r"ליד|קרוב\s+ל|בסמוך|קרבת|צמוד\s+ל|�
 
 # Places nobody rents a room in. An address that names one of these and nothing else is
 # not a housing address at all — the poster is telling you what they are near.
-_INSTITUTIONS = ("אוניברסיט", "סורוקה", "בית חולים", "ביה\"ח", "הקריה הרפואית", "קמפוס")
+#
+# Matched as a PHRASE, and removed before the "does it name a street" test below. The
+# institution's own words look like a street to the index — `בן גוריון` resolves to the
+# boulevard — so testing the raw text let `אוניברסיטת בן גוריון` claim to name a street
+# and slip past this guard entirely.
+_INSTITUTION_RE = re.compile(
+    r"אוניברסיט\S*(?:\s+בן\s+גוריון)?|בן\s+גוריון\s+אוניברסיט\S*"
+    r"|סורוקה|בית\s+חולים|ביה[\"״']?ח|הקריה\s+הרפואית|קמפוס|שער\s+האוניברסיטה")
 
 
 def _is_bare_proximity(location_text: Optional[str]) -> bool:
@@ -774,11 +799,15 @@ def _is_bare_proximity(location_text: Optional[str]) -> bool:
     text = _fold_quotes(location_text or "")
     if not text:
         return False
-    if not (_NEAR_RE.search(text) or any(w in text for w in _INSTITUTIONS)):
+    if not (_NEAR_RE.search(text) or _INSTITUTION_RE.search(text)):
         return False
     if _house_number(text):
         return False
-    return not any(streets.canonical(c)[0] for c in _candidate_tokens(text))
+    # Ask whether anything OTHER than the institution names a street:
+    # `רינגלבלום ליד האוניברסיטה` keeps רינגלבלום and resolves, while
+    # `אוניברסיטת בן גוריון` has nothing left once the institution is removed.
+    rest = _INSTITUTION_RE.sub(" ", text)
+    return not any(streets.canonical(c)[0] for c in _candidate_tokens(rest))
 
 
 def _descriptive_landmark(location_text: Optional[str]):
