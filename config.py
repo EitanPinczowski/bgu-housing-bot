@@ -39,6 +39,12 @@ MAX_PRICE_PER_ROOM_ILS = 2000      # per roommate, excluding utilities (hard dro
 TARGET_PRICE_PER_ROOM_ILS = 1500   # your budget — used by the ⭐ fit score
 MIN_AVAILABLE_ROOMS = 2            # rooms currently free for lease
 MAX_TOTAL_ROOMMATES = 4            # total occupants in the whole apartment
+# A listing that names no street AND scores no better than this is dropped rather than
+# kept as NEEDS_DATA (user's rule, 2026-08-03). "No street" is geocode.has_location:
+# a street counts even with no house number, a bare neighbourhood does not, and neither
+# does an institution or a description. Tested against the RAW fit score, never the
+# voted one, so replay gives the same verdict whatever the group has clicked since.
+MIN_SCORE_WITHOUT_ADDRESS = 50
 # Bonus added to the fit score when the flat is furnished (a bed, table, and
 # closet in each sleeping room). A one-way bonus — an unfurnished flat isn't penalized.
 FURNISHED_BONUS = 10
@@ -549,6 +555,14 @@ def validate() -> None:
     if TARGET_PRICE_PER_ROOM_ILS > MAX_PRICE_PER_ROOM_ILS:
         problems.append(f"TARGET_PRICE_PER_ROOM_ILS ({TARGET_PRICE_PER_ROOM_ILS}) > "
                         f"MAX_PRICE_PER_ROOM_ILS ({MAX_PRICE_PER_ROOM_ILS})")
+    if not 0 <= MIN_SCORE_WITHOUT_ADDRESS < 100:
+        problems.append(f"MIN_SCORE_WITHOUT_ADDRESS ({MIN_SCORE_WITHOUT_ADDRESS}) must be "
+                        "0-99; the fit score is 0-100, so 100 would drop every "
+                        "placeless listing and a negative would drop none")
+    if MIN_SCORE_WITHOUT_ADDRESS >= MIN_ALERT_SCORE:
+        problems.append(f"MIN_SCORE_WITHOUT_ADDRESS ({MIN_SCORE_WITHOUT_ADDRESS}) >= "
+                        f"MIN_ALERT_SCORE ({MIN_ALERT_SCORE}) — every placeless listing "
+                        "good enough to alert about would be deleted first")
     if not GREEN_ZONE_PATH.exists():
         problems.append(f"green-zone file missing: {GREEN_ZONE_PATH}")
     if problems:

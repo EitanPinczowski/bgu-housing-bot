@@ -108,6 +108,64 @@ def test_drop_neighborhood_outside_allowed_set():
         assert letter in pipeline.config.ALLOWED_NEIGHBORHOODS
 
 
+def test_has_location_is_the_street_line():
+    """The user's rule, 2026-08-03, expressed in the tiers geocode already computes:
+    a street is an address, a neighbourhood on its own is not, an institution is not."""
+    import geocode
+    for src in ("osm_addr", "manual", "static", "interpolated", "overpass", "nominatim",
+                "static_street", "landmark", "projected"):
+        assert geocode.has_location(src), src
+    for src in ("static_area", None, ""):
+        assert not geocode.has_location(src), src
+    # the tiers themselves, so a new source name cannot silently change the rule
+    assert geocode.confidence("static_area") == "area"
+    assert geocode.confidence(None) == "none"
+
+
+def _placeless(rooms):
+    """No street at all — only a neighbourhood. `rooms` straddles the threshold:
+    2 free rooms of 4 occupants scores 48, 3 of 4 scores 52."""
+    from models import ListingExtract
+    return ListingExtract(is_apartment_ad=True,
+                          street_address_or_neighborhood="שכונה ב",
+                          available_rooms_count=rooms, total_roommates_in_apt=4,
+                          price_per_room_ils=1990)      # near the ceiling -> low score
+
+
+def test_no_address_and_a_poor_score_is_dropped():
+    """Kept-not-lost is right for a flat we merely cannot place, but one that names no
+    street AND scores poorly is not a lead — it sits in the list forever unactionable."""
+    res = pipeline._classify(_placeless(2), "", None, None, [], None, commit=False)
+    assert res.status.value == "DROP"
+    assert "no address" in res.reason
+    # …and the same listing one point above the threshold is kept
+    kept = pipeline._classify(_placeless(3), "", None, None, [], None, commit=False)
+    assert kept.status.value == "NEEDS_DATA" and kept.score > 50
+
+
+def test_a_named_street_is_never_dropped_for_being_vague():
+    """"street is okay" — a numberless street keeps its listing however low it scores."""
+    from models import ListingExtract
+    e = ListingExtract(is_apartment_ad=True,
+                       street_address_or_neighborhood="רחוב רינגלבלום",
+                       available_rooms_count=2, total_roommates_in_apt=2,
+                       price_per_room_ils=1990)
+    res = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert res.status.value != "DROP", res.reason
+
+
+def test_the_threshold_is_the_raw_score_not_the_voted_one(temp_db):
+    """Reproducibility: replay must give the same verdict whatever the group clicked.
+    A ⭐ therefore cannot rescue a placeless flat — deliberate, the user's call."""
+    import storage
+    e = _placeless(2)
+    first = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert first.status.value == "DROP"
+    storage.set_mark(storage.make_dedup_key(e), "u1", "saved")
+    again = pipeline._classify(e, "", None, None, [], None, commit=False)
+    assert again.status.value == "DROP", "a vote must not change the verdict"
+
+
 def test_blacklisted_named_neighborhood_drops():
     from models import ListingExtract
     # a NAMED non-ב/ג/ד neighborhood is an instant hard-drop before geocoding

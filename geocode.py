@@ -116,6 +116,27 @@ def is_precise_source(source: Optional[str]) -> bool:
     return source in _PRECISE_SOURCES
 
 
+# The tiers that count as KNOWING WHERE THE FLAT IS. The user's rule, 2026-08-03:
+# a street is an address, a neighbourhood on its own is not, and an institution is not.
+# That is exactly the exact/high/street line, so this reuses `confidence` rather than
+# adding a fifth notion of address quality to the four the codebase already has.
+_LOCATED = frozenset(("exact", "high", "street"))
+
+
+def has_location(source: Optional[str]) -> bool:
+    """Do we know where this flat is, even roughly, on a STREET?
+
+      exact/high  a house number          -> yes
+      street      a named street          -> yes  ("street is okay")
+      area        only a neighbourhood    -> NO   ("only neighbourhood is not an address")
+      none        institution, blurb, ""  -> NO   ("that's not an address")
+
+    Hand-pinned landmarks grade `exact` via the static table, so `מגדלי דוד` counts as
+    located — which is why this is keyed on the geocode SOURCE and not on whether the
+    address text happens to name a street."""
+    return confidence(source) in _LOCATED
+
+
 # --- boundary streets: streets whose OSM geometry crosses the in-range↔RED line, so a
 # name-only (imprecise) placement on them can't be trusted GREEN. Built by
 # load_boundary_streets.py; matched by name substring against the address text. -------
@@ -174,6 +195,11 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
     # catches "מגדלי גראנד אביסרור", "אביסרורים הגבוהים" and "מגדלי דוד, סורוקה".
     "מגדלי דוד": (31.255349, 34.803121),
     "אביסרור": (31.254823, 34.798264),
+    # There ARE flats at מרכז הנגב (user, 2026-08-03). Before this it was worse than
+    # unplaced: the sub-run tier matched the bare word `מרכז` and answered with the
+    # STREET `מרכז אורן`, a different place. That match is refused now, and this gives
+    # the right answer instead of no answer.
+    "מרכז הנגב": (31.259132, 34.795781),
     # -------------------------------------------
 }
 
@@ -215,7 +241,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 10     # 10: institutions refuse; מגדלי דוד + אביסרור pinned
+GEOCODE_LOGIC_VERSION = 11     # 11: tail strip, sub-run streets, מרכז הנגב pinned
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 

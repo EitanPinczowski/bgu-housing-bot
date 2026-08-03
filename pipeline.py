@@ -640,6 +640,37 @@ def _classify(e, raw_text: str, source_url, group, images: list,
         return result(Status.DROP, reason, geo_source=geo_source,
                       walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=False)
 
+    # 5c) NO ADDRESS AND NOTHING TO RECOMMEND IT -> drop (user's rule, 2026-08-03).
+    #
+    # "kept not lost" below is the right default for a flat we merely cannot place — but
+    # a listing that names no street AND scores poorly is not a lead, it is noise that
+    # sits in the list forever with no way to act on it. `geocode.has_location` is the
+    # exact/high/street line, so a bare street counts and only a neighbourhood does not.
+    #
+    # THE SCORE IS COMPUTED HERE, above the gate rather than at the end where it used to
+    # live: the gate needs it. Amenities stay below, because the comment there is right
+    # that OSRM routing must not be paid for on a listing being dropped.
+    #
+    # The RAW fit score, not the voted one (user's choice): the verdict has to be
+    # reproducible from the post alone, so a replay gives the same answer whatever the
+    # group has clicked since. The trade — a ⭐ cannot rescue a placeless flat — is
+    # accepted and deliberate.
+    neighborhood = nbhd_letter or zones.neighborhood_of(lat, lon)
+    broker_listings = storage.phone_listing_count(e.contact_phone_or_link)
+    score = fit.score(e.price_per_room_ils, walk, tier,
+                      e.available_rooms_count, e.total_roommates_in_apt,
+                      e.price_from_comment, age_hours, e.lease_start_date,
+                      e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
+                      neighborhood, has_photos=bool(images),
+                      seeks_female=_seeks_female_roommates(raw_text),
+                      broker_listings=broker_listings,
+                      price_is_derived=getattr(e, "price_is_derived", False))
+    if not geocode.has_location(geo_source) and score <= config.MIN_SCORE_WITHOUT_ADDRESS:
+        return result(Status.DROP,
+                      f"no address and score {score} ≤ {config.MIN_SCORE_WITHOUT_ADDRESS}",
+                      geo_source=geo_source, walk=walk, walk_gate=walk_gate,
+                      lat=lat, lon=lon, key=key, tier=tier, preferred=False)
+
     # 6) classify. GREEN/AMBER + complete -> MATCH (amber = acceptable, not
     #    preferred). Missing fields or ungeocodable -> NEEDS_DATA, kept not lost.
     missing = _missing_critical(e)
@@ -674,20 +705,12 @@ def _classify(e, raw_text: str, source_url, group, images: list,
         res = result(Status.MATCH, label, geo_source=geo_source,
                      walk=walk, walk_gate=walk_gate, lat=lat, lon=lon, key=key, tier=tier, preferred=preferred)
 
-    # Preferred-neighborhood tie-breaker (ב > ג = ד): the letter the post NAMES wins
-    # (the user's rule is about what the post says); else infer from the coordinate.
-    neighborhood = nbhd_letter or zones.neighborhood_of(lat, lon)
-    # How many distinct flats this contact advertises — an agency, inferred from the
-    # data. Counted from what's already stored, so it grows as the picture fills in.
-    res.broker_listings = storage.phone_listing_count(e.contact_phone_or_link)
-    res.score = fit.score(e.price_per_room_ils, walk, tier,
-                          e.available_rooms_count, e.total_roommates_in_apt,
-                          e.price_from_comment, age_hours, e.lease_start_date,
-                          e.furnished, e.floor, e.has_elevator, e.balcony_or_garden,
-                          neighborhood, has_photos=bool(images),
-                          seeks_female=_seeks_female_roommates(raw_text),
-                          broker_listings=res.broker_listings,
-                          price_is_derived=getattr(e, "price_is_derived", False))
+    # Both computed above, for the no-address gate. The preferred-neighborhood
+    # tie-breaker (ב > ג = ד) prefers the letter the post NAMES over the coordinate's,
+    # and broker_listings is how many distinct flats this contact advertises — an agency,
+    # inferred from what is already stored, so it grows as the picture fills in.
+    res.broker_listings = broker_listings
+    res.score = score
 
     # Amenity/transit context for the alert — computed AFTER the score, on kept
     # listings only, so it can neither influence the score nor cost routing on a
