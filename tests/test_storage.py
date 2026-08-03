@@ -477,6 +477,44 @@ def test_merge_never_collapses_two_different_landlords(temp_db):
     assert storage.merge_duplicate_listings() == 1
 
 
+def test_a_vague_read_folds_into_the_numbered_one(temp_db):
+    """One flat arrives twice, once described and once addressed: `מול שער האוניברסיטה`
+    and `רחוב רגר 153` from the same landlord, both 1300₪ for 3 rooms. is_duplicate
+    collapses that at ingest only when the vague read comes SECOND."""
+    vague = _extract("מול שער האוניברסיטה", price=1300, avail=3, contact="054-3972962")
+    exact = _extract("רחוב רגר 153", price=1300, avail=3, contact="054-3972962")
+    storage.save_listing(PipelineResult(status=Status.NEEDS_DATA, dedup_key="k-vague",
+                                        score=40, extract=vague))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-exact",
+                                        score=80, extract=exact))
+    assert storage.merge_duplicate_listings() == 1
+    import sqlite3
+    c = sqlite3.connect(temp_db)
+    left = [r[0] for r in c.execute("SELECT dedup_key FROM listings")]
+    assert left == ["k-exact"], "the NUMBERED row is the one that knows where the flat is"
+
+
+def test_a_vague_read_is_kept_when_it_could_be_a_second_flat(temp_db):
+    """Stricter than the address merge on purpose: with no address to corroborate, a
+    shared phone alone would swallow a landlord's genuine second flat."""
+    vague = _extract("ליד הבלוק", price=1300, avail=3, contact="054-3972962")
+    other = _extract("רחוב רגר 153", price=1900, avail=2, contact="054-3972962")
+    storage.save_listing(PipelineResult(status=Status.NEEDS_DATA, dedup_key="k-v",
+                                        score=40, extract=vague))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-o", score=80,
+                                        extract=other))
+    assert storage.merge_duplicate_listings() == 0, "price and rooms differ — keep both"
+
+    # ambiguity is refused too: two numbered flats both fit
+    a = _extract("רגר 100", price=1300, avail=3, contact="054-3972962")
+    b = _extract("רגר 200", price=1300, avail=3, contact="054-3972962")
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-a", score=80,
+                                        extract=a))
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k-b", score=80,
+                                        extract=b))
+    assert storage.merge_duplicate_listings() == 0, "two candidates — do not guess"
+
+
 def test_rekey_leaves_bare_address_rows_alone(temp_db):
     """No house number means we still can't tell two flats apart, so those rows keep
     the phone-only key."""

@@ -1085,7 +1085,49 @@ def merge_duplicate_listings() -> int:
                 if len(sub) < 2:
                     continue
                 removed += _collapse(c, sub, richness)
+        removed += _absorb_vague(c, rows)
         return removed
+
+
+def _absorb_vague(c, rows: list) -> int:
+    """Fold a listing whose address has NO house number into the numbered listing that
+    is plainly the same flat: same landlord, same price, same number of free rooms.
+
+    One flat often arrives twice, once described and once addressed —
+    `מול שער האוניברסיטה` and `רחוב רגר 153` from 054-3972962, both 1300₪ for 3 rooms.
+    `is_duplicate` collapses the vague read at INGEST when the phone is already known,
+    but only in that direction: if the vague post came FIRST, the numbered one is
+    genuinely new and both rows are kept.
+
+    DELIBERATELY STRICTER THAN THE ADDRESS MERGE. There the address is corroborating
+    evidence; here there is none, so a phone alone is not enough — a landlord with two
+    flats who describes one vaguely would lose it. Requiring price AND room count to
+    match as well is what makes this safe, and an ambiguous case (several numbered rows
+    fit) is skipped rather than guessed at.
+
+    The NUMBERED row always survives, whatever `richness` would say: it is the one that
+    knows where the flat is."""
+    numbered, vague = [], []
+    for r in rows:
+        (numbered if _norm_addr(r[1]) else vague).append(r)
+    removed = 0
+    for v in vague:
+        nums = _contact_numbers(v[5])
+        if not nums or v[2] is None or v[3] is None:
+            continue                       # no phone, or nothing to corroborate with
+        fits = [n for n in numbered
+                if _contact_numbers(n[5]) & nums and n[2] == v[2] and n[3] == v[3]]
+        if len(fits) != 1:
+            continue                       # none, or ambiguous — leave it alone
+        keep, dead = fits[0][0], v[0]
+        if keep == dead:
+            continue
+        c.execute("UPDATE OR IGNORE marks SET dedup_key=? WHERE dedup_key=?", (keep, dead))
+        c.execute("DELETE FROM marks WHERE dedup_key=?", (dead,))
+        c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (dead,))
+        c.execute("DELETE FROM listings WHERE dedup_key=?", (dead,))
+        removed += 1
+    return removed
 
 
 def _by_landlord(grp: list) -> list:
