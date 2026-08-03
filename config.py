@@ -237,7 +237,19 @@ LOCAL_FALLBACK_MAX_POSTS_PER_RUN = 40
 # post by post, and a bigger batch gives the model more chances to lose track of which
 # result belongs to which post (which `llm._validate_batch` catches, at the cost of
 # re-doing the lot). 1 disables batching entirely.
-LLM_BATCH_SIZE = 5
+#
+# SET TO 1 — BATCHING IS OFF UNTIL ITS A/B GATE PASSES. The code is complete and
+# unit-tested, but the measurement that decides whether a BATCHED extract matches a
+# SINGLE one has not been run yet: the first attempt compared against the archived
+# parsed_json, which is written by two different models (186 posts on 2026-08-03 came
+# from the Ollama fallback) and by older prompt versions, so it measured model drift,
+# not batching. The valid control is a single Gemini call made in the same session,
+# and Gemini's daily quota ran out before it could be run.
+# Flip this to 5 only after scratchpad/batch_ab.py passes both gates: no post flips
+# is_apartment_ad, and no MATCH-eligible post loses its price, rooms, or address.
+# A wrong batch mis-attributes a whole listing — right flat, wrong phone and address —
+# so this is not a knob to turn hopefully.
+LLM_BATCH_SIZE = 1
 
 # ---------------------------------------------------------------------------
 # Geocoding. Static name table is primary (see geocode.py) for slang/
