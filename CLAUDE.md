@@ -80,6 +80,38 @@ SQLite + optional Google Sheets + Telegram alert`
   choice moved it from 1 contact flagged to 7 of 136.
 - **Filters** (`config.py`): ≤2000 ILS/room, ≥2 rooms free, ≤4 total roommates.
 - Missing critical fields → kept as **NEEDS_DATA**, never silently dropped.
+- **A FLAT WITH NO LOCATION AND NOTHING TO RECOMMEND IT IS DROPPED** (user, 2026-08-03).
+  Kept-not-lost is right for a flat we merely cannot place; one that names no street AND
+  scores poorly is not a lead, it just sits in the list forever unactionable. Two gates in
+  `pipeline._classify`, both inside `if not geocode.has_location(geo_source)`:
+  - `score <= config.MIN_SCORE_WITHOUT_ADDRESS` (50) → DROP. 91 of 422 rows.
+  - **a bearing off a landmark → DROP at ANY score.** `ליד האוניברסיטה`,
+    `מול שער האוניברסיטה` are relationships, not places. 21 rows, of which exactly **one**
+    (`באר שבע, קרוב לאוניברסיטת בן גוריון וסורוקה`, score 55) needed this rule; the rest
+    were already going on score.
+  - **"Has a location" is `geocode.has_location` — do NOT add a fifth definition.** The
+    codebase already held four overlapping notions of address quality; the one matching
+    the user's three statements exactly is `confidence()`, already persisted in
+    `listings.geocode_source`: `exact|high|street` → located ("**a street is okay**"),
+    `area|none` → not ("only a neighbourhood is not an address", "university is not"). It
+    keys on the SOURCE, not the text: a street-name test was tried first and put the
+    hand-pinned `מגדלי דוד` in the drop list.
+  - **`names_only_a_landmark` MUST stay inside the `has_location` branch.** The same text
+    test answers True for `מגדלי דוד, סורוקה` — a real building the user pinned — which
+    survives only because the static table answers it several tiers *inside* the geocoder.
+    From the text alone the two are indistinguishable; the geocoder's verdict tells them
+    apart. Hoisting the check out deletes the landmark.
+  - **The RAW score, not the voted one** (user's choice): the verdict must be reproducible
+    from the post alone, so a replay gives the same answer whatever the group has clicked.
+    A ⭐ therefore cannot rescue a placeless flat — accepted and deliberate. 0 starred rows
+    were affected. `MIN_SCORE_WITHOUT_ADDRESS` must stay below `MIN_ALERT_SCORE`, or
+    every placeless listing good enough to alert about would be deleted before it could be.
+  - Deliberately narrower than it could be: a bare `שכונה ד` scoring 97 **stays**.
+- **Hand-pinned landmark coordinates the user supplied** (`geocode.STATIC_TABLE`, and they
+  grade `exact`, so the rules above keep them): `מגדלי דוד` (31.255349, 34.803121),
+  `אביסרור` (31.254823, 34.798264), `מרכז הנגב` (31.259132, 34.795781). **`מרכז הנגב` is
+  NOT `מרכז אורן`** — measured **1,186 m** apart, and the street index matched the bare
+  word `מרכז` to the street `מרכז אורן` until that was refused.
 
 ## Files
 
@@ -522,6 +554,23 @@ SQLite + optional Google Sheets + Telegram alert`
   from each gate, using the same arithmetic as `zones.est_walk_to_gate_min`).
   Layer switches are one class on the `<svg>`; each layer needs its **own** marker
   class (`st-l`, `nbhd`/`nbhd-abc`, `amen`) — a `:not()` chain once hid the campus label.
+  - **A STREET'S PROMINENCE IS THE TOTAL POLYLINE IT DRAWS**, not the distance between one
+    segment's ends, and not its longest segment. Both were wrong and each hid different
+    streets: measuring end-to-end understates a curved road (`חיבת ציון`, 13.8 px against
+    84.5 px of real geometry, so never named at any zoom — 22 drawn streets had ≥90 px of
+    line but <90 px end to end), and judging by the longest *piece* loses a roundabout
+    (`כיכר האבות` is six segments, none over 4.9 px, ~20 px in total — and it is the
+    densest listing cluster on the map). Where the name is PLACED still comes from the
+    longest single piece. Green/amber streets ever named **81 → 96 of 98**, at 1× **31 →
+    49**. The 2 left (`אלפרד רוסי`, `נרבוני`) are genuinely under the 12 px floor.
+  - **In-zone streets outrank `_LABEL_CAP`** — sorting on length alone spends the budget
+    on long roads out in the desert that no flat is on. `_LABEL_CAP` itself (450) is
+    headroom, not the fix: on the dashboard's viewport only 197 labels are emitted so it
+    does not bind there at all; it binds on a wider one (~412 streets drawn).
+  - `_MAX_LABEL_ZOOM` (8.0) **cannot currently fire** — the 12 px floor caps the ratio at
+    90/12 = 7.5. It stays as the coupling between the label rule and the map's 12× zoom
+    ceiling (`dashboard.applyView`), so a later change to the floor or the target cannot
+    silently emit a label nobody can ever zoom to. A test holds the two ends together.
 - `load_map_neighborhoods.py` / `map_neighborhoods.json` — **display-only** neighborhood
   outlines (א–יא, רמות, …). Deliberately NOT `neighborhoods.json`:
   `zones.in_allowed_neighborhood` passes a point inside **any** polygon in that file, so

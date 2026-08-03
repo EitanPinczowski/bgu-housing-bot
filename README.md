@@ -188,6 +188,27 @@ only affect the displayed walk time, not the in/out decision.
 All thresholds live at the top of `config.py`
 (price ≤ 2000/room, ≥ 2 rooms free, ≤ 4 roommates, ≤ 25 min walk).
 
+### When a listing is dropped for having no location
+
+A flat the bot cannot place is normally **kept** as `NEEDS_DATA` rather than lost. Two
+exceptions, both applying only when the geocoder found no street at all:
+
+| the listing | what happens |
+|---|---|
+| a house number or a named street (`מצדה 17`, `רחוב קדש`) | always kept — **a street is an address** |
+| a hand-pinned landmark (`מגדלי דוד`) | always kept — it grades `exact` |
+| only a neighbourhood (`שכונה ד`), scoring above `MIN_SCORE_WITHOUT_ADDRESS` (50) | kept as `NEEDS_DATA` |
+| only a neighbourhood, scoring 50 or less | **dropped** |
+| a bearing off a landmark (`ליד האוניברסיטה`, `מול שער האוניברסיטה`) | **dropped at any score** |
+
+The test is the geocoder's own confidence tier (`geocode.has_location`), not the address
+text, and it uses the **raw** fit score, not the voted one — so `python replay.py` gives
+the same verdict no matter what the group has starred since. A ⭐ cannot rescue a
+placeless flat; that is deliberate.
+
+Raise `MIN_SCORE_WITHOUT_ADDRESS` to be stricter, lower it to keep more. It must stay
+below `MIN_ALERT_SCORE`, and `config.validate` enforces that.
+
 ## Google Sheets (optional organized DB)
 
 Mirror every match / near-miss into a shared Google Sheet you can sort and
