@@ -137,6 +137,22 @@ def has_location(source: Optional[str]) -> bool:
     return confidence(source) in _LOCATED
 
 
+def names_only_a_landmark(location_text: Optional[str]) -> bool:
+    """Is this text a BEARING off a landmark rather than an address — `ליד האוניברסיטה`,
+    `מול שער האוניברסיטה`, `אזור האוניברסיטה וסורוקה`?
+
+    The user's rule, 2026-08-03: remove these however well they score. It is narrower
+    than the score gate beside it and deliberately so — a bare neighbourhood like
+    `שכונה ד` is NOT this, and stays subject to the score rule as decided earlier.
+
+    CALL THIS ONLY WHEN `has_location` IS ALREADY FALSE. It answers True for
+    `מגדלי דוד, סורוקה` too, and that is a real building the user pinned by hand: in the
+    live path the static table answers it before `_is_bare_proximity` is ever consulted,
+    so the text alone cannot tell the two apart. The geocoder's verdict can — `מגדלי דוד`
+    comes back `exact`, so pairing the two predicates keeps it and drops the bearings."""
+    return _is_bare_proximity(location_text)
+
+
 # --- boundary streets: streets whose OSM geometry crosses the in-range↔RED line, so a
 # name-only (imprecise) placement on them can't be trusted GREEN. Built by
 # load_boundary_streets.py; matched by name substring against the address text. -------

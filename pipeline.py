@@ -665,11 +665,24 @@ def _classify(e, raw_text: str, source_url, group, images: list,
                       seeks_female=_seeks_female_roommates(raw_text),
                       broker_listings=broker_listings,
                       price_is_derived=getattr(e, "price_is_derived", False))
-    if not geocode.has_location(geo_source) and score <= config.MIN_SCORE_WITHOUT_ADDRESS:
-        return result(Status.DROP,
-                      f"no address and score {score} ≤ {config.MIN_SCORE_WITHOUT_ADDRESS}",
-                      geo_source=geo_source, walk=walk, walk_gate=walk_gate,
-                      lat=lat, lon=lon, key=key, tier=tier, preferred=False)
+    if not geocode.has_location(geo_source):
+        # A BEARING OFF A LANDMARK GOES WHATEVER IT SCORES (user, 2026-08-03).
+        # `באר שבע, קרוב לאוניברסיטת בן גוריון וסורוקה` scored 55 and so survived the
+        # score gate below — but "near the university" is not an address at any score,
+        # and it is the one shape we can be certain about rather than merely unsure of.
+        # Guarded by has_location above, never on its own: the same text test answers
+        # True for `מגדלי דוד, סורוקה`, a building the user pinned, which the geocoder
+        # resolves `exact` and which must therefore never reach here.
+        if geocode.names_only_a_landmark(e.street_address_or_neighborhood):
+            return result(Status.DROP, "not an address — a bearing off a landmark",
+                          geo_source=geo_source, walk=walk, walk_gate=walk_gate,
+                          lat=lat, lon=lon, key=key, tier=tier, preferred=False)
+        if score <= config.MIN_SCORE_WITHOUT_ADDRESS:
+            return result(Status.DROP,
+                          f"no address and score {score} ≤ "
+                          f"{config.MIN_SCORE_WITHOUT_ADDRESS}",
+                          geo_source=geo_source, walk=walk, walk_gate=walk_gate,
+                          lat=lat, lon=lon, key=key, tier=tier, preferred=False)
 
     # 6) classify. GREEN/AMBER + complete -> MATCH (amber = acceptable, not
     #    preferred). Missing fields or ungeocodable -> NEEDS_DATA, kept not lost.

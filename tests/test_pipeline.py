@@ -154,6 +154,49 @@ def test_a_named_street_is_never_dropped_for_being_vague():
     assert res.status.value != "DROP", res.reason
 
 
+def _bearing(text, rooms=3):
+    """A bearing off a landmark. `rooms=3` of 4 scores 52 — ABOVE the score gate, so
+    only the landmark rule can drop it and the test cannot pass by accident."""
+    from models import ListingExtract
+    return ListingExtract(is_apartment_ad=True, street_address_or_neighborhood=text,
+                          available_rooms_count=rooms, total_roommates_in_apt=4,
+                          price_per_room_ils=1990)
+
+
+def test_a_bearing_off_a_landmark_is_dropped_whatever_it_scores():
+    """`באר שבע, קרוב לאוניברסיטת בן גוריון וסורוקה` scored 55 and so survived the score
+    gate. "Near the university" is not an address at any score (user, 2026-08-03)."""
+    for text in ("ליד האוניברסיטה", "מול שער האוניברסיטה", "אזור האוניברסיטה וסורוקה",
+                 "באר שבע, קרוב לאוניברסיטת בן גוריון וסורוקה", "אוניברסיטת בן גוריון"):
+        res = pipeline._classify(_bearing(text), "", None, None, [], None, commit=False)
+        assert res.status.value == "DROP", f"{text} -> {res.status.value}"
+        assert "bearing off a landmark" in res.reason, text
+    # and it really is above the score gate, so the landmark rule is what dropped it
+    import config
+    assert pipeline._classify(_placeless(3), "", None, None, [], None,
+                              commit=False).score > config.MIN_SCORE_WITHOUT_ADDRESS
+
+
+def test_a_pinned_landmark_survives_the_bearing_rule():
+    """THE PAIRING IS THE POINT. The text test alone answers True for `מגדלי דוד, סורוקה`
+    — a real building the user pinned by hand — because the static table, not the text,
+    is what tells the two apart. has_location() is that guard, and dropping it here
+    would delete the landmark the user supplied coordinates for."""
+    import geocode
+    assert geocode.names_only_a_landmark("מגדלי דוד, סורוקה")     # text alone: ambiguous
+    assert geocode.has_location(geocode.geocode_detailed("מגדלי דוד, סורוקה")[1])
+    res = pipeline._classify(_bearing("מגדלי דוד, סורוקה", rooms=2), "", None, None, [],
+                             None, commit=False)
+    assert res.status.value != "DROP", res.reason
+
+
+def test_a_bare_neighbourhood_is_not_a_bearing():
+    """Narrower than the score rule on purpose: `שכונה ד` at 97 stays, as decided."""
+    import geocode
+    for text in ("שכונה ד", "שכונה ב", "הבלוק", "גוש עציון, שכונה ג"):
+        assert not geocode.names_only_a_landmark(text), text
+
+
 def test_the_threshold_is_the_raw_score_not_the_voted_one(temp_db):
     """Reproducibility: replay must give the same verdict whatever the group clicked.
     A ⭐ therefore cannot rescue a placeless flat — deliberate, the user's call."""
