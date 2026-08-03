@@ -244,6 +244,23 @@ def _digits_key(contact: Optional[str]) -> Optional[str]:
     return digits[-9:] if len(digits) >= 7 else None
 
 
+def _contact_numbers(contact: Optional[str]) -> set:
+    """EVERY phone number in a contact string, not just the last one.
+
+    A post often lists two ("054-3376992, 052-3252255"), and taking the last 9 digits
+    of the whole string invents a number that belongs to neither: three וינגייט 64 rows
+    from one landlord looked like two different people and refused to merge."""
+    out = set()
+    for run in re.findall(r"\d[\d\-\s]{6,}\d", contact or ""):
+        d = re.sub(r"\D", "", run)
+        # a run can be two numbers with only a space between them
+        for i in range(0, len(d) - 8, 9) if len(d) >= 18 else [0]:
+            part = d[i:i + 9] if len(d) >= 18 else d[-9:]
+            if len(part) >= 9:
+                out.add(part)
+    return out
+
+
 def _phone_key(e: ListingExtract) -> Optional[str]:
     if e.contact_phone_or_link:
         digits = re.sub(r"\D", "", e.contact_phone_or_link)
@@ -1061,33 +1078,72 @@ def merge_duplicate_listings() -> int:
                     r[0].startswith("phone:"), r[6] or 0)
 
         removed = 0
-        for grp in groups.values():
+        for grp in list(groups.values()):
             if len(grp) < 2:
                 continue
-            # ONE ADDRESS IS NOT ONE FLAT. Grouping by address alone was survivable while
-            # _norm_addr kept the post's raw wording and collisions were rare; once the
-            # address became `canonical street|number`, far more rows collide — and in a
-            # student building several different landlords advertise different flats at
-            # the same number. Measured 2026-08-02: of 40 colliding groups, 11 held more
-            # than one contact, 17 rows in all, and merging them would have DELETED real
-            # listings (וינגייט 64 alone has three separate landlords).
-            # So: merge only what one contact posted. Rows with no contact still merge
-            # into a phoned row — that is the original phone-vs-hash case this exists for
-            # — but two known, different contacts never collapse.
-            phones = {_digits_key(r[5]) for r in grp if _digits_key(r[5])}
-            if len(phones) > 1:
-                continue
-            keep = max(grp, key=richness)[0]
-            for r in grp:
-                dead = r[0]
-                if dead == keep:
+            for sub in _by_landlord(grp):
+                if len(sub) < 2:
                     continue
-                c.execute("UPDATE OR IGNORE marks SET dedup_key=? WHERE dedup_key=?", (keep, dead))
-                c.execute("DELETE FROM marks WHERE dedup_key=?", (dead,))
-                c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (dead,))
-                c.execute("DELETE FROM listings WHERE dedup_key=?", (dead,))
-                removed += 1
+                removed += _collapse(c, sub, richness)
         return removed
+
+
+def _by_landlord(grp: list) -> list:
+    """Split one address's rows into per-landlord clusters.
+
+    ONE ADDRESS IS NOT ONE FLAT. Grouping by address alone was survivable while the key
+    held the post's raw wording and collisions were rare; once it became `canonical
+    street|number`, far more rows collide — and in a student building several landlords
+    advertise different flats at the same number. Measured 2026-08-02: of 40 colliding
+    groups, 11 held more than one contact and merging them would have DELETED 17 real
+    listings — וינגייט 64 alone has three separate landlords.
+
+    Refusing the whole group was too blunt, though: אברהם אבינו 3 holds one landlord's
+    flat twice AND a different landlord's, so the real duplicate survived. Rows are
+    therefore clustered by SHARED PHONE NUMBER — two rows join when their number sets
+    intersect, which is what links "054-3376992, 052-3252255" to "054-3376992".
+
+    A row with no contact at all joins the single cluster if there is exactly one;
+    with two rival landlords present there is no way to say whose flat it is, so it
+    stays on its own rather than being guessed at."""
+    clusters: list = []                      # [ (numbers, rows) ]
+    orphans = []
+    for r in grp:
+        nums = _contact_numbers(r[5])
+        if not nums:
+            orphans.append(r)
+            continue
+        hit = [cl for cl in clusters if cl[0] & nums]
+        if not hit:
+            clusters.append([set(nums), [r]])
+            continue
+        merged_nums, merged_rows = set(nums), [r]
+        for cl in hit:
+            merged_nums |= cl[0]
+            merged_rows += cl[1]
+            clusters.remove(cl)
+        clusters.append([merged_nums, merged_rows])
+    if len(clusters) == 1:
+        clusters[0][1] += orphans
+    else:
+        clusters += [[set(), [o]] for o in orphans]
+    return [rows for _nums, rows in clusters]
+
+
+def _collapse(c, grp: list, richness) -> int:
+    """Keep the richest row of `grp`, migrate its votes, delete the rest."""
+    removed = 0
+    keep = max(grp, key=richness)[0]
+    for r in grp:
+        dead = r[0]
+        if dead == keep:
+            continue
+        c.execute("UPDATE OR IGNORE marks SET dedup_key=? WHERE dedup_key=?", (keep, dead))
+        c.execute("DELETE FROM marks WHERE dedup_key=?", (dead,))
+        c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (dead,))
+        c.execute("DELETE FROM listings WHERE dedup_key=?", (dead,))
+        removed += 1
+    return removed
 
 
 def set_source_url(dedup_key: str, url: str) -> None:

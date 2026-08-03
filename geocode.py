@@ -167,6 +167,13 @@ STATIC_TABLE: dict[str, Tuple[float, float]] = {
     # instead of falling through to a coincidental match elsewhere in the address.
     "כיכר האבות": (31.26183, 34.79475),
     "כיכר אבות": (31.26183, 34.79475),
+    # Two student blocks the posts name constantly and no free source resolves.
+    # Hand-supplied by the user, 2026-08-03. `מגדלי דוד` was actively WRONG before this:
+    # "מגדלי דוד, סורוקה" fell through to Overpass and landed on the hospital/campus
+    # point, which is not where the towers are. Bare keys, so the substring match also
+    # catches "מגדלי גראנד אביסרור", "אביסרורים הגבוהים" and "מגדלי דוד, סורוקה".
+    "מגדלי דוד": (31.255349, 34.803121),
+    "אביסרור": (31.254823, 34.798264),
     # -------------------------------------------
 }
 
@@ -208,7 +215,7 @@ _MISS_TTL_DAYS = 7
 # Bump whenever the resolution logic changes (new tokenizer, street index, …). A cached
 # MISS from an older version is ignored, so an improvement takes effect immediately
 # instead of waiting out the 7-day TTL on names it can now resolve.
-GEOCODE_LOGIC_VERSION = 9      # 9: "near X" refuses; the railway station left the index
+GEOCODE_LOGIC_VERSION = 10     # 10: institutions refuse; מגדלי דוד + אביסרור pinned
 _cache: Optional[dict] = None
 misses = 0                    # geocode failures this process (a real name that didn't resolve) — for #41 run metrics
 
@@ -746,16 +753,28 @@ _LANDMARKS = (
 _NEAR_RE = re.compile(r"ליד|קרוב\s+ל|בסמוך|קרבת|צמוד\s+ל|מול\s+שער|במרחק")
 
 
-def _is_bare_proximity(location_text: Optional[str]) -> bool:
-    """Is this address ONLY a bearing off something — "near the university" — with no
-    street and no house number of its own?
+# Places nobody rents a room in. An address that names one of these and nothing else is
+# not a housing address at all — the poster is telling you what they are near.
+_INSTITUTIONS = ("אוניברסיט", "סורוקה", "בית חולים", "ביה\"ח", "הקריה הרפואית", "קמפוס")
 
-    Such a string is a relationship, not a place, and letting an external geocoder guess
-    at it is how eight listings once got a dot in the middle of a campus nobody can rent
-    in. Requires a proximity word AND no house number AND no street we can name, so
-    `רגר 5, ליד האוניברסיטה` and `ליד הבלוק ברינגלבלום` are both unaffected."""
+
+def _is_bare_proximity(location_text: Optional[str]) -> bool:
+    """Is this string something other than an address — a bearing off a landmark, or an
+    institution named on its own — with no street and no house number of its own?
+
+    Two shapes, one rule. "near the university" is a relationship, not a place; and
+    `אוניברסיטת בן גוריון` as a whole address is a place NOBODY LIVES (user's decision,
+    2026-08-03) — it resolved through Overpass to a real campus coordinate, which is a
+    dot on a lawn. Both must resolve to nothing so the listing lands in NEEDS_DATA where
+    a person sees it.
+
+    Requires no house number AND no street we can name, so `רגר 5, ליד האוניברסיטה` and
+    `ליד הבלוק ברינגלבלום` are untouched — and so is `מגדלי דוד, סורוקה`, because the
+    static table answers a named building before this ever runs."""
     text = _fold_quotes(location_text or "")
-    if not text or not _NEAR_RE.search(text):
+    if not text:
+        return False
+    if not (_NEAR_RE.search(text) or any(w in text for w in _INSTITUTIONS)):
         return False
     if _house_number(text):
         return False

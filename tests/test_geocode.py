@@ -845,6 +845,34 @@ def test_no_external_geocoder_may_answer_a_bare_proximity_phrase():
     assert geocode._descriptive_landmark("ליד הבלוק") is not None
 
 
+def test_an_institution_is_not_an_address():
+    """`אוניברסיטת בן גוריון` as a whole address resolved through Overpass to a real
+    campus coordinate — a dot on a lawn. Nobody rents there (user, 2026-08-03), so it
+    resolves to nothing and the listing lands in NEEDS_DATA where a person sees it."""
+    import geocode
+    for inst in ("אוניברסיטת בן גוריון", "אוניברסיטה", "שער האוניברסיטה",
+                 "סורוקה", "קמפוס"):
+        geocode.uncache(inst)
+        assert geocode.geocode_detailed(inst) == (None, None), inst
+    # a NAMED BUILDING that merely mentions one still resolves — the static table
+    # answers before this guard runs
+    assert geocode.geocode_detailed("מגדלי דוד, סורוקה")[0] is not None
+    # and a real street with a house number is untouched
+    assert geocode.geocode_detailed("רינגלבלום ליד האוניברסיטה")[0] is not None
+
+
+def test_the_two_hand_supplied_student_blocks():
+    """Both are named constantly in posts and no free source places them.
+    `מגדלי דוד, סורוקה` was actively WRONG before: it fell through to Overpass and
+    landed on the hospital/campus point."""
+    import geocode
+    david = geocode.geocode_detailed("מגדלי דוד")
+    assert david == ((31.255349, 34.803121), "static")
+    # the bare key matches the spellings the posts actually use
+    for spelling in ("מגדלי גראנד אביסרור", "אביסרורים הגבוהים", "אביסרורים"):
+        assert geocode.geocode_detailed(spelling)[0] == (31.254823, 34.798264), spelling
+
+
 def test_a_shared_word_bag_is_not_enough_to_pool():
     """The guard that makes the pooling safe. `כיכר האבות` and `האבות` share a word bag
     once the road-type word is dropped, and lie 2.5 km apart — welding those together is
