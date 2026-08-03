@@ -39,6 +39,45 @@ def test_quota_error_latches_immediately(monkeypatch):
     assert llm._primary_exhausted is True
 
 
+def test_the_local_fallback_is_capped_per_run(monkeypatch):
+    """A quota-less run used to grind 186 posts at ~63s each, hold the scraper lock
+    for 5h12m, and cost the day's other two runs (2026-08-03)."""
+    _setup(monkeypatch, "429 RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(config, "LOCAL_FALLBACK_MAX_POSTS_PER_RUN", 3)
+    assert llm.fallback_budget_spent() is False
+    for _ in range(3):
+        llm.extract("post")
+    assert llm.fallback_budget_spent() is True
+
+
+def test_the_cap_is_a_question_not_an_exception(monkeypatch):
+    """manual.py and replay.py --use-llm hold no lock and have no next run to
+    protect, so extract() must keep answering past the cap. Only the scraper loop
+    has a reason to stop, so only the scraper loop asks."""
+    _setup(monkeypatch, "429 RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(config, "LOCAL_FALLBACK_MAX_POSTS_PER_RUN", 2)
+    for _ in range(5):
+        assert llm.extract("post") == "FALLBACK_OK"     # never raises, never returns None
+    assert llm.fallback_used == 5
+
+
+def test_a_zero_cap_cannot_be_configured():
+    """0 would abandon a run the instant Gemini ran out, losing posts the local
+    model could still have read."""
+    import config as cfg
+    real = cfg.LOCAL_FALLBACK_MAX_POSTS_PER_RUN
+    try:
+        cfg.LOCAL_FALLBACK_MAX_POSTS_PER_RUN = 0
+        try:
+            cfg.validate()
+        except SystemExit as exc:
+            assert "LOCAL_FALLBACK_MAX_POSTS_PER_RUN" in str(exc)
+        else:
+            raise AssertionError("validate() accepted a zero cap")
+    finally:
+        cfg.LOCAL_FALLBACK_MAX_POSTS_PER_RUN = real
+
+
 def test_success_resets_error_counter(monkeypatch):
     monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
     monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")

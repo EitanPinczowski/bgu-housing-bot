@@ -215,6 +215,19 @@ GEMINI_MIN_INTERVAL_SEC = 4.0
 # non-quota Gemini errors (transient 500s/timeouts) — so a Gemini hiccup doesn't
 # fail post after post. Each failing post still gets served by the fallback.
 LLM_MAX_CONSECUTIVE_ERRORS = 3
+# HOW MANY POSTS ONE RUN MAY SERVE FROM THE LOCAL FALLBACK BEFORE IT STOPS.
+# The fallback exists so a quota-less run still gets SOMETHING; it is not meant to
+# carry a whole run. Measured 2026-08-03: Gemini's daily window resets at 10:00
+# Israel time (midnight US Pacific), so the 08:00 run always spends the PREVIOUS
+# day's leftovers — that morning it had none, fell through to Ollama at ~63 s/post
+# for 186 posts, and took 5h12m. It held the scraper lock the whole time, so the
+# 10:00 and 12:00 runs both logged "another scraper session is running" and never
+# ran. Three scheduled runs, one completion — and the 10:00 run it locked out is
+# precisely the one that WOULD have had fresh quota.
+# So the damage is not slowness, it is the rest of the day. 40 posts is ~40 min of
+# Ollama, which fits comfortably inside the gap between runs. Posts left unread are
+# never marked seen, so the next run picks them up: work is deferred, not lost.
+LOCAL_FALLBACK_MAX_POSTS_PER_RUN = 40
 
 # ---------------------------------------------------------------------------
 # Geocoding. Static name table is primary (see geocode.py) for slang/
@@ -563,6 +576,11 @@ def validate() -> None:
         problems.append(f"MIN_SCORE_WITHOUT_ADDRESS ({MIN_SCORE_WITHOUT_ADDRESS}) >= "
                         f"MIN_ALERT_SCORE ({MIN_ALERT_SCORE}) — every placeless listing "
                         "good enough to alert about would be deleted first")
+    if LOCAL_FALLBACK_MAX_POSTS_PER_RUN < 1:
+        problems.append(f"LOCAL_FALLBACK_MAX_POSTS_PER_RUN "
+                        f"({LOCAL_FALLBACK_MAX_POSTS_PER_RUN}) must be >= 1 — 0 would "
+                        "abandon a run the moment Gemini's quota ran out, losing posts "
+                        "the local model could still have read")
     if not GREEN_ZONE_PATH.exists():
         problems.append(f"green-zone file missing: {GREEN_ZONE_PATH}")
     if problems:

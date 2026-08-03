@@ -49,3 +49,77 @@ def test_hot_falls_back_without_history(monkeypatch):
     monkeypatch.setattr(config, "HOT_GROUP_COUNT", 1)
     monkeypatch.setattr(main.storage, "group_yield", lambda: [])
     assert main._hot_groups() == [a]                       # configured order, never empty
+
+
+# --- the local-fallback cap ends the run (see config.LOCAL_FALLBACK_MAX_POSTS_PER_RUN) ---
+
+class _FakeCtx:
+    pages: list = []
+
+    def new_page(self):
+        return object()
+
+    def close(self):
+        pass
+
+
+class _FakeP:
+    def stop(self):
+        pass
+
+
+def _stub_run(monkeypatch, groups, posts_per_group, cap):
+    """A --dry-run over `groups` fake groups, with Gemini 'exhausted' from the start
+    so every post costs a local extraction."""
+    import llm
+    import pipeline
+    import scraper
+    from models import PipelineResult, Status
+
+    monkeypatch.setattr(config, "SCRAPER_SKIP_RUN_PROBABILITY", 0.0)
+    monkeypatch.setattr(config, "LOCAL_FALLBACK_MAX_POSTS_PER_RUN", cap)
+    monkeypatch.setattr(config, "SCRAPER_GROUP_DELAY", (0, 0))
+    monkeypatch.setattr(main, "_select_groups", lambda: list(groups))
+    monkeypatch.setattr(main, "_group_depths", lambda: {})
+    monkeypatch.setattr(main, "_record_scrape", lambda url: None)
+    monkeypatch.setattr(main, "_log_search", lambda *a, **k: None)
+    monkeypatch.setattr(scraper, "acquire_lock", lambda: True)
+    monkeypatch.setattr(scraper, "release_lock", lambda: None)
+    monkeypatch.setattr(scraper, "start_self_watchdog", lambda *a, **k: None)
+    monkeypatch.setattr(scraper, "beat", lambda *a, **k: None)
+    monkeypatch.setattr(scraper, "open_browser", lambda: (_FakeP(), _FakeCtx()))
+
+    seen_groups = []
+
+    def fake_scrape_group(page, url, **kw):
+        seen_groups.append(url)
+        return ([{"text": f"post {i}", "permalink": None} for i in range(posts_per_group)],
+                {"read": posts_per_group, "age_skipped": 0, "seen_skipped": 0})
+
+    monkeypatch.setattr(scraper, "scrape_group", fake_scrape_group)
+
+    monkeypatch.setattr(llm, "fallback_used", 0)
+    monkeypatch.setattr(llm, "_primary_exhausted", True)      # quota gone from the start
+
+    def fake_process(*a, **kw):
+        llm.fallback_used += 1                                # what the local path costs
+        return PipelineResult(status=Status.NOT_AD, reason="stub")
+
+    monkeypatch.setattr(pipeline, "process_post", fake_process)
+    return seen_groups
+
+
+def test_the_fallback_cap_ends_the_run_not_just_the_group(monkeypatch):
+    """The break has to escape BOTH loops. Breaking only the inner one would move to
+    the next group and keep grinding — which is the 5h12m run it exists to prevent."""
+    seen = _stub_run(monkeypatch, ["g1", "g2", "g3", "g4"], posts_per_group=5, cap=7)
+    main.run(dry_run=True)
+    # cap 7 with 5 posts/group: g1 (5) then g2 trips it at 7 — g3/g4 never opened
+    assert seen == ["g1", "g2"], seen
+
+
+def test_an_uncapped_run_still_scans_every_group(monkeypatch):
+    """The cap must not fire on a healthy run."""
+    seen = _stub_run(monkeypatch, ["g1", "g2", "g3"], posts_per_group=2, cap=100)
+    main.run(dry_run=True)
+    assert seen == ["g1", "g2", "g3"], seen

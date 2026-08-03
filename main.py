@@ -201,6 +201,7 @@ def run(dry_run: bool, hot: bool = False) -> None:
     total_posts = 0
     groups_with_posts = 0          # for failure detection (0 across all => trouble)
     blocked_reason = None          # set if FB shows a checkpoint/login wall
+    fallback_capped = None         # set if the run stopped on the local-fallback cap
 
     # On a LIVE run, let the scraper skip posts already processed in an earlier run
     # (so an all-seen group stops scrolling fast). Uses the exact keys the pipeline's
@@ -271,6 +272,23 @@ def run(dry_run: bool, hot: bool = False) -> None:
                     print(f"[main] pipeline error on a post: {exc}")
                     counts["ERROR"] += 1
 
+                # THE LOCAL FALLBACK IS A LIFEBOAT, NOT THE ENGINE. Once Gemini's
+                # quota is gone every post costs ~63s locally, and a run that keeps
+                # going holds the scraper lock for hours — on 2026-08-03 that cost
+                # the 10:00 and 12:00 runs, including the one that would have had
+                # fresh quota. Stop while the day is still salvageable. Nothing is
+                # lost: these posts were never marked seen, so the next run reads
+                # them, and by then the quota may have reset (10:00 Israel).
+                if llm.fallback_budget_spent():
+                    fallback_capped = (
+                        f"local fallback cap reached ({llm.fallback_used} posts) — "
+                        f"ending the run so the next one can start")
+                    print(f"[main] {fallback_capped}")
+                    break
+
+            if fallback_capped:
+                break
+
             if i < len(selected) - 1:
                 delay = random.uniform(*config.SCRAPER_GROUP_DELAY)
                 print(f"    ...sleeping {delay:.0f}s before next group")
@@ -301,6 +319,12 @@ def run(dry_run: bool, hot: bool = False) -> None:
 
     if blocked_reason:
         print(f"run ABORTED — Facebook block: {blocked_reason}")
+    if fallback_capped:
+        # Say it in the summary AND name the groups that went unread, so a short
+        # run is never mistaken for a quiet day on Facebook.
+        print(f"run ENDED EARLY — {fallback_capped}")
+        print(f"  groups not scanned this run: {len(selected) - (i + 1)} of "
+              f"{len(selected)} — their posts are unmarked and the next run reads them")
     if not dry_run:
         if blocked_reason:
             # A checkpoint/login wall — the account needs a manual re-login. This

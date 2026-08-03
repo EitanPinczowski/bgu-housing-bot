@@ -182,6 +182,19 @@ _consecutive_errors = 0
 ocr_used = 0
 
 
+def fallback_budget_spent() -> bool:
+    """Has this run served as many posts locally as it is allowed to?
+
+    A QUESTION, NOT AN EXCEPTION. `extract` must keep answering for whoever asks —
+    `manual.py` and `replay.py --use-llm` are interactive, have no scraper lock to
+    hold and no next run to protect, so raising from in here would break them to
+    solve a problem they don't have. The scraper loop is the only caller that has a
+    reason to stop, so it is the one that asks. See LOCAL_FALLBACK_MAX_POSTS_PER_RUN
+    for what a run that ignored this cost on 2026-08-03."""
+    cap = getattr(config, "LOCAL_FALLBACK_MAX_POSTS_PER_RUN", 0)
+    return bool(cap) and fallback_used >= cap
+
+
 def extract(post_text: str, comments: str | None = None, images=None) -> ListingExtract:
     global _primary_exhausted, fallback_used, _consecutive_errors, ocr_used
     if comments:
