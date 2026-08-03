@@ -36,10 +36,48 @@ def is_precise_address(s: Optional[str]) -> bool:
     return any(w in s for w in _STREET_WORDS)
 
 
-# Static-table keys that name an AREA, not a place. A neighbourhood is detected by its
-# `שכונה` prefix; these are the slang ones that aren't spelled that way but cover just as
-# much ground — הבלוק is the whole student quarter, several streets across.
+# Slang keys with no `שכונה` prefix that were ASSUMED to cover a whole quarter. Kept only
+# as the answer for a key we have not surveyed: once `landmarks.json` holds a drawn
+# outline, its measured extent decides (see `_landmark_grade`), because a guess here is
+# wrong in both directions. `הבלוק` lived in this set described as "the whole student
+# quarter, several streets across"; surveyed it is 85 x 96 m — a 123 m diagonal, TIGHTER
+# than a typical street centroid — so it was being thrown away as "not a location".
 _AREA_KEYS = {"הבלוק", "בבלוק"}
+
+# How big a drawn landmark may be and still count as a precise point. 150 m is the size of
+# a building plot or a small cluster — `מגדלי דוד` 115 m, `הבלוק` 123 m, `מרכז הנגב` 135 m.
+# Past that it is a district you still have to walk across: `אביסרור` measures 299 m, so it
+# answers at street level, which is honestly what a 300 m shape knows.
+_LANDMARK_PRECISE_M = 150.0
+_LANDMARK_STREET_M = 400.0
+
+_landmarks_cache = None
+
+
+def landmarks() -> dict:
+    """Hand-surveyed landmark outlines from `landmarks.json` (see
+    load_landmarks_from_kmz.py). Absent file -> {} and every caller falls back to the
+    behaviour it had before the survey existed."""
+    global _landmarks_cache
+    if _landmarks_cache is None:
+        try:
+            import json
+            from pathlib import Path
+            p = Path(__file__).with_name("landmarks.json")
+            _landmarks_cache = {_normalize(k): v
+                                for k, v in json.loads(p.read_text(encoding="utf-8")).items()}
+        except Exception:
+            _landmarks_cache = {}
+    return _landmarks_cache
+
+
+def _landmark_grade(extent_m: float) -> str:
+    """What a shape of this size can honestly claim. THE POLYGON IS THE UNCERTAINTY."""
+    if extent_m <= _LANDMARK_PRECISE_M:
+        return "static"
+    if extent_m <= _LANDMARK_STREET_M:
+        return "static_street"
+    return "static_area"
 
 
 def _static_source(key: Optional[str]) -> str:
@@ -47,11 +85,40 @@ def _static_source(key: Optional[str]) -> str:
 
     The distinction is about the KEY, not the address: whatever the post said, if the
     thing we matched is an area then the coordinate is an area centroid and every listing
-    that matches it lands on the identical point."""
+    that matches it lands on the identical point.
+
+    A SURVEYED landmark is graded from its drawn size instead of from this guess — that
+    is the only way `הבלוק` (123 m, a real place) and `שכונה ד` (2,375 m, not one) stop
+    being treated alike."""
     n = _normalize(key or "")
+    lm = landmarks().get(n)
+    if lm and "extent_m" in lm:
+        return _landmark_grade(lm["extent_m"])
     if n.startswith("שכונה") or n.startswith("שכונת") or n in _AREA_KEYS:
         return "static_area"
     return "static"
+
+
+def _near_governs(norm_text: str, norm_key: str) -> bool:
+    """Does a proximity word sit immediately before this landmark in the address?
+
+    Position matters, not mere presence: `רגר 5, ליד הבלוק` names a real street and is a
+    real address that happens to mention a bearing, while `ליד הבלוק` alone is only the
+    bearing. Looking just before the matched key is what tells them apart."""
+    pos = norm_text.find(norm_key)
+    if pos <= 0:
+        return False
+    return bool(_NEAR_RE.search(norm_text[max(0, pos - 14):pos]))
+
+
+def landmark_point(key: Optional[str]):
+    """A surveyed landmark's centroid, else None. Preferred over its STATIC_TABLE point:
+    a drawn outline's centre beats a single dropped pin (`הבלוק` moved 67 m, `אביסרור`
+    89 m)."""
+    lm = landmarks().get(_normalize(key or ""))
+    if lm and lm.get("centroid"):
+        return tuple(lm["centroid"])
+    return None
 
 
 def is_bare_neighborhood(s: Optional[str]) -> bool:
@@ -96,11 +163,13 @@ _CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
                # as "extrapolated" but an honest label, because the evidence is
                # genuinely weaker and the map should say so.
                "projected": "street",
-               # a static-table hit on a whole AREA rather than a place: "שכונה ד" or
-               # the slang "הבלוק". One coordinate stands for a neighbourhood, so 19
-               # flats landed on it drawn as solid, precise dots — the single biggest
-               # pile on the map, and a lie. Its siblings already grade honestly
-               # (static_street -> street, landmark -> street); this joins them.
+               # a static-table hit on a whole AREA rather than a place: "שכונה ד".
+               # One coordinate stands for a neighbourhood, so 19 flats landed on it
+               # drawn as solid, precise dots — the single biggest pile on the map, and
+               # a lie. Its siblings already grade honestly (static_street -> street,
+               # landmark -> street); this joins them.
+               # NB `הבלוק` used to be graded here on the ASSUMPTION that it was a whole
+               # quarter. Surveyed, it is 123 m across and now grades `static`.
                "static_area": "area",
                "overpass": "street", "nominatim": "street"}
 
@@ -508,21 +577,57 @@ def _resolve_detailed(location_text: Optional[str]):
     #    so this can only improve precision, never lose a placement.
     precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
     numbered = bool(_house_number(location_text))
+    # DOES THE ADDRESS NAME A STREET AT ALL — with or without a house number? The user's
+    # rule is "a street is an address"; `is_precise_address` only sees a digit or a
+    # `רחוב`-style word, so `אלעזר בן יאיר שכונה ד` looked like a bare neighbourhood
+    # (`is_bare_neighborhood` even returns True for it) and the שכונה centroid won. That
+    # put 13 listings 364-1,070 m from the street their own post names — `שלמה המלך,
+    # שכונה ג` was the worst at 1,070 m.
+    # EXACT/WORD MATCHES ONLY — never a fuzzy one. `גר בשכונה ג ליד האוני` has `האוני`
+    # fuzzy-matching the street `הגאונים`, which would make "near the university" look
+    # like a street address and skip the one key that could place it. A gate that decides
+    # whether to THROW AWAY a working placement has to be certain.
+    names_street = any(real and how != "fuzzy" and _normalize(c) in norm
+                       for c, (real, how) in
+                       ((c, streets.canonical(c)) for c in _candidate_tokens(location_text or "")))
     best_pos, best_coords, best_key = None, None, None
-    skipped_street_coords = None
+    # Last-resort coords from a key we deliberately stepped over, WITH the grade that key
+    # honestly deserves. It used to be a bare coordinate labelled `static_street`, which
+    # was fine while only street keys were skipped — now neighbourhood centroids are
+    # skipped too, and calling one of those "street" would relabel a 2 km area as a
+    # street-level fix. `שלמה המלך, שכונה ג` came back `static_street` 1,070 m from
+    # שלמה המלך: the right point was never found, and the wrong one claimed to be good.
+    skipped_street_coords = skipped_grade = None
     for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
         k = _normalize(key)
         if not k:
             continue
-        if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
+        # NO FALLBACK IS RECORDED HERE, deliberately. If the named street cannot be
+        # resolved the honest answer is NEEDS_DATA, not the neighbourhood centroid we
+        # just rejected — `שלמה המלך, שכונה ג` would quietly return to being 1,070 m
+        # wrong, and a nonsense address like `רחוב שלא נמצא 12345` would answer with
+        # whichever שכונה happened to be first in the table.
+        if (precise or names_street) and (k.startswith("שכונה") or k.startswith("שכונת")):
             continue                                        # don't let a nbhd centroid hijack a street
-        # An AREA key must stand aside for a house number just as a street key does.
-        # `רגר 137, הבלוק` was resolving to the slang quarter instead of house 137, even
-        # though רגר is anchored 53-191 and would have placed it exactly — the trailing
-        # area name simply won the static match. ~7 listings.
-        if numbered and (streets.known(k) or _static_source(key) == "static_area") \
+        # An AREA key must stand aside for a named street too — but ONLY an area key.
+        # A surveyed landmark is not one: `הבלוק` is 123 m across, TIGHTER than a street
+        # centroid, so `רבי טרפון, הבלוק` is better answered by הבלוק than by the middle
+        # of רבי טרפון. Yielding is for keys that know LESS than a street, not more.
+        if names_street and _static_source(key) == "static_area" and k in norm:
+            continue                                        # same rule, slang area keys
+        # An AREA OR LANDMARK key must stand aside for a house number just as a street key
+        # does. `רגר 137, הבלוק` was resolving to the slang quarter instead of house 137,
+        # even though רגר is anchored 53-191 and would have placed it exactly — the
+        # trailing area name simply won the static match. ~7 listings.
+        # This tests `k in landmarks()` and not just the `static_area` grade: once הבלוק
+        # was surveyed it stopped grading `static_area` and silently fell out of this
+        # rule, re-breaking `רגר 137, הבלוק`. A house number is ~13 m; the tightest
+        # landmark here is 115 m, so the number wins over ANY of them.
+        if numbered and (streets.known(k) or _static_source(key) == "static_area"
+                         or k in landmarks()) \
                 and k in norm:
-            skipped_street_coords = skipped_street_coords or coords
+            if skipped_street_coords is None:
+                skipped_street_coords, skipped_grade = coords, _static_source(key)
             continue                                        # let the house number win
         pos = norm.find(k)
         if pos != -1:                                       # forward: key inside the address
@@ -532,7 +637,20 @@ def _resolve_detailed(location_text: Optional[str]):
             best_pos, best_coords, best_key = 10 ** 6, coords, key   # reverse: lowest
     if best_coords is not None:
         # a whole-neighbourhood key is an AREA centroid, not a place — see _static_source
-        return best_coords, _static_source(best_key)
+        src = _static_source(best_key)
+        # A DRAWN OUTLINE'S CENTRE BEATS A DROPPED PIN. `הבלוק` moved 67 m and `אביסרור`
+        # 89 m onto their surveyed centroids.
+        best_coords = landmark_point(best_key) or best_coords
+        # "NEAR X" IS NOT "AT X" — and it is easy to miss, because the static table
+        # answers several tiers before `_is_bare_proximity` would ever be consulted.
+        # `ליד מגדלי דוד` was returning the building's own point graded `static`,
+        # claiming the flat IS there. Nothing in the current 321 listings says "near",
+        # so this fires on nothing today; it is here because grading `הבלוק` precise
+        # turns tomorrow's `ליד הבלוק` from a vague blob into a confident wrong dot.
+        # `מגדלי דוד, סורוקה` has no proximity word and keeps its precise grade.
+        if _near_governs(norm, _normalize(best_key)):
+            src = "static_area"
+        return best_coords, src
 
     # 1b) house-number interpolation — local, free and more precise than any street-level
     #     hit: place the number between the known OSM address nodes on that street. Only
@@ -613,7 +731,7 @@ def _resolve_detailed(location_text: Optional[str]):
     # source and the boundary/edge rules stay cautious about it — but a listing that
     # used to be placed still gets placed.
     if skipped_street_coords is not None:
-        return skipped_street_coords, "static_street"
+        return skipped_street_coords, skipped_grade or "static_street"
     # Last resort: the post never gave a street, only a bearing off a landmark
     # ("ליד האוניברסיטה וסורוקה", "קרוב לאוניברסיטת בן גוריון"). Those are
     # campus-adjacent — i.e. in the zone — but were coming back UNKNOWN and dropped.

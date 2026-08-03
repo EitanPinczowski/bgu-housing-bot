@@ -96,8 +96,10 @@ def test_static_reverse_match_needs_length(monkeypatch, tmp_path):
     monkeypatch.setattr(geocode.config, "USE_NOMINATIM_FALLBACK", False)
     monkeypatch.setattr(geocode, "_google", lambda t: None)
     assert geocode.geocode("ג") is None
-    # …but a long-enough fragment of a key still resolves ("בלוק" ⊂ "הבלוק")
-    assert geocode.geocode("בלוק") == geocode.STATIC_TABLE["הבלוק"]
+    # …but a long-enough fragment of a key still resolves ("בלוק" ⊂ "הבלוק").
+    # The answer is the SURVEYED centroid, not the hand-dropped STATIC_TABLE pin —
+    # a drawn outline's centre beats a guess, and the two differ by 67 m here.
+    assert geocode.geocode("בלוק") == geocode.landmark_point("הבלוק")
 
 
 # --- #1: Overpass fallback tier -------------------------------------------------
@@ -471,15 +473,42 @@ def test_a_bare_neighborhood_still_resolves():
 def test_a_neighborhood_centroid_is_graded_area_not_exact():
     """19 listings whose post said only `שכונה ד` sat on ONE point drawn as solid,
     precise dots — the biggest pile on the map, and a lie. An area centroid is an area.
-    `הבלוק` is the same thing without the word שכונה: a whole student quarter."""
+
+    `הבלוק` was assumed to be the same thing without the word שכונה — "a whole student
+    quarter, several streets across". SURVEYED (landmarks.json) it is 85 x 96 m, a 123 m
+    diagonal: TIGHTER than a typical street centroid, so it is a real place and grades
+    precise. Size decides now, not the spelling of the key."""
     import geocode
     assert geocode.confidence("static_area") == "area"
     assert geocode.is_precise_source("static_area") is False
     assert geocode._static_source("שכונה ד") == "static_area"
-    assert geocode._static_source("הבלוק") == "static_area"
     # a real place keeps its precision
     assert geocode._static_source("כיכר האבות") == "static"
     assert geocode.confidence("static") == "exact"
+
+
+def test_a_landmark_is_graded_by_its_measured_size():
+    """THE POLYGON IS THE UNCERTAINTY. Guessing goes wrong both ways: `הבלוק` (123 m)
+    was thrown away as an area, and calling `אביסרור` (299 m) exact would claim a
+    precision it does not have."""
+    import geocode
+    assert geocode._landmark_grade(123) == "static"          # הבלוק
+    assert geocode._landmark_grade(115) == "static"          # מגדלי דוד
+    assert geocode._landmark_grade(299) == "static_street"   # אביסרור
+    assert geocode._landmark_grade(2375) == "static_area"    # שכונה ד's real extent
+    # and the real data agrees
+    assert geocode._static_source("הבלוק") == "static"
+    assert geocode.has_location(geocode.geocode_detailed("הבלוק")[1]) is True
+    assert geocode.has_location(geocode.geocode_detailed("שכונה ד")[1]) is False
+
+
+def test_an_unsurveyed_key_keeps_its_old_behaviour():
+    """No polygon -> nothing changes, so importing a survey can never regress a key it
+    does not cover."""
+    import geocode
+    assert "כיכר האבות" not in geocode.landmarks()
+    assert geocode._static_source("כיכר האבות") == "static"
+    assert geocode._static_source("שכונת נווה זאב") == "static_area"
 
 
 def test_every_static_entry_sits_on_the_street_it_names():
@@ -866,11 +895,15 @@ def test_the_two_hand_supplied_student_blocks():
     `מגדלי דוד, סורוקה` was actively WRONG before: it fell through to Overpass and
     landed on the hospital/campus point."""
     import geocode
-    david = geocode.geocode_detailed("מגדלי דוד")
-    assert david == ((31.255349, 34.803121), "static")
+    # Both are SURVEYED now, so the answer is the polygon centroid rather than the
+    # single coordinate they were first pinned with (מגדלי דוד moved 8 m, אביסרור 89 m).
+    assert geocode.geocode_detailed("מגדלי דוד") == (geocode.landmark_point("מגדלי דוד"),
+                                                     "static")
+    # אביסרור is 299 m across — a district you still have to walk, so street-level
+    assert geocode.geocode_detailed("אביסרור")[1] == "static_street"
     # the bare key matches the spellings the posts actually use
     for spelling in ("מגדלי גראנד אביסרור", "אביסרורים הגבוהים", "אביסרורים"):
-        assert geocode.geocode_detailed(spelling)[0] == (31.254823, 34.798264), spelling
+        assert geocode.geocode_detailed(spelling)[0] == geocode.landmark_point("אביסרור"), spelling
 
 
 def test_a_descriptive_tail_does_not_hide_the_street():
@@ -923,5 +956,66 @@ def test_an_area_key_steps_aside_for_a_house_number():
     for addr in ("רגר 137, הבלוק", "מצדה 6, הבלוק", "יצחק אבינו 20, הבלוק"):
         _pt, src = geocode.geocode_detailed(addr)
         assert src not in ("static_area", "static"), f"{addr} was hijacked by the area key"
-    # a bare area name is still an area
-    assert geocode.geocode_detailed("הבלוק")[1] == "static_area"
+    # A HOUSE NUMBER BEATS EVERY LANDMARK, however tight — that is what the loop above
+    # asserts. Once `הבלוק` was surveyed it stopped grading `static_area` and silently
+    # dropped out of the stand-aside rule, re-breaking `רגר 137, הבלוק`; the rule now
+    # tests membership of `landmarks()` too. A house number interpolates to ~13 m, the
+    # smallest surveyed landmark is 115 m.
+    assert geocode.geocode_detailed("הבלוק")[1] == "static"
+
+
+def test_a_named_street_beats_a_co_occurring_neighbourhood():
+    """"A street is okay" (user's rule) — but a neighbourhood key only stood aside for a
+    HOUSE NUMBER, so an address naming a street and a quarter got the quarter's centroid.
+    Measured: 13 listings drawn 364-1,070 m from the street their own post names,
+    `שלמה המלך, שכונה ג` worst at 1,070 m."""
+    import geocode
+    import zones
+    for addr, street in (("שלמה המלך, שכונה ג", "שלמה המלך"),
+                         ("אברהם אבינו, שכונה ד", "אברהם אבינו"),
+                         ("אלעזר בן יאיר שכונה ד", "אלעזר בן יאיר")):
+        pt, src = geocode.geocode_detailed(addr)
+        assert src != "static_area", f"{addr} still answered by the neighbourhood"
+        assert geocode.has_location(src), addr
+        sp, _ = geocode.geocode_detailed(street)
+        if pt and sp:                       # within the street's own extent, not a quarter away
+            assert zones._haversine_m(pt[0], pt[1], sp[0], sp[1]) < 300, addr
+
+
+def test_the_street_gate_ignores_a_fuzzy_match():
+    """`גר בשכונה ג ליד האוני` has `האוני` FUZZY-matching the street `הגאונים`. A gate
+    that decides whether to throw away a working placement has to be certain, or "near
+    the university" looks like a street address and loses the only key that can place it."""
+    import geocode
+    assert geocode.geocode_detailed("גר בשכונה ג ליד האוני")[1] == "static_area"
+
+
+def test_a_bare_neighbourhood_still_has_no_location():
+    """The half of the user's rule this change must NOT touch."""
+    import geocode
+    for addr in ("שכונה ד", "שכונה ג", "שכונה ב"):
+        assert geocode.has_location(geocode.geocode_detailed(addr)[1]) is False, addr
+
+
+def test_near_a_landmark_is_not_at_the_landmark():
+    """Spotted by the user. The static table answers several tiers before
+    `_is_bare_proximity` would ever run, so `ליד מגדלי דוד` returned the building's own
+    point graded `static` — claiming the flat IS there. Nothing in the 321 current
+    listings says "near", but grading `הבלוק` precise turns tomorrow's `ליד הבלוק` from a
+    vague blob into a confidently wrong dot."""
+    import geocode
+    for addr in ("ליד מגדלי דוד", "ליד הבלוק", "קרוב להבלוק", "בסמוך להבלוק"):
+        _pt, src = geocode.geocode_detailed(addr)
+        assert geocode.confidence(src) == "area", f"{addr} claimed to be AT the landmark"
+    # …while actually being there keeps full precision
+    assert geocode.geocode_detailed("מגדלי דוד, סורוקה")[1] == "static"
+    assert geocode.geocode_detailed("הבלוק")[1] == "static"
+
+
+def test_the_proximity_word_must_govern_the_landmark():
+    """Position, not mere presence: `רגר 5, ליד הבלוק` is a real address that happens to
+    mention a bearing, and must keep its house number."""
+    import geocode
+    _pt, src = geocode.geocode_detailed("רגר 5, ליד הבלוק")
+    assert src not in ("static", "static_area"), src
+    assert geocode.has_location(src)
