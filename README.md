@@ -188,6 +188,30 @@ only affect the displayed walk time, not the in/out decision.
 All thresholds live at the top of `config.py`
 (price ≤ 2000/room, ≥ 2 rooms free, ≤ 4 roommates, ≤ 25 min walk).
 
+### The Gemini free-tier quota
+
+The daily allowance **resets at 10:00 Israel time** (it is midnight US Pacific), not at
+local midnight. That is why the 08:00 run is the one that runs out: it is spending
+yesterday's leftovers.
+
+| knob | what it does |
+|---|---|
+| `LLM_DAILY_BUDGET` (900) | stop before Google's own 429 does. Counted per quota window, not per calendar day. 0 disables. |
+| `LOCAL_FALLBACK_MAX_POSTS_PER_RUN` (40) | how many posts one run may serve from the local Ollama model before it ends the run |
+| `LLM_BATCH_SIZE` (1) | posts per Gemini request. **1 = off**; see below before raising it |
+
+`python doctor.py` shows an **`llm budget`** row with how much of the current window is
+gone and when it resets.
+
+**Why the fallback is capped.** Ollama takes ~63 s/post. On 2026-08-03 a run with no
+quota ground through 186 posts, took 5h12m, held the scraper lock, and the 10:00 and
+12:00 runs were both skipped. Ending the run early loses nothing: unread posts are never
+marked seen, so the next run picks them up.
+
+**Batching is written but switched off.** Five posts per request would cut daily calls
+about fivefold, but it has not passed its accuracy gate yet. Run `python batch_ab.py 5`
+after 10:00 (it needs quota); raise `LLM_BATCH_SIZE` to 5 only if both gates pass.
+
 ### When a listing is dropped for having no location
 
 A flat the bot cannot place is normally **kept** as `NEEDS_DATA` rather than lost. Two

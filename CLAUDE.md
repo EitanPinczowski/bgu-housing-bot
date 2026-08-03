@@ -78,6 +78,38 @@ SQLite + optional Google Sheets + Telegram alert`
   about someone else). Count from the archive, NOT the listings table: an agency whose
   flats are mostly out of zone otherwise looks like a private landlord — that one
   choice moved it from 1 contact flagged to 7 of 136.
+- **THE GEMINI DAILY QUOTA RESETS AT 10:00 ISRAEL TIME**, not local midnight — it is
+  midnight US Pacific. Measured 2026-08-03: the 08:00 run was `RESOURCE_EXHAUSTED`
+  while the 11:09 run did 233 fresh posts on Gemini. **The 08:00 run therefore always
+  spends the PREVIOUS day's leftovers**, which the previous evening's runs drained.
+  - Anything counting calls must key on `dates.quota_window`, never `date.today()`: a
+    midnight-reset counter hands the 08:00 run a budget it does not have and reports
+    healthy right up to the failure it exists to prevent.
+  - **The damage is lost runs, not slowness.** That morning the run fell through to
+    Ollama at ~63 s/post, ground 186 posts, took **5h12m**, held the scraper lock, and
+    the 10:00 and 12:00 runs both logged `SKIP another scraper session is running`.
+    Three scheduled runs, one completion — and the locked-out 10:00 run is the one that
+    would have had fresh quota. `LOCAL_FALLBACK_MAX_POSTS_PER_RUN` (40) ends a run
+    before it can do that again; unread posts are never marked seen, so the next run
+    takes them.
+  - `LLM_DAILY_BUDGET` (900) stops us *before* Google does, taking the same code path
+    as a real 429 so the run-cap fires next. `doctor`'s `llm budget` row shows it.
+  - **Why calls grew**: 302 fresh posts/day on 07-30 → **1,184** on 08-02, mostly real
+    post volume (August is peak season; per-run fresh went 51–93 → 233–347). The four
+    pre-LLM gates already absorb ~27%, so the worst day was ~865 actual calls.
+  - **A local Ollama "is this an ad" triage is a MEASURED DEAD END — do not retry.**
+    Timed on 12 real archived posts: `gemma2:9b` is 11/12 correct but **25.4 s median
+    per post** (≈106 min added per run, to save the ~20% of calls that are NOT_AD);
+    `gemma2:2b` is 6.6 s but **7/12 correct**, i.e. it discards real listings. Both
+    trades are worse than the problem.
+  - **Batching (`llm.extract_many`) is built but OFF** (`LLM_BATCH_SIZE = 1`). The free
+    tier meters REQUESTS, and posts are tiny (p50 316 chars, p90 602, max 1,784), so 5
+    per request would cut ~865 calls/day to ~175. It stays off until `batch_ab.py`
+    passes: no post may flip `is_apartment_ad`, and no MATCH-eligible post may lose its
+    price, rooms, or address. **The control must be a single Gemini call in the same
+    session — NOT the archived `parsed_json`**, which was written by two models (the
+    Ollama fallback) and older prompts, and measuring against it shows 20% address
+    "disagreement" that says nothing about batching.
 - **Filters** (`config.py`): ≤2000 ILS/room, ≥2 rooms free, ≤4 total roommates.
 - Missing critical fields → kept as **NEEDS_DATA**, never silently dropped.
 - **A FLAT WITH NO LOCATION AND NOTHING TO RECOMMEND IT IS DROPPED** (user, 2026-08-03).
