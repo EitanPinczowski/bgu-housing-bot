@@ -47,8 +47,15 @@ def test_every_failure_carries_remediation(monkeypatch):
 
 def test_last_run_check(monkeypatch, tmp_path):
     from datetime import datetime, timedelta
+
+    import scraper
     log = tmp_path / "search_log.txt"
     monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+    # STUB THE LIVE-RUN PROBE. Without this the test reads the real machine: it passed
+    # for months only because no scrape happened to be running, and failed the moment
+    # one was (2026-08-04). A health-check test must not depend on the health of the
+    # machine it runs on.
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
 
     def write(when):
         log.write_text(f"{when:%Y-%m-%d %H:%M:%S}  END    LIVE  10s posts=5\n", encoding="utf-8")
@@ -60,6 +67,22 @@ def test_last_run_check(monkeypatch, tmp_path):
     name, status, detail, rem = doctor._check_last_run()
     if 8 <= datetime.now().hour <= 20:            # the check is quiet outside those hours
         assert status == doctor.FAIL and ("asleep" in rem or "Task Scheduler" in rem)
+
+
+def test_a_run_in_flight_is_not_a_missed_run(monkeypatch, tmp_path):
+    """This row measures time since the last COMPLETION, so a long run makes it climb
+    while the scraper is working perfectly. Observed 2026-08-04: it said "none for 5.6h"
+    while `scraper progress` in the same report said "last progress 1 min ago"."""
+    from datetime import datetime, timedelta
+
+    import scraper
+    log = tmp_path / "search_log.txt"
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+    log.write_text(f"{datetime.now() - timedelta(hours=12):%Y-%m-%d %H:%M:%S}"
+                   "  END    LIVE  10s posts=5\n", encoding="utf-8")
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: True)
+    name, status, detail, _rem = doctor._check_last_run()
+    assert status == doctor.PASS and "in progress" in detail
     # no log at all -> a warning with a starting point, never a crash
     monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path / "empty")
     assert doctor._check_last_run()[1] == doctor.WARN

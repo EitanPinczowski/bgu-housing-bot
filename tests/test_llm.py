@@ -294,8 +294,12 @@ def test_spending_the_budget_takes_the_same_path_as_a_429(monkeypatch, tmp_path)
     monkeypatch.setattr(llm, "_primary_exhausted", False)
     monkeypatch.setattr(llm, "fallback_used", 0)
     calls = []
+    # `_run` is stubbed, so the real counting point (`_pace_gemini`) never fires —
+    # spend the budget explicitly, exactly as two real Gemini requests would.
     monkeypatch.setattr(llm, "_run",
-                        lambda p, t, images=None: calls.append(p) or f"{p}_OK")
+                        lambda p, t, images=None: (calls.append(p),
+                                                   p == "gemini" and llm._spend_budget(),
+                                                   f"{p}_OK")[-1])
     assert llm.extract("a") == "gemini_OK"
     assert llm.extract("b") == "gemini_OK"
     assert llm.extract("c") == "openai_compatible_OK"   # budget spent -> fallback
@@ -309,3 +313,44 @@ def test_a_zero_budget_disables_the_ceiling(monkeypatch, tmp_path):
     for _ in range(50):
         llm._spend_budget()
     assert llm.budget_spent() is False
+
+
+def test_every_gemini_request_is_counted_whoever_makes_it(monkeypatch, tmp_path):
+    """The budget used to be spent in `extract()`, so anything calling `_extract_gemini`
+    directly burned real quota invisibly. batch_ab.py does exactly that for its control:
+    on 2026-08-04 doctor read 286/900 while Google was already returning 429."""
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 100)
+    monkeypatch.setattr(config, "GEMINI_MIN_INTERVAL_SEC", 0)
+    before = llm.budget_state()[1]
+    llm._pace_gemini()                      # what every Gemini request goes through
+    llm._pace_gemini()
+    assert llm.budget_state()[1] == before + 2
+
+
+def test_the_budget_is_not_double_counted(monkeypatch, tmp_path):
+    """`extract()` must NOT add its own tally on top of the one in _pace_gemini."""
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 100)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", None)
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    # _run is stubbed, so _pace_gemini never fires — the only tally would be a stray
+    # one left in extract(). There must be none.
+    monkeypatch.setattr(llm, "_run", lambda p, t, images=None: "OK")
+    before = llm.budget_state()[1]
+    llm.extract("post")
+    assert llm.budget_state()[1] == before
+
+
+def test_the_local_model_does_not_spend_gemini_budget(monkeypatch, tmp_path):
+    """Ollama has no quota; counting its calls would make the ceiling fire early."""
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 100)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(llm, "_primary_exhausted", True)     # straight to the fallback
+    monkeypatch.setattr(llm, "_run", lambda p, t, images=None: "LOCAL")
+    before = llm.budget_state()[1]
+    llm.extract("post")
+    assert llm.budget_state()[1] == before

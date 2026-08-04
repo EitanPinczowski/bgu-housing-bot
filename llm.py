@@ -81,12 +81,23 @@ def with_comments(post_text: str, comments: str | None) -> str:
 
 
 def _pace_gemini() -> None:
-    """Client-side min-interval so we stay under the free-tier requests-per-minute."""
+    """Client-side min-interval so we stay under the free-tier requests-per-minute —
+    and the ONE place a Gemini request is counted against the daily budget.
+
+    COUNT WHERE THE REQUEST IS ISSUED, NOT IN THE WRAPPER. `extract()` used to do the
+    counting, so anything calling `_extract_gemini` directly spent real quota invisibly:
+    `batch_ab.py` does exactly that for its control, and burned ~44 uncounted requests on
+    2026-08-04 — `doctor` read 286/900 while Google was already returning 429.
+
+    It counts the ATTEMPT, before the call, not the success. A request that comes back
+    500 still consumed one, and a counter that only tallies successes drifts low in
+    exactly the situation where you need it to be right."""
     global _last_gemini_call
     gap = config.GEMINI_MIN_INTERVAL_SEC - (time.monotonic() - _last_gemini_call)
     if gap > 0:
         time.sleep(gap)
     _last_gemini_call = time.monotonic()
+    _spend_budget()
 
 
 def _extract_gemini(post_text: str, images=None) -> ListingExtract:
@@ -280,8 +291,7 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
         fallback_used += 1
         return _run(fallback, post_text)          # text-only
     try:
-        result = _run(primary, post_text, use_img)
-        _spend_budget()
+        result = _run(primary, post_text, use_img)   # counted inside _pace_gemini
         _consecutive_errors = 0
         return result
     except Exception as exc:
@@ -400,9 +410,7 @@ def extract_many(posts: list[tuple[str, str | None]]) -> list[ListingExtract]:
 
     texts = [with_comments(t, c) for t, c in posts]
     try:
-        out = _extract_gemini_many(texts)
-        _spend_budget()          # ONE request, however many posts were in it
-        return out
+        return _extract_gemini_many(texts)   # ONE request, counted in _pace_gemini
     except Exception as exc:
         # A quota error must LATCH exactly as it does for a single post, or the next
         # batch pays Gemini's slow retry-backoff all over again.

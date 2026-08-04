@@ -207,6 +207,14 @@ def _check_last_run():
     except Exception:
         return ("last run", WARN, "could not parse the log", "")
     hours = (datetime.now() - last).total_seconds() / 3600
+    # A RUN IN FLIGHT IS NOT A MISSED RUN. This row measures time since the last
+    # COMPLETION, so a long run makes it climb while the scraper is working perfectly —
+    # observed 2026-08-04 16:14: this said "none for 5.6h" while `scraper progress` in
+    # the same report said "last progress 1 min ago". Same blind spot `run_in_progress`
+    # was written for one check earlier; both rows now consult it.
+    import scraper
+    if scraper.run_in_progress():
+        return ("last run", PASS, f"a run is in progress (last finished {hours:.1f}h ago)", "")
     # only complain during active hours — overnight silence is by design (daytime only)
     quiet_ok = not (8 <= datetime.now().hour <= 20)
     limit = getattr(config, "MAX_HOURS_BETWEEN_RUNS", 5)
