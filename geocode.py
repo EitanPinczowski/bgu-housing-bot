@@ -99,6 +99,45 @@ def _static_source(key: Optional[str]) -> str:
     return "static"
 
 
+# How close a FUZZY street match must be to count as "this address names a street".
+# Set from measurement, not taste — the three cases that matter sit either side of it:
+#   יוסף בן מתתיהו -> יוסף בן מתיתיהו   0.966   a one-letter spelling variant: WANT
+#   האוני          -> הגאונים           0.833   a short-string coincidence:    REFUSE
+#   בן מתתיהו      -> יוסף בן מתיתיהו   0.750   already recorded unresolvable: REFUSE
+_STREET_FUZZY_MIN = 0.90
+
+
+def _names_a_street(cand: str, norm_text: str) -> bool:
+    """Does this candidate token name a real street confidently enough to act on?
+
+    The gate this feeds DISCARDS a working placement (a neighbourhood centroid) in favour
+    of the street, so a wrong yes is expensive.
+
+    TWO CONDITIONS, AND BOTH ARE LOAD-BEARING — each was learned by breaking the other:
+
+    1. The token must appear VERBATIM in the address. `_candidate_tokens` also emits its
+       own corrected spellings, and a correction is a fuzzy step this function cannot
+       see: for `ליד האוני` it offers `הגאונים`, which `streets.canonical` then answers
+       `exact`. Dropping this check made "near the university" look like a street address
+       and lose the only key that could place it.
+    2. A FUZZY match must additionally be a close one. Requiring non-fuzzy was too strict:
+       `יוסף בן מתתיהו` is verbatim but resolves fuzzy (one letter from OSM's
+       `יוסף בן מתיתיהו`), while its corrected twin resolves exact but is not verbatim —
+       each failed a different half, so a street we know perfectly well was reported as
+       no street at all and the listing drew on שכונה ד.
+    """
+    if _normalize(cand) not in norm_text:
+        return False
+    real, how = streets.canonical(cand)
+    if not real:
+        return False
+    if how != "fuzzy":
+        return True
+    import difflib
+    return difflib.SequenceMatcher(None, _normalize(cand),
+                                   _normalize(real)).ratio() >= _STREET_FUZZY_MIN
+
+
 def _near_governs(norm_text: str, norm_key: str) -> bool:
     """Does a proximity word sit immediately before this landmark in the address?
 
@@ -119,6 +158,32 @@ def _near_governs(norm_text: str, norm_key: str) -> bool:
     if cut != -1:
         window = window[cut + 1:]
     return bool(_NEAR_RE.search(window))
+
+
+_NBHD_PHRASE_RE = re.compile(r"שכונ[הת]\s*[א-ת]['׳\"״]?")
+
+
+def names_only_a_neighbourhood(location_text: Optional[str]) -> bool:
+    """Is this address a neighbourhood NAME AND NOTHING ELSE — `שכונה ד`, `שכונה ג'`?
+
+    The user's rule (2026-08-04): keep a placeless listing only if it names a known
+    location like `הבלוק`; a bare quarter is not one. שכונה ד is 2,375 m across, so its
+    centroid is a dot in the middle of thousands of flats.
+
+    A TEXT TEST, and deliberately NOT `is_bare_neighborhood`, which answers True for
+    `אלעזר בן יאיר שכונה ד` — an address that names a street. That predicate was written
+    for a different question (may this be capped to amber?) and using it here would
+    delete the flats the user's own "a street is okay" rule protects.
+
+    Anything left over after the quarter is removed counts, EVEN IF WE CANNOT PLACE IT:
+    `אנדלה אמבלו, שכונה ד` names a street missing from OSM, and failing to geocode a
+    street is our limitation, not the post's."""
+    text = _fold_quotes(location_text or "").strip()
+    if not text:
+        return False                       # an empty address is a different problem
+    if not _NBHD_PHRASE_RE.search(text):
+        return False
+    return not _NBHD_PHRASE_RE.sub(" ", text).strip(" ,־-–'\"׳״\t")
 
 
 def landmark_point(key: Optional[str]):
@@ -597,9 +662,8 @@ def _resolve_detailed(location_text: Optional[str]):
     # fuzzy-matching the street `הגאונים`, which would make "near the university" look
     # like a street address and skip the one key that could place it. A gate that decides
     # whether to THROW AWAY a working placement has to be certain.
-    names_street = any(real and how != "fuzzy" and _normalize(c) in norm
-                       for c, (real, how) in
-                       ((c, streets.canonical(c)) for c in _candidate_tokens(location_text or "")))
+    names_street = any(_names_a_street(c, norm)
+                       for c in _candidate_tokens(location_text or ""))
     best_pos, best_coords, best_key = None, None, None
     near_pos, near_coords, near_key = None, None, None   # keys the flat is only NEAR
     # Last-resort coords from a key we deliberately stepped over, WITH the grade that key

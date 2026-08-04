@@ -713,6 +713,16 @@ def _classify(e, raw_text: str, source_url, group, images: list,
             return result(Status.DROP, "not an address — a bearing off a landmark",
                           geo_source=geo_source, walk=walk, walk_gate=walk_gate,
                           lat=lat, lon=lon, key=key, tier=tier, preferred=False)
+        # A BARE QUARTER GOES WHATEVER IT SCORES TOO (user, 2026-08-04: "keep them only
+        # if in a known location like הבלוק"). שכונה ד is 2,375 m across, so its centroid
+        # is a dot in the middle of thousands of flats — 14 listings sat on those, one
+        # scoring 97, and the score gate below was keeping every one of them.
+        # `הבלוק` is exempt for the reason the user gave: it is a KNOWN location, and the
+        # survey agrees — 123 m across, so it never reaches this branch at all.
+        if geocode.names_only_a_neighbourhood(e.street_address_or_neighborhood):
+            return result(Status.DROP, "not an address — only a neighbourhood",
+                          geo_source=geo_source, walk=walk, walk_gate=walk_gate,
+                          lat=lat, lon=lon, key=key, tier=tier, preferred=False)
         if score <= config.MIN_SCORE_WITHOUT_ADDRESS:
             return result(Status.DROP,
                           f"no address and score {score} ≤ "

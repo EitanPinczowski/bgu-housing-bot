@@ -123,11 +123,21 @@ def test_has_location_is_the_street_line():
 
 
 def _placeless(rooms):
-    """No street at all — only a neighbourhood. `rooms` straddles the threshold:
-    2 free rooms of 4 occupants scores 48, 3 of 4 scores 52."""
+    """Cannot be placed, but is NOT a bare quarter and NOT a bearing off a landmark —
+    so the SCORE gate is the only thing that can act on it, which is what these tests
+    are about. It used to say `שכונה ב`; once a bare quarter became a drop at any score
+    (2026-08-04) that fixture stopped exercising the score gate at all and three tests
+    started passing/failing for the wrong reason.
+
+    `אנדלה אמבלו` is a real street that OSM does not have, so it cannot be placed; the
+    quarter stays in the string because the score depends on it (the street alone scores
+    33, well under the gate, and would drop for the wrong reason).
+
+    `rooms` straddles the threshold: 2 free rooms of 4 occupants scores 50, 3 of 4
+    scores 52."""
     from models import ListingExtract
     return ListingExtract(is_apartment_ad=True,
-                          street_address_or_neighborhood="שכונה ב",
+                          street_address_or_neighborhood="אנדלה אמבלו, שכונה ב",
                           available_rooms_count=rooms, total_roommates_in_apt=4,
                           price_per_room_ils=1990)      # near the ceiling -> low score
 
@@ -644,3 +654,56 @@ def test_a_hand_placed_listing_beats_the_geocoder(temp_db, monkeypatch):
     storage.clear_manual_location(key)
     assert round(pipeline._classify(e, "", None, None, [], None,
                                     commit=False).lat, 4) == 31.2631
+
+
+def test_a_bare_quarter_is_dropped_whatever_it_scores():
+    """User, 2026-08-04: "keep them only if in a known location like הבלוק". שכונה ד is
+    2,375 m across — its centroid is a dot in the middle of thousands of flats. 14
+    listings sat on those, one scoring 97, all kept by the score gate."""
+    import config
+    for text in ("שכונה ד", "שכונה ג", "שכונה ב", "שכונה ג'"):
+        res = pipeline._classify(_bearing(text), "", None, None, [], None, commit=False)
+        assert res.status.value == "DROP", f"{text} -> {res.status.value}"
+        assert "only a neighbourhood" in res.reason, text
+    # …and it really is above the score gate, so THIS rule is what dropped it
+    assert pipeline._classify(_placeless(3), "", None, None, [], None,
+                              commit=False).score > config.MIN_SCORE_WITHOUT_ADDRESS
+
+
+def test_a_street_survives_even_when_we_cannot_place_it():
+    """"A street is okay" is the user's wording. `אנדלה אמבלו` is missing from OSM, so it
+    still lands on the שכונה ד centroid — but failing to geocode a street is OUR
+    limitation, not the post's, and the flat is not a bare quarter."""
+    import geocode
+    for text in ("אנדלה אמבלו, שכונה ד", "אלעזר בן יאיר שכונה ד", "גוש עציון, שכונה ג"):
+        assert not geocode.names_only_a_neighbourhood(text), text
+    res = pipeline._classify(_bearing("אנדלה אמבלו, שכונה ד"), "", None, None, [], None,
+                             commit=False)
+    assert res.status.value != "DROP", res.reason
+
+
+def test_a_known_location_is_not_a_bare_quarter():
+    """The 'keep' half of the same rule — הבלוק is surveyed at 123 m across."""
+    import geocode
+    assert not geocode.names_only_a_neighbourhood("הבלוק")
+    assert geocode.has_location(geocode.geocode_detailed("הבלוק")[1])
+
+
+def test_a_close_spelling_variant_still_names_its_street():
+    """`יוסף בן מתתיהו, שכונה ד` (score 84) is ONE LETTER from OSM's `יוסף בן מתיתיהו`.
+    The gate wanted a match both non-fuzzy AND verbatim, and `_candidate_tokens` offers
+    the corrected spelling (exact, not verbatim) and the written one (verbatim, fuzzy) —
+    each failed a different half, so a street we know was called no street at all."""
+    import geocode
+    assert geocode.geocode_detailed("יוסף בן מתתיהו, שכונה ד")[1] != "static_area"
+    assert not geocode.names_only_a_neighbourhood("יוסף בן מתתיהו, שכונה ד")
+
+
+def test_the_street_gate_still_refuses_a_coincidence():
+    """`האוני` fuzzy-matches `הגאונים` at 0.833 — below the 0.90 bar. Both halves of the
+    guard matter: `_candidate_tokens` ALSO emits the corrected `הגאונים`, which resolves
+    `exact`, so dropping the verbatim test lets it through the other way."""
+    import geocode
+    assert geocode._names_a_street("האוני", geocode._normalize("ליד האוני")) is False
+    assert geocode._names_a_street("הגאונים", geocode._normalize("ליד האוני")) is False
+    assert geocode.geocode_detailed("גר בשכונה ג ליד האוני")[1] == "static_area"
