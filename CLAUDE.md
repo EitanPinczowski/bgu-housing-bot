@@ -155,7 +155,19 @@ SQLite + optional Google Sheets + Telegram alert`
     A ⭐ therefore cannot rescue a placeless flat — accepted and deliberate. 0 starred rows
     were affected. `MIN_SCORE_WITHOUT_ADDRESS` must stay below `MIN_ALERT_SCORE`, or
     every placeless listing good enough to alert about would be deleted before it could be.
-  - Deliberately narrower than it could be: a bare `שכונה ד` scoring 97 **stays**.
+  - **a bare QUARTER → DROP at ANY score** (user, 2026-08-04: *"keep them only if in a
+    known location like הבלוק"*). `שכונה ד` is 2,375 m across, so its centroid is a dot in
+    the middle of thousands of flats — 16 dots sat on area centroids, 14 of them nothing
+    but a quarter, one scoring **97**, all kept by the score gate below. Now 16 → 1.
+    - `geocode.names_only_a_neighbourhood` is a **TEXT test and must NOT reuse
+      `is_bare_neighborhood`**, which answers True for `אלעזר בן יאיר שכונה ד` — an
+      address that names a street. That predicate answers a different question ("cap this
+      to amber?") and reusing it here deletes the flats the user's own *"a street is
+      okay"* rule protects.
+    - **Anything left after the quarter is removed counts, EVEN IF UNPLACEABLE.**
+      `אנדלה אמבלו, שכונה ד` names a street missing from OSM; failing to geocode a street
+      is our limitation, not the post's. It is the one area-centroid dot that remains.
+    - `הבלוק` never reaches this branch — surveyed at 123 m, it grades `static`.
 - **A LANDMARK IS AS PRECISE AS ITS SURVEY SAYS** (`landmarks.json`, from the user's
   hand-drawn KMZ via `load_landmarks_from_kmz.py`). `geocode._static_source` grades from
   the DRAWN EXTENT, not from a hand-kept list, because guessing is wrong both ways:
@@ -179,9 +191,21 @@ SQLite + optional Google Sheets + Telegram alert`
   The area key stood aside for a house number only, so 13 listings drew 364–1,070 m from
   the street their own post names (`שלמה המלך, שכונה ג` worst). Now 0 m–144 m; unplaced
   32 → 18. Two traps in that gate:
-  - **It must ignore FUZZY street matches.** `האוני` fuzzy-matches the street `הגאונים`,
-    so "near the university" looked like a street address and skipped the only key that
-    could place it. A gate that discards a working placement has to be certain.
+  - **`_names_a_street` has TWO conditions and BOTH are load-bearing** — each was learned
+    by breaking the other, so don't simplify it to one:
+    1. the token must appear **VERBATIM** in the address. `_candidate_tokens` also emits
+       its own corrected spellings, which is a fuzzy step this function cannot see: for
+       `ליד האוני` it offers `הגאונים`, and `streets.canonical` then answers `exact`.
+       Without this check "near the university" reads as a street address and
+       `גר בשכונה ג ליד האוני` resolves to **nothing at all**.
+    2. a **fuzzy** match must clear `_STREET_FUZZY_MIN` (0.90). Demanding non-fuzzy was
+       too strict: `יוסף בן מתתיהו` is verbatim but resolves fuzzy (one letter from OSM's
+       `יוסף בן מתיתיהו`) while its corrected twin resolves exact but isn't verbatim —
+       each failed a different half, so a street we know was called no street, the flat
+       drew on `שכונה ד`, and the quarter rule above would then have deleted it.
+    Measured, and the threshold sits between them: `יוסף בן מתתיהו`→`יוסף בן מתיתיהו`
+    **0.966** (want), `האוני`→`הגאונים` **0.833** (refuse), bare `בן מתתיהו` 0.750
+    (already recorded unresolvable, stays refused).
   - **It records NO fallback.** If the named street cannot be resolved the honest answer
     is NEEDS_DATA, not the centroid just rejected — otherwise `שלמה המלך, שכונה ג` quietly
     returns to being 1,070 m wrong and a nonsense address answers with the first `שכונה`.

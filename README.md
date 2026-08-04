@@ -249,8 +249,9 @@ exceptions, both applying only when the geocoder found no street at all:
 |---|---|
 | a house number or a named street (`מצדה 17`, `רחוב קדש`) | always kept — **a street is an address** |
 | a hand-pinned landmark (`מגדלי דוד`) | always kept — it grades `exact` |
-| only a neighbourhood (`שכונה ד`), scoring above `MIN_SCORE_WITHOUT_ADDRESS` (50) | kept as `NEEDS_DATA` |
-| only a neighbourhood, scoring 50 or less | **dropped** |
+| a street we cannot place (`אנדלה אמבלו`, missing from OSM) | kept — a street is still an address |
+| **only** a neighbourhood (`שכונה ד`, `שכונה ג`) | **dropped at any score** |
+| anything else with no location, scoring 50 or less | **dropped** |
 | a bearing off a landmark (`ליד האוניברסיטה`, `מול שער האוניברסיטה`) | **dropped at any score** |
 
 The test is the geocoder's own confidence tier (`geocode.has_location`), not the address
