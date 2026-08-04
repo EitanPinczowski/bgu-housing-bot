@@ -232,9 +232,13 @@ quota ground through 186 posts, took 5h12m, held the scraper lock, and the 10:00
 12:00 runs were both skipped. Ending the run early loses nothing: unread posts are never
 marked seen, so the next run picks them up.
 
-**Batching is written but switched off.** Five posts per request would cut daily calls
-about fivefold, but it has not passed its accuracy gate yet. Run `python batch_ab.py 5`
-after 10:00 (it needs quota); raise `LLM_BATCH_SIZE` to 5 only if both gates pass.
+**Batching is written but switched off, and should stay that way.** Five posts per
+request would cut daily calls about fivefold, but it fails its accuracy gate
+(`python batch_ab.py 5 --batch 5`): agreement on the price drops 100% → 80% and on the
+room count 100% → 70% against a single-call control, and three listings lost a price or
+a room count outright. Those are the fields the price and rooms filters run on, so a
+batched read can silently make a good flat unfilterable. Don't raise `LLM_BATCH_SIZE`
+without new evidence.
 
 ### When a listing is dropped for having no location
 

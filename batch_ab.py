@@ -27,6 +27,11 @@ import config  # noqa: E402
 import llm  # noqa: E402
 
 PER_BUCKET = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+# THE TEST MUST NOT READ THE KNOB IT IS GATING. It used to chunk by
+# `config.LLM_BATCH_SIZE`, which is 1 while batching is disabled — so it compared a
+# single Gemini call against a single Gemini call and reported PASS on both gates
+# without ever batching anything. Take the size as an argument instead.
+BATCH = int(sys.argv[sys.argv.index("--batch") + 1]) if "--batch" in sys.argv else 5
 BUCKETS = ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD")
 # The fields a wrong answer would actually cost us. summary_hebrew is free prose and
 # lease_start_date is rarely present; neither changes a verdict.
@@ -48,7 +53,12 @@ for b in BUCKETS:
 print("CONTROL = a single Gemini call made now, NOT the archived parsed_json\n")
 print(f"sample: {len(sample)} posts "
       f"({collections.Counter(r['verdict'] for r in sample)})")
-print(f"batch size: {config.LLM_BATCH_SIZE}\n")
+print(f"batch size UNDER TEST: {BATCH}   "
+      f"(config.LLM_BATCH_SIZE={config.LLM_BATCH_SIZE} is the production switch, "
+      f"deliberately NOT used here)\n")
+if BATCH < 2:
+    print("!! BATCH < 2 — this compares a single call against a single call and can "
+          "only measure the model's own run-to-run noise, not batching.\n")
 
 posts = [(r["raw_text"], r["comments"] or "") for r in sample]
 
@@ -60,8 +70,8 @@ posts = [(r["raw_text"], r["comments"] or "") for r in sample]
 old = [llm._extract_gemini(llm.with_comments(t, c)) for t, c in posts]
 
 new = []
-for i in range(0, len(posts), config.LLM_BATCH_SIZE):
-    new += llm.extract_many(posts[i:i + config.LLM_BATCH_SIZE])
+for i in range(0, len(posts), BATCH):
+    new += llm.extract_many(posts[i:i + BATCH])
 
 agree = collections.Counter()
 total = collections.Counter()

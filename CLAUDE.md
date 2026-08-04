@@ -102,14 +102,31 @@ SQLite + optional Google Sheets + Telegram alert`
     per post** (≈106 min added per run, to save the ~20% of calls that are NOT_AD);
     `gemma2:2b` is 6.6 s but **7/12 correct**, i.e. it discards real listings. Both
     trades are worse than the problem.
-  - **Batching (`llm.extract_many`) is built but OFF** (`LLM_BATCH_SIZE = 1`). The free
-    tier meters REQUESTS, and posts are tiny (p50 316 chars, p90 602, max 1,784), so 5
-    per request would cut ~865 calls/day to ~175. It stays off until `batch_ab.py`
-    passes: no post may flip `is_apartment_ad`, and no MATCH-eligible post may lose its
-    price, rooms, or address. **The control must be a single Gemini call in the same
-    session — NOT the archived `parsed_json`**, which was written by two models (the
-    Ollama fallback) and older prompts, and measuring against it shows 20% address
-    "disagreement" that says nothing about batching.
+  - **Batching (`llm.extract_many`) is built and MEASURED TO HARM — it stays OFF**
+    (`LLM_BATCH_SIZE = 1`). The free tier meters REQUESTS and posts are tiny (p50 316
+    chars, p90 602, max 1,784), so 5 per request would have cut ~865 calls/day to ~175.
+    It does not survive its accuracy gate (`python batch_ab.py 5 --batch 5`):
+    | field | single vs single (noise floor) | batched 5 |
+    |---|---|---|
+    | `is_apartment_ad` | 100% | 100% |
+    | `price_per_room_ils` | 100% | **80%** |
+    | `available_rooms_count` | 100% | **70%** |
+    | `street_address_or_neighborhood` | 85% | **70%** |
+    Price and rooms agree PERFECTLY call-to-call, so their drop is batching, not model
+    variance — and they are the fields the hard filters run on. 3 MATCH-eligible posts
+    lost a price or a room count outright (one lost `price_per_room_ils=2800`). n=20, so
+    the percentages are wide, but the losses are concrete.
+    - **The control must be a single Gemini call in the SAME SESSION — NOT the archived
+      `parsed_json`**, which two models (the Ollama fallback) and older prompts wrote;
+      measured that way the address field "disagrees" 80% of the time and says nothing.
+    - **Run the harness at `--batch N`, never at `config.LLM_BATCH_SIZE`.** It used to
+      chunk by the config knob, which is 1 while batching is disabled — so it compared a
+      single call against a single call and printed PASS on both gates without batching
+      anything. A test that reads the switch it is gating can only agree with itself.
+    - The accident was still useful: it is where the noise floor above comes from.
+    - Retrying at 2 or 3 would trade a smaller saving for the same class of loss, and the
+      quota pressure that motivated this is already handled by `LLM_DAILY_BUDGET` and
+      `LOCAL_FALLBACK_MAX_POSTS_PER_RUN`. Don't re-enable without new evidence.
 - **Filters** (`config.py`): ≤2000 ILS/room, ≥2 rooms free, ≤4 total roommates.
 - Missing critical fields → kept as **NEEDS_DATA**, never silently dropped.
 - **A FLAT WITH NO LOCATION AND NOTHING TO RECOMMEND IT IS DROPPED** (user, 2026-08-03).
