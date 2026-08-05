@@ -156,6 +156,39 @@ def _hot_groups() -> list:
     return hot or configured[:config.HOT_GROUP_COUNT]
 
 
+TEARDOWN_TIMEOUT_SEC = 30
+
+
+def _bounded_teardown(context, p) -> None:
+    """Close the browser, but never let closing it become the thing that hangs the bot.
+
+    Each step gets its own thread and its own deadline, because a HANG is not catchable:
+    `context.close()` on a dead Playwright pipe simply never returns, and a plain
+    try/except would sail straight past it into a permanent wait. The threads are daemons,
+    so a stuck one cannot stop the interpreter exiting either.
+
+    Abandoning a half-closed browser is safe: `scraper.reap_orphan_browsers()` clears
+    leftovers on the profile path at the start of the next run, and that is a much smaller
+    problem than a held lock — a leftover browser costs one cleanup, a held lock costs
+    every scheduled run until someone notices."""
+    import threading
+    for label, fn in (("context.close", context.close), ("playwright.stop", p.stop)):
+        done = threading.Event()
+
+        def work(fn=fn, label=label, done=done):
+            try:
+                fn()
+            except Exception as exc:
+                print(f"[main] {label} failed during teardown: {exc}")
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True).start()
+        if not done.wait(TEARDOWN_TIMEOUT_SEC):
+            print(f"[main] {label} did not return in {TEARDOWN_TIMEOUT_SEC}s — "
+                  "abandoning it and releasing the lock anyway")
+
+
 def run(dry_run: bool, hot: bool = False) -> None:
     config.validate()                 # fail fast on a broken config, before opening a browser
     mode = "DRY RUN" if dry_run else "LIVE"
@@ -338,8 +371,17 @@ def run(dry_run: bool, hot: bool = False) -> None:
                 print(f"    ...sleeping {delay:.0f}s before next group")
                 time.sleep(delay)
     finally:
-        context.close()
-        p.stop()
+        # TEARDOWN MUST NEVER KEEP THE LOCK. These three ran bare, in order, so the first
+        # one to raise OR HANG skipped the rest — and `release_lock` is last.
+        # Measured 2026-08-04: Playwright's node subprocess died mid-run with EPIPE at
+        # group 11/15, `context.close()` never returned, and the python process sat alive
+        # holding the lock. The 17:00 hot pass and the 00:46 full run both logged
+        # "another scraper session is running"; the 00:46 launcher then found the holder
+        # unkillable and gave up on the lock entirely. The scraper's self-watchdog does
+        # not help here — it aborts a run that stops making PROGRESS, and this one had
+        # already finished scraping and was dying in cleanup.
+        # The lock is an OS file lock, so releasing it is what frees the next run.
+        _bounded_teardown(context, p)
         scraper.release_lock()      # browser closed → profile free for the next run
 
     # --- summary ---

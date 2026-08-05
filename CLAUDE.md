@@ -688,6 +688,18 @@ SQLite + optional Google Sheets + Telegram alert`
   `zones.in_allowed_neighborhood` passes a point inside **any** polygon in that file, so
   adding שכונה ו there to label the map would silently widen the ב/ג/ד gate. A
   `test_zones.py` guard proves it doesn't.
+- **A CRASHED run wedges the day differently from a HUNG one** (2026-08-04). The
+  self-watchdog aborts a run that stops making PROGRESS; it does nothing for a run that
+  finished scraping and then died in CLEANUP. Playwright's node subprocess went down with
+  `EPIPE` at group 11/15, `context.close()` never returned, and the python process sat
+  alive holding the lock — which is an OS file lock, so only that process exiting frees
+  it. The 17:00 hot pass and the 00:46 full run both logged "another scraper session is
+  running", and the 00:46 launcher then found the holder unkillable and gave up.
+  `main._bounded_teardown` gives `context.close()` and `p.stop()` a thread and a 30 s
+  deadline each, so `release_lock()` is always reached. **A hang is not catchable** — a
+  bare try/except around close() would have sailed straight into the same permanent wait.
+  Abandoning a half-closed browser is the cheap side of the trade: `reap_orphan_browsers`
+  clears it next run, while a held lock costs every scheduled run until someone notices.
 - **A hung run must not block the day.** `scraper.start_self_watchdog()` (started by
   `main.py` right after the lock) aborts a run that makes no progress for
   `STALL_MINUTES`. Before it existed, `is_wedged()` was only consulted by the NEXT run,

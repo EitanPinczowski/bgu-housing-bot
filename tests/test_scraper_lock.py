@@ -212,3 +212,64 @@ def test_the_wedge_takeover_does_not_depend_on_taskkills_exit_code(monkeypatch):
     assert scraper._clear_wedged_holder() is True
     monkeypatch.setattr(scraper, "_kill", lambda pid, timeout=20: False)
     assert scraper._clear_wedged_holder() is False    # still alive -> leave the lock
+
+
+# --- teardown must never keep the lock (2026-08-04) ---------------------------------
+
+def test_a_hanging_close_does_not_hold_the_lock(monkeypatch):
+    """Playwright's node subprocess died with EPIPE mid-run and `context.close()` never
+    returned, so the python process sat alive holding the OS file lock: the 17:00 and
+    00:46 runs both skipped with "another scraper session is running". A hang is not
+    catchable, so each teardown step gets its own deadline."""
+    import threading
+
+    import main
+    monkeypatch.setattr(main, "TEARDOWN_TIMEOUT_SEC", 0.2)
+    never = threading.Event()
+
+    class Hanging:
+        def close(self):
+            never.wait()          # exactly what a dead pipe does
+
+    class P:
+        stopped = False
+
+        def stop(self):
+            P.stopped = True
+
+    main._bounded_teardown(Hanging(), P())     # must RETURN, not block
+    assert P.stopped, "a hang in close() must not skip the next teardown step"
+
+
+def test_a_raising_close_does_not_skip_the_rest(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "TEARDOWN_TIMEOUT_SEC", 5)
+
+    class Boom:
+        def close(self):
+            raise RuntimeError("EPIPE")
+
+    class P:
+        stopped = False
+
+        def stop(self):
+            P.stopped = True
+
+    main._bounded_teardown(Boom(), P())
+    assert P.stopped
+
+
+def test_the_lock_is_released_even_when_teardown_explodes(monkeypatch, tmp_path):
+    """The whole point: release_lock() runs after _bounded_teardown, and nothing the
+    browser does can stop it being reached."""
+    import inspect
+
+    import main
+    src = inspect.getsource(main.run)
+    tail = src[src.rindex("finally:"):]
+    # CODE ONLY — the comment above the call also says "release_lock", and matching that
+    # made the order check pass on prose instead of on what actually runs.
+    code = "\n".join(ln for ln in tail.splitlines() if not ln.strip().startswith("#"))
+    assert "_bounded_teardown(" in code
+    assert "scraper.release_lock()" in code
+    assert code.index("_bounded_teardown(") < code.index("scraper.release_lock()")
