@@ -403,6 +403,13 @@ def run(dry_run: bool, hot: bool = False) -> None:
             print(f"  {status}: {counts[status]}")
     if llm.fallback_used:
         print(f"  (served by local fallback: {llm.fallback_used} — Gemini quota was hit)")
+    # The retry loop's receipt. Before it existed the ONLY way to tell a run had been
+    # exiled to the local model was noticing the Gemini counter frozen while posts kept
+    # advancing — so say it plainly. `kept on Gemini` is the number of posts that did
+    # NOT cost ~2 minutes each on Ollama.
+    if llm.retries_attempted:
+        print(f"  (transient 429/503 retries: {llm.retries_attempted}, "
+              f"{llm.retries_succeeded} kept on Gemini)")
     # dependency health (#41): geocode misses + whether OSRM was reachable this run
     print(f"geocode misses: {pipeline.geocode.misses}"
           + ("  ·  ⚠️ OSRM DOWN (used straight-line walk estimate)" if pipeline.osrm.osrm_down else ""))

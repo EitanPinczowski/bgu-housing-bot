@@ -3,14 +3,23 @@ served by the fallback and only abandon the primary after a threshold."""
 import config
 import llm
 
+_slept: list = []          # every sleep the retry loop asked for, in order
 
-def _setup(monkeypatch, fail_with):
+
+def _setup(monkeypatch, fail_with, retries=0):
     monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
     monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
     monkeypatch.setattr(config, "LLM_MAX_CONSECUTIVE_ERRORS", 3)
+    # Retries default OFF in these fixtures so each test states its own intent, and the
+    # suite stays offline and instant — `time.sleep` is stubbed either way.
+    monkeypatch.setattr(config, "GEMINI_RETRIES", retries)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: _slept.append(s))
+    _slept.clear()
     monkeypatch.setattr(llm, "_primary_exhausted", False)
     monkeypatch.setattr(llm, "_consecutive_errors", 0)
     monkeypatch.setattr(llm, "fallback_used", 0)
+    monkeypatch.setattr(llm, "retries_attempted", 0)
+    monkeypatch.setattr(llm, "retries_succeeded", 0)
     calls = []
 
     def fake_run(provider, text, images=None):
@@ -31,7 +40,9 @@ def test_transient_errors_fall_back_then_latch(monkeypatch):
     assert llm._primary_exhausted is True
 
 
-def test_quota_error_latches_immediately(monkeypatch):
+def test_quota_error_latches_once_its_retries_are_spent(monkeypatch):
+    """With retries off this is the old contract: latch on the first quota hit and do
+    not touch the primary again. The retry loop is tested separately below."""
     calls = _setup(monkeypatch, "429 RESOURCE_EXHAUSTED")
     llm.extract("post")
     llm.extract("post")
@@ -205,14 +216,27 @@ def test_any_batch_failure_redoes_the_posts_one_by_one(monkeypatch):
     assert [o.street_address_or_neighborhood for o in out] == [f"post {i}" for i in range(4)]
 
 
-def test_a_quota_error_on_a_batch_latches_like_a_single_one(monkeypatch):
+def test_a_daily_quota_error_on_a_batch_latches_like_a_single_one(monkeypatch):
     """Otherwise the next batch pays Gemini's slow retry-backoff all over again."""
+    _batch_setup(monkeypatch)
+    monkeypatch.setattr(llm, "_extract_gemini_many",
+                        lambda texts: (_ for _ in ()).throw(
+                            RuntimeError("429 quota_id: GenerateRequestsPerDayPerProject")))
+    monkeypatch.setattr(llm, "extract", lambda *a, **k: _mk("x"))
+    llm.extract_many(_posts(3))
+    assert llm._primary_exhausted is True
+
+
+def test_a_retryable_quota_error_on_a_batch_does_not_latch(monkeypatch):
+    """`one_by_one` re-runs every post through `extract`, which carries the retry loop.
+    Latching here would skip those retries and hand the whole batch to the local model
+    for what the usage dashboard says is a 2-7-a-day blip."""
     _batch_setup(monkeypatch)
     monkeypatch.setattr(llm, "_extract_gemini_many",
                         lambda texts: (_ for _ in ()).throw(RuntimeError("429 RESOURCE_EXHAUSTED")))
     monkeypatch.setattr(llm, "extract", lambda *a, **k: _mk("x"))
     llm.extract_many(_posts(3))
-    assert llm._primary_exhausted is True
+    assert llm._primary_exhausted is False
 
 
 def test_the_local_model_never_batches(monkeypatch):
@@ -435,3 +459,103 @@ def test_an_undiagnosed_refusal_says_so_rather_than_guessing(tmp_path, monkeypat
     llm.record_quota_refusal()                      # no detail — the 2026-08-05 case
     assert llm.quota_refusal() == 252
     assert llm.quota_refusal_kind() == "unknown"
+
+
+# --- the retry loop: a blip must not exile the whole run to Ollama -----------------
+
+def _flaky(monkeypatch, fail_with, fail_times, retries=3):
+    """Gemini fails `fail_times` times, then succeeds."""
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(config, "GEMINI_RETRIES", retries)
+    monkeypatch.setattr(config, "GEMINI_RETRY_MAX_SLEEP_SEC", 30.0)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: _slept.append(s))
+    _slept.clear()
+    for name, val in (("_primary_exhausted", False), ("_consecutive_errors", 0),
+                      ("fallback_used", 0), ("retries_attempted", 0),
+                      ("retries_succeeded", 0)):
+        monkeypatch.setattr(llm, name, val)
+    calls = []
+
+    def fake_run(provider, text, images=None):
+        calls.append(provider)
+        if provider == "gemini":
+            if calls.count("gemini") <= fail_times:
+                raise RuntimeError(fail_with)
+            return "GEMINI_OK"
+        return "FALLBACK_OK"
+
+    monkeypatch.setattr(llm, "_run", fake_run)
+    return calls
+
+
+def test_a_rate_limit_429_is_retried_not_latched(monkeypatch):
+    """THE regression that cost an evening: one 429 latched Gemini off for the whole
+    process, so the 18:00 run on 2026-08-05 ground at ~2 min/post on the local model
+    while the daily allowance was intact (the counter went on to 501). The usage
+    dashboard shows only 2-7 errors a DAY against ~700 requests — every one of them
+    was forfeiting a run."""
+    calls = _flaky(monkeypatch, "429 RESOURCE_EXHAUSTED", fail_times=1)
+    assert llm.extract("post") == "GEMINI_OK"      # stayed on Gemini
+    assert llm._primary_exhausted is False         # run keeps its Gemini access
+    assert llm.fallback_used == 0                  # Ollama never touched
+    assert calls.count("openai_compatible") == 0
+    assert llm.retries_attempted == 1 and llm.retries_succeeded == 1
+
+
+def test_a_503_is_retried_too(monkeypatch):
+    """503 ServiceUnavailable is about as common as 429 on the dashboard, and
+    `_is_quota_error` never matched it — so it took the consecutive-error path and
+    spent a post on the local model at first sight."""
+    calls = _flaky(monkeypatch, "503 UNAVAILABLE: model is overloaded", fail_times=2)
+    assert llm.extract("post") == "GEMINI_OK"
+    assert llm.fallback_used == 0 and calls.count("openai_compatible") == 0
+    assert llm.retries_attempted == 2
+
+
+def test_a_per_day_refusal_skips_the_retries(monkeypatch):
+    """Waiting cannot conjure allowance back. Latch at once and spend the time on
+    posts instead."""
+    calls = _flaky(monkeypatch, "429 quota_id: GenerateRequestsPerDayPerProject",
+                   fail_times=99)
+    assert llm.extract("post") == "FALLBACK_OK"
+    assert llm._primary_exhausted is True
+    assert calls.count("gemini") == 1               # asked once, no retries
+    assert llm.retries_attempted == 0 and _slept == []
+
+
+def test_retries_exhausted_falls_back_and_the_post_is_not_lost(monkeypatch):
+    calls = _flaky(monkeypatch, "429 RESOURCE_EXHAUSTED", fail_times=99, retries=2)
+    assert llm.extract("post") == "FALLBACK_OK"     # served, not dropped
+    assert calls.count("gemini") == 3               # first try + 2 retries
+    assert llm._primary_exhausted is True
+    assert llm.retries_attempted == 2 and llm.retries_succeeded == 0
+
+
+def test_google_s_own_retry_delay_is_honoured_and_capped(monkeypatch):
+    """Google usually names a delay; obeying it beats guessing. But it must never be
+    able to park a run on one poisoned post."""
+    _flaky(monkeypatch, "429 RESOURCE_EXHAUSTED retryDelay: 12.5s", fail_times=1)
+    llm.extract("post")
+    assert _slept == [12.5]
+
+    _flaky(monkeypatch, "429 RESOURCE_EXHAUSTED please retry in 900s", fail_times=1)
+    llm.extract("post")
+    assert _slept == [30.0], "capped by GEMINI_RETRY_MAX_SLEEP_SEC"
+
+
+def test_backoff_grows_when_google_names_no_delay(monkeypatch):
+    _flaky(monkeypatch, "503 UNAVAILABLE", fail_times=99, retries=3)
+    llm.extract("post")
+    assert _slept == [5.0, 15.0, 30.0], _slept       # third capped from 45
+
+
+def test_a_non_retryable_error_keeps_the_old_ladder(monkeypatch):
+    """An ordinary 500/timeout still serves THIS post from the fallback and only
+    abandons the primary after LLM_MAX_CONSECUTIVE_ERRORS."""
+    monkeypatch.setattr(config, "LLM_MAX_CONSECUTIVE_ERRORS", 3)
+    calls = _flaky(monkeypatch, "500 internal", fail_times=99)
+    assert llm.extract("post") == "FALLBACK_OK"
+    assert calls.count("gemini") == 1                # no retries for this class
+    assert llm.retries_attempted == 0
+    assert llm._primary_exhausted is False           # not yet at the threshold

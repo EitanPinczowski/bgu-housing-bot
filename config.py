@@ -223,6 +223,20 @@ GEMINI_MIN_INTERVAL_SEC = 4.0
 # non-quota Gemini errors (transient 500s/timeouts) — so a Gemini hiccup doesn't
 # fail post after post. Each failing post still gets served by the fallback.
 LLM_MAX_CONSECUTIVE_ERRORS = 3
+# RETRY A TRANSIENT REFUSAL BEFORE GIVING THE POST — OR THE RUN — TO OLLAMA.
+# There was no retry at all: ONE 429 latched Gemini off for the whole process, so a
+# per-minute blip cost an entire run. Measured 2026-08-05 on the AI Studio usage
+# dashboard: ~500-750 requests/day at ~100% success, with only **2-7 errors a day**,
+# split between `429 TooManyRequests` and `503 ServiceUnavailable`. Under 1% of
+# requests fail — and each failure was forfeiting a whole run to a ~2 min/post local
+# model. A handful of retries a day buys all of that back.
+# 3 attempts with the backoff below is ~60 s worst case for one post, against the
+# ~40+ minutes of Ollama that one wrongly-latched run costs.
+GEMINI_RETRIES = 3
+# Cap on any SINGLE sleep. Google usually names its own delay in the error
+# ("retry in 27.9s") and that is preferred when present, but it must not be able to
+# park a run for minutes on one poisoned post.
+GEMINI_RETRY_MAX_SLEEP_SEC = 30.0
 # HOW MANY POSTS ONE RUN MAY SERVE FROM THE LOCAL FALLBACK BEFORE IT STOPS.
 # The fallback exists so a quota-less run still gets SOMETHING; it is not meant to
 # carry a whole run. Measured 2026-08-03: Gemini's daily window resets at 10:00

@@ -8,6 +8,7 @@ by changing LLM_PROVIDER in config.py — pipeline code never changes.
 """
 from __future__ import annotations
 import os
+import re
 import time
 
 from pydantic import BaseModel
@@ -194,6 +195,64 @@ def _is_quota_error(exc: Exception) -> bool:
     return "RESOURCE_EXHAUSTED" in s or "429" in s or "quota" in s.lower()
 
 
+def _is_overloaded_error(exc: Exception) -> bool:
+    """503 — Google's side, not ours, and it is NOT a quota error.
+
+    It matters because it is about as common as 429 on the usage dashboard, and
+    `_is_quota_error` does not match it — so it fell to the consecutive-error path and
+    sent that post to the local model on the very first occurrence."""
+    s = str(exc)
+    return "503" in s or "UNAVAILABLE" in s or "overloaded" in s.lower()
+
+
+def _retryable(exc: Exception) -> bool:
+    """Worth asking Gemini again before touching the fallback.
+
+    The AI Studio dashboard (2026-08-05) shows these two codes ARE the whole error
+    population: ~500-750 requests/day at ~100% success with 2-7 errors, split between
+    `429 TooManyRequests` and `503 ServiceUnavailable`. Both are transient by
+    definition. A genuine per-day exhaustion is excluded — see `_quota_kind`."""
+    if _quota_kind(str(exc)) == "day":
+        return False                      # the allowance is gone; waiting cannot help
+    return _is_quota_error(exc) or _is_overloaded_error(exc)
+
+
+def _quota_kind(text: str) -> str:
+    """'day' | 'minute' | 'unknown' from the provider's own error text.
+
+    Shared by `_retryable` (skip pointless retries) and `quota_refusal_kind` (advise on
+    the budget). Google does not always name the metric — both refusals on 2026-08-05
+    came back 'unknown' — which is exactly why RETRYING is the real discriminator and
+    this is only used to skip work when the answer is unambiguous."""
+    s = text.lower().replace("_", "").replace(" ", "")
+    if "perday" in s or "requestsperday" in s:
+        return "day"
+    if "perminute" in s:
+        return "minute"
+    return "unknown"
+
+
+_RETRY_DELAY_RE = re.compile(r"retry(?:delay|\sin)[\"':\s]*([0-9]+(?:\.[0-9]+)?)\s*s",
+                             re.IGNORECASE)
+
+
+def _retry_sleep_for(exc: Exception, attempt: int) -> float:
+    """How long to wait before retrying: Google's own number when it gives one.
+
+    RESOURCE_EXHAUSTED bodies usually carry a `retryDelay` ("retry in 27.9s"), and
+    honouring it is both politer and more likely to succeed than a guess. Falls back to
+    exponential backoff, and is capped either way so one poisoned post cannot park the
+    run."""
+    cap = getattr(config, "GEMINI_RETRY_MAX_SLEEP_SEC", 30.0)
+    m = _RETRY_DELAY_RE.search(str(exc))
+    if m:
+        try:
+            return min(float(m.group(1)), cap)
+        except ValueError:
+            pass
+    return min(5.0 * (3 ** attempt), cap)          # 5s, 15s, 45s -> capped
+
+
 # Set for the rest of the process once the primary provider hits its quota, so
 # we don't re-hit (and pay the retry-backoff on) an exhausted primary each post.
 # Fresh per run (each scheduled run is a new process, so it retries the primary).
@@ -207,6 +266,24 @@ _consecutive_errors = 0
 # How many image (OCR) extractions this run has spent, to cap token cost. Fresh
 # per run (new process), like fallback_used.
 ocr_used = 0
+# Retries of a transient 429/503 this run, and how many of them worked. These are the
+# evidence that the retry loop is doing its job: before it existed, the only way to
+# tell a run had been exiled to the local model was noticing the Gemini counter frozen
+# while posts kept advancing. `succeeded` is the number of posts that stayed on Gemini
+# instead of costing ~2 min each on Ollama.
+retries_attempted = 0
+retries_succeeded = 0
+
+
+def _short_err(exc: Exception) -> str:
+    """A one-line label for a provider error, for logs that stay readable."""
+    if _quota_kind(str(exc)) == "day":
+        return "daily quota exhausted"
+    if _is_overloaded_error(exc):
+        return "503 overloaded"
+    if _is_quota_error(exc):
+        return "429 rate-limited"
+    return str(exc)[:80]
 
 
 # --- the daily budget, counted against the 10:00 quota window ----------------------
@@ -314,14 +391,7 @@ def quota_refusal_kind() -> str:
     was too fast, not that the allowance is gone, and treating it as the daily ceiling
     would cut the budget to a fraction of the real one."""
     rec = _refusal_record()
-    if not rec:
-        return "unknown"
-    s = str(rec.get("refused_detail", "")).lower().replace("_", "").replace(" ", "")
-    if "perday" in s or "requestsperday" in s:
-        return "day"
-    if "perminute" in s:
-        return "minute"
-    return "unknown"
+    return _quota_kind(str(rec.get("refused_detail", ""))) if rec else "unknown"
 
 
 def _set_primary_exhausted(why: str) -> None:
@@ -349,6 +419,7 @@ def fallback_budget_spent() -> bool:
 
 def extract(post_text: str, comments: str | None = None, images=None) -> ListingExtract:
     global _primary_exhausted, fallback_used, _consecutive_errors, ocr_used
+    global retries_attempted, retries_succeeded
     post_text = with_comments(post_text, comments)
     primary = config.LLM_PROVIDER
     fallback = getattr(config, "LLM_FALLBACK_PROVIDER", None)
@@ -376,6 +447,29 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
     except Exception as exc:
         if not (fallback and fallback != primary):
             raise                               # nothing to fall back to
+        # ASK AGAIN BEFORE GIVING UP ON THE PRIMARY. A 429 or 503 used to latch Gemini
+        # off for the whole process, so one blip cost an entire run to a ~2 min/post
+        # local model — while the daily allowance was demonstrably intact (the counter
+        # sailed past both of 2026-08-05's refusals). Retrying is also the only
+        # DISCRIMINATOR that cannot be fooled: Google often names no quota metric, so a
+        # retry that succeeds proves the refusal was transient where string-matching
+        # could not.
+        if _retryable(exc):
+            for attempt in range(getattr(config, "GEMINI_RETRIES", 3)):
+                delay = _retry_sleep_for(exc, attempt)
+                retries_attempted += 1
+                print(f"[llm] {primary} {_short_err(exc)} — retrying in {delay:.0f}s "
+                      f"({attempt + 1}/{config.GEMINI_RETRIES})")
+                time.sleep(delay)
+                try:
+                    result = _run(primary, post_text, use_img)
+                    _consecutive_errors = 0
+                    retries_succeeded += 1
+                    return result
+                except Exception as exc2:       # noqa: PERF203 - a retry loop
+                    exc = exc2
+                    if not _retryable(exc):
+                        break
         fallback_used += 1
         if _is_quota_error(exc):
             _primary_exhausted = True
@@ -493,8 +587,11 @@ def extract_many(posts: list[tuple[str, str | None]]) -> list[ListingExtract]:
         return _extract_gemini_many(texts)   # ONE request, counted in _pace_gemini
     except Exception as exc:
         # A quota error must LATCH exactly as it does for a single post, or the next
-        # batch pays Gemini's slow retry-backoff all over again.
-        if _is_quota_error(exc):
+        # batch pays Gemini's slow retry-backoff all over again — but ONLY once it is
+        # not merely transient. `one_by_one` re-runs each post through `extract`, which
+        # carries the retry loop, so a 429/503 here still gets its retries; latching
+        # first would skip them and hand the whole batch to the local model.
+        if _is_quota_error(exc) and not _retryable(exc):
             record_quota_refusal(str(exc))
             _set_primary_exhausted(f"quota reached on a batch of {len(posts)}")
         return one_by_one(str(exc)[:120])
