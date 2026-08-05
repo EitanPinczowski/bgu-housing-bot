@@ -188,6 +188,11 @@ STREET_CSS = """
 .no-nbhd .nbhd,.no-nbhd .nbhd-l,.no-nbhd .nbhd-abc{display:none!important}
 .no-amen .amen{display:none!important}
 .no-gates .gate{display:none!important}
+.lmk{fill:#00695c;fill-opacity:.18;stroke:#00695c;stroke-opacity:.75;stroke-width:1.4;
+      vector-effect:non-scaling-stroke}
+.lmk-l{fill:#00695c;paint-order:stroke;stroke:#fff;stroke-width:2.6px}
+.no-lmk .lmk,.no-lmk .lmk-l{display:none!important}
+@media (prefers-color-scheme:dark){.lmk{stroke:#4db6ac;fill:#4db6ac}.lmk-l{fill:#4db6ac;stroke:#12161a}}
 .gate-l{fill:#5d4037;paint-order:stroke;stroke:#fff;stroke-width:2.6px}
 /* the GREEN|AMBER|RED field. Faint, because streets and dots have to read over it. */
 .tier{fill-opacity:.19;pointer-events:none}
@@ -358,6 +363,30 @@ def landmarks_svg(xy, feats=None):
                    f'fill="#fff" text-anchor="middle" font-weight="bold" '
                    f'style="paint-order:stroke;stroke:{color};stroke-width:3px">'
                    f'{html.escape(label)}</text>')
+
+    # THE PLACES POSTS ACTUALLY NAME. The campus and Soroka above come from
+    # `area_features.json`; these are the user's own hand-drawn surveys in
+    # `landmarks.json` (`הבלוק`, `מגדל הספורט`, `טטריס`, …), and until now they steered
+    # geocoding while being invisible on the map — so a dot sitting inside הבלוק looked
+    # like it had been placed from nowhere. Drawn at their MEASURED extent, so the shape
+    # itself shows how precisely a listing there is known.
+    # Own marker classes (`lmk`, `lmk-l`) so the layer can be toggled: CLAUDE.md's rule
+    # after the gates shipped as the one untoggleable thing on the map.
+    try:
+        import geocode
+        surveyed = geocode.landmarks()
+    except Exception:
+        surveyed = {}
+    for name, d in sorted(surveyed.items()):
+        poly = d.get("polygon_latlon") or []
+        if not poly:
+            continue
+        out.append(f'<polygon class="lmk" points="{_poly_points(xy, poly)}"/>')
+        cla = sum(p[0] for p in poly) / len(poly)
+        clo = sum(p[1] for p in poly) / len(poly)
+        lx, ly = xy(cla, clo)
+        out.append(f'<text class="slabel lmk-l" x="{lx:.0f}" y="{ly:.0f}" '
+                   f'font-size="11" text-anchor="middle">{html.escape(name)}</text>')
     return out
 
 

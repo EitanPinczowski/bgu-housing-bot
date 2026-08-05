@@ -31,7 +31,7 @@
    34.7967109
   ],
   "extent_m": 123.4,
-  "source": "Untitled layer (2).kmz"
+  "source": "landmarks.kmz"
  },
  "מרכז הנגב": {
   "polygon_latlon": [
@@ -61,7 +61,7 @@
    34.7957936
   ],
   "extent_m": 134.5,
-  "source": "Untitled layer (2).kmz"
+  "source": "landmarks.kmz"
  },
  "אביסרור": {
   "polygon_latlon": [
@@ -119,7 +119,7 @@
    34.7983952
   ],
   "extent_m": 298.6,
-  "source": "Untitled layer (2).kmz"
+  "source": "landmarks.kmz"
  },
  "מגדלי דוד": {
   "polygon_latlon": [
@@ -157,7 +157,7 @@
    34.8031054
   ],
   "extent_m": 115.1,
-  "source": "Untitled layer (2).kmz"
+  "source": "landmarks.kmz"
  },
  "מגדל הספורט": {
   "polygon_latlon": [
@@ -187,6 +187,66 @@
    34.7950238
   ],
   "extent_m": 89.7,
-  "source": "Untitled layer (2).kmz"
+  "source": "landmarks.kmz"
+ },
+ "מגדל למדן": {
+  "polygon_latlon": [
+   [
+    31.2579554,
+    34.796256
+   ],
+   [
+    31.257405,
+    34.796315
+   ],
+   [
+    31.2574371,
+    34.7970445
+   ],
+   [
+    31.2579553,
+    34.7969909
+   ],
+   [
+    31.2579554,
+    34.796256
+   ]
+  ],
+  "centroid": [
+   31.2577416,
+   34.7965725
+  ],
+  "extent_m": 94.5,
+  "source": "landmarks.kmz"
+ },
+ "טטריס": {
+  "polygon_latlon": [
+   [
+    31.254417,
+    34.7955768
+   ],
+   [
+    31.2537612,
+    34.7955795
+   ],
+   [
+    31.2537497,
+    34.7961642
+   ],
+   [
+    31.2544147,
+    34.7961213
+   ],
+   [
+    31.254417,
+    34.7955768
+   ]
+  ],
+  "centroid": [
+   31.2541519,
+   34.7958037
+  ],
+  "extent_m": 92.9,
+  "source": "landmarks.kmz"
  }
 }

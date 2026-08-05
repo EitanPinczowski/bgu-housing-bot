@@ -284,3 +284,21 @@ def test_missing_features_file_degrades_quietly(tmp_path, monkeypatch):
     assert map_listings.features() == {"landmarks": [], "streets": []}
     assert map_listings.streets_svg(_xy, _BOUNDS) == ([], [])
     assert map_listings.landmarks_svg(_xy) == []
+
+
+def test_the_surveyed_landmarks_are_drawn():
+    """They steered geocoding while being invisible: a dot inside `הבלוק` looked placed
+    from nowhere. Drawn at their MEASURED extent, so the shape shows how precisely a
+    listing there is known."""
+    import geocode
+    svg = "".join(map_listings.landmarks_svg(_xy))
+    for name in geocode.landmarks():
+        assert name in svg, name
+    assert svg.count('class="lmk"') == len(geocode.landmarks())
+
+
+def test_the_landmark_layer_can_be_switched_off():
+    """CLAUDE.md's rule after the gates shipped as the only untoggleable thing on the
+    map: every layer needs its OWN marker class."""
+    css = map_listings.STREET_CSS
+    assert ".no-lmk .lmk" in css and ".lmk-l" in css
