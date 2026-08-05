@@ -688,6 +688,17 @@ SQLite + optional Google Sheets + Telegram alert`
   `zones.in_allowed_neighborhood` passes a point inside **any** polygon in that file, so
   adding שכונה ו there to label the map would silently widen the ב/ג/ד gate. A
   `test_zones.py` guard proves it doesn't.
+- **A SLEEPING PC wedges it a third way** (2026-08-05). The 00:46 hot run started, the
+  machine slept, and it did not finish until 09:15 — 8.5 h wall clock for ~23 min of
+  work (Windows logged the wake at 08:52). It held the lock throughout, so the 08:58 full
+  run logged SKIP. `setup_always_on.cmd` sets "wake the computer" on the scheduled TASKS,
+  which wakes the PC to START a run; nothing kept it awake DURING one.
+  `scraper.start_keep_awake()` holds `ES_SYSTEM_REQUIRED` for the life of a run, and
+  `main.run` releases it next to the lock.
+  - **ONLY ON MAINS** (user's rule): it polls `on_ac_power()` rather than setting the
+    flag once, because the cable can come out mid-run. On battery — and when the power
+    state is UNKNOWN — it holds nothing; an unanswered question must not pin the machine
+    awake.
 - **A CRASHED run wedges the day differently from a HUNG one** (2026-08-04). The
   self-watchdog aborts a run that stops making PROGRESS; it does nothing for a run that
   finished scraping and then died in CLEANUP. Playwright's node subprocess went down with

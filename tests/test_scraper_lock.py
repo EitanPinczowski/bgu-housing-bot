@@ -273,3 +273,36 @@ def test_the_lock_is_released_even_when_teardown_explodes(monkeypatch, tmp_path)
     assert "_bounded_teardown(" in code
     assert "scraper.release_lock()" in code
     assert code.index("_bounded_teardown(") < code.index("scraper.release_lock()")
+
+
+# --- keep-awake, but only on mains (user's rule, 2026-08-05) ------------------------
+
+def test_keep_awake_only_holds_the_machine_when_plugged_in(monkeypatch):
+    """The 00:46 hot run slept through the night mid-flight: 8.5 h wall clock for ~23 min
+    of work, holding the lock, so the 08:58 full run skipped. But the guard must not
+    drain a battery — on battery, and when the power state is UNKNOWN, it stays off."""
+    import scraper
+    calls = []
+    monkeypatch.setattr(scraper, "_set_awake", lambda on: calls.append(on))
+
+    for power, want_hold in ((True, True), (False, False), (None, False)):
+        calls.clear()
+        monkeypatch.setattr(scraper, "on_ac_power", lambda p=power: p)
+        stop = scraper.start_keep_awake(poll_seconds=0.05)
+        import time
+        time.sleep(0.15)
+        stop()
+        time.sleep(0.15)
+        assert (True in calls) is want_hold, f"power={power} calls={calls}"
+
+
+def test_the_keep_awake_guard_is_released_with_the_lock():
+    """A guard that outlives the run would keep the machine awake forever."""
+    import inspect
+
+    import main
+    src = inspect.getsource(main.run)
+    tail = src[src.rindex("finally:"):]
+    code = "\n".join(ln for ln in tail.splitlines() if not ln.strip().startswith("#"))
+    assert "stop_keep_awake()" in code
+    assert code.index("stop_keep_awake()") < code.index("scraper.release_lock()")

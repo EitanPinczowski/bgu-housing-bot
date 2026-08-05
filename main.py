@@ -207,6 +207,9 @@ def run(dry_run: bool, hot: bool = False) -> None:
     # …and give up on ourselves if we stop making progress, rather than sitting on the
     # lock and starving every later run (measured: one hang blocked six hours of them).
     scraper.start_self_watchdog()
+    # …and don't let the PC sleep out from under a run that is working fine. ONLY while
+    # plugged in (user's rule) — on battery this must not pin the machine awake.
+    stop_keep_awake = scraper.start_keep_awake()
     if hot:
         # Fast shallow pass over only the best groups — see config.HOT_* (net volume is
         # LOWER than before, because yield-scaling trimmed the normal runs).
@@ -382,6 +385,7 @@ def run(dry_run: bool, hot: bool = False) -> None:
         # already finished scraping and was dying in cleanup.
         # The lock is an OS file lock, so releasing it is what frees the next run.
         _bounded_teardown(context, p)
+        stop_keep_awake()           # let the machine sleep again
         scraper.release_lock()      # browser closed → profile free for the next run
 
     # --- summary ---

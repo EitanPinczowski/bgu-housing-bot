@@ -942,3 +942,78 @@ def scrape_group(page: Page, url: str, already_seen=None, min_posts=None):
     stats = {"read": len(read_keys), "age_skipped": len(age_skipped),
              "seen_skipped": len(seen_skipped)}
     return list(collected.values()), stats
+
+
+# --- keep the PC awake while a run is in flight (only on mains) --------------------
+# Measured 2026-08-05: the 00:46 hot run started, the machine slept, and it did not
+# finish until 09:15 — 8.5 h wall clock for ~23 min of work. It held the scraper lock
+# the whole time, so the 08:58 full run logged SKIP. `setup_always_on.cmd` sets "wake
+# the computer" on the scheduled TASKS, which wakes the PC to START a run; nothing kept
+# it awake DURING one.
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+_awake_stop = None
+
+
+def on_ac_power():
+    """True on mains, False on battery, None if we cannot tell.
+
+    None is deliberately NOT treated as mains: the guard's job is to avoid draining a
+    battery, so an unanswered question must not silently pin the machine awake."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _SPS(ctypes.Structure):
+            _fields_ = [("ACLineStatus", ctypes.c_byte),
+                        ("BatteryFlag", ctypes.c_byte),
+                        ("BatteryLifePercent", ctypes.c_byte),
+                        ("SystemStatusFlag", ctypes.c_byte),
+                        ("BatteryLifeTime", wintypes.DWORD),
+                        ("BatteryFullLifeTime", wintypes.DWORD)]
+
+        sps = _SPS()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(sps)):
+            return None
+        return {0: False, 1: True}.get(sps.ACLineStatus)     # 255 = unknown -> None
+    except Exception:
+        return None
+
+
+def _set_awake(on: bool) -> None:
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0))
+    except Exception:
+        pass
+
+
+def start_keep_awake(poll_seconds: int = 60):
+    """Stop the machine sleeping mid-run, but ONLY while it is plugged in (user's rule).
+
+    Polls rather than setting once, because the cable can come out mid-run — on battery
+    the request is dropped and normal sleep behaviour returns. The flag is per-THREAD on
+    Windows, so it is asserted from the polling thread that owns it and released there.
+    Returns a callable that stops the guard; safe to call even if it never started."""
+    import threading
+    global _awake_stop
+    stop = threading.Event()
+
+    def loop():
+        held = False
+        try:
+            while not stop.is_set():
+                want = on_ac_power() is True          # None (unknown) -> do not hold
+                if want != held:
+                    _set_awake(want)
+                    held = want
+                    print(f"[scraper] keep-awake {'ON (on mains)' if want else 'OFF (on battery)'}")
+                stop.wait(poll_seconds)
+        finally:
+            if held:
+                _set_awake(False)
+
+    threading.Thread(target=loop, daemon=True).start()
+    _awake_stop = stop.set
+    return stop.set
