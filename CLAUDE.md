@@ -32,8 +32,14 @@ in the previous handoff is cleared — the suite is GREEN (514 passing, `ruff` c
     tuning workflow never said this; it matters more for `--apply` than for a dry run.
 
 Still unverified, and recorded as unverified rather than assumed:
-- `LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired. Closest: a run reached 39 local
-  posts of the 40 before the browser crashed. The next run that loses quota is the test.
+- ~~`LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired.~~ **IT HAS — VERIFIED 2026-08-04,
+  twice, and it worked.** The 08:00 and 10:00 runs both logged `local fallback cap reached
+  (40 posts) — ending the run so the next one can start` and stopped at exactly 40 local
+  posts (129 posts / 7 of 15 groups, then 51 / 2 of 15) instead of grinding for hours.
+  Compare the pre-cap runs that had nothing to stop them: **49** local posts on 08-01 and
+  **43** on 07-24. Unread posts are never marked seen, so the next run took them. This was
+  carried as "unverified" long after the evidence existed — check `grep "local fallback
+  cap reached" data/scraper_runs.log` before repeating that claim.
 - `LLM_DAILY_BUDGET = 900` is still a guess, but it now **measures itself**: a real
   refusal records the count and the provider's own metric name, and `doctor` reports it.
   Only a **PerDay** refusal may set the budget.
