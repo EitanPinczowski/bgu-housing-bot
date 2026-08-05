@@ -4,41 +4,45 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-05, later session)
+## OPEN RIGHT NOW — read this first (2026-08-05, evening)
 
-**ONE thing is outstanding: `replay.py --apply` has still not been run.** Everything else
-in the previous handoff is cleared — the suite is GREEN (514 passing, `ruff` clean).
+**ONE command is outstanding, and it needs the quota window that opens at 10:00 Israel:**
+
+```bash
+python replay.py --llm --only-merged --min-score 1 --changed   # dry — READ IT
+python replay.py --llm --only-merged --min-score 1 --apply     # then write
+```
+
+That re-reads the **58 archived posts whose text runs on into a second Facebook story**,
+whose stored parse therefore mixed two posts. `phone:522629429` is the reported example:
+its listing carries Avidan Mandelman's flat under a *different* couple's "looking for a
+flat" permalink. Expect it to flip `MATCH → NOT_AD` and the listing to disappear for good
+(it was deleted once and came back on the 19:29 `--apply`, exactly as predicted, because
+`--apply` reuses the stored parse). ~58 Gemini calls. The usual `--apply` preconditions
+still hold: **OSRM up** and **no scrape running** (`doctor.py` answers both), backup first.
+
+Everything else is done: the suite is GREEN (528 passing, `ruff` clean) and `doctor.py`
+is all-green.
+- **`replay.py --apply` HAS been run** (2026-08-05 19:29, after `backup_db.py` wrote
+  `listings-20260805-192914.sqlite` and OSRM was verified). 6,606 posts, **152 changed:
+  42 rescued to MATCH, 2 dropped, 80 duplicates merged**; listings 350 → **357**
+  (MATCH 201, NEEDS_DATA 156); sheet rebuilt. No lock contention — the scraper tasks were
+  paused for it.
+- Docker was broken all afternoon and is **fixed** — see the orphaned-socket note under
+  "Verify the base". OSRM is up.
 
 - The 2 red tests are fixed. `landmarks_svg` draws from **two independent files**, so
   stubbing `_FEATURES_PATH` alone can no longer empty it; the test now asserts what
   actually matters — a missing `area_features.json` removes the campus and Soroka and
   leaves the hand-drawn surveys standing. (The pipe warning was right and is worth
   keeping: `pytest -q | tail` discards pytest's exit code. Read the count, or drop the pipe.)
-- **The dry replay HAS been run and read** (`data/replay_dry_20260805.txt`): **127 changed
-  posts, overwhelmingly rescues** — in the printed sample 23 `DROP→MATCH`, 18
-  `DROP→NEEDS_DATA`, 9 score-only drift, and **no `MATCH→DROP`**, so applying adds
-  listings rather than deleting them. It is not all from the landmarks: the geocode cache
-  warms during a replay and Overpass has been down on all four mirrors, so addresses that
-  failed at classification time now resolve.
-  **Still to do: `backup_db.py` → `replay.py --apply` → restart `serve_dashboard.py` →
-  `publish.py`.** It was not applied because a live scrape held the DB every time the
-  window opened (a run starts on the hour, all day); do it in a gap, and re-read the dry
-  diff first since the archive has grown since.
-  - **CHECK OSRM IS UP FIRST — `doctor.py`, or the curl in "Verify the base".** It is a
-    Docker container and it was found DOWN later the same afternoon. A replay with OSRM
-    unreachable still completes: it silently falls back to the straight-line estimate and
-    writes those walk minutes, and the AMBER boundary is a 20-minute WALK, so applying
-    while it is down bakes the approximation into every listing's tier and score. The
-    tuning workflow never said this; it matters more for `--apply` than for a dry run.
-    **As of 19:30 on 08-05 OSRM is UP and verified** (Docker was repaired — see the
-    orphaned-socket note under "Verify the base"), so this precondition is currently met.
-  - **THE HARD PART IS FINDING A GAP, NOT THE APPLY ITSELF.** A run starts on the hour all
-    day, and on 08-05 the 18:00 full run was still holding the lock at 19:30 — 90 minutes
-    in, at ~2 min/post, because it had fallen through to the local model. Waiting politely
-    for a free lock did not work twice. Practical options: fire it right after a run logs
-    `END` (the gap before the next hour), or disable the `BGU Housing Scraper*` scheduled
-    tasks for the duration and re-enable them after. `python -c "import scraper;
-    print(scraper.run_in_progress())"` is the check.
+- **THE HARD PART OF AN `--apply` IS FINDING A GAP.** A run starts on the hour all day,
+  and on 08-05 the 18:00 full run held the lock for 90+ minutes at ~2 min/post because it
+  had fallen through to the local model. Waiting politely for a free lock failed twice.
+  What worked: **disable the `BGU Housing Scraper*` tasks, apply, re-enable.** (`BGU
+  Housing Scraper Hot` needs an elevated shell — "Access is denied" otherwise.) The check
+  is `python -c "import scraper; print(scraper.run_in_progress())"`. Both preconditions
+  are also in the tuning-workflow note further down.
 
 Still unverified, and recorded as unverified rather than assumed:
 - ~~`LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired.~~ **IT HAS — VERIFIED 2026-08-04,
@@ -49,9 +53,11 @@ Still unverified, and recorded as unverified rather than assumed:
   **43** on 07-24. Unread posts are never marked seen, so the next run took them. This was
   carried as "unverified" long after the evidence existed — check `grep "local fallback
   cap reached" data/scraper_runs.log` before repeating that claim.
-- `LLM_DAILY_BUDGET = 900` is still a guess, but it now **measures itself**: a real
-  refusal records the count and the provider's own metric name, and `doctor` reports it.
-  Only a **PerDay** refusal may set the budget.
+- `LLM_DAILY_BUDGET = 900` — **question closed, leave it alone.** The AI Studio usage
+  dashboard shows ~500–750 requests/day at **~100% success**: the per-day ceiling has
+  never actually been reached, so there is nothing to measure a new number from and
+  nothing to fix. The self-measuring instrumentation stays (it is what proved the day's
+  refusals transient), and only a **PerDay** refusal may ever move the budget.
   - **Two refusals on 08-05 (at 252 and 389) are both UNUSABLE, and the reason is the
     reading you want for the next one: THE COUNT KEPT CLIMBING AFTERWARDS** (252 → 259,
     389 → 393). A daily exhaustion is terminal for the window — nothing succeeds after
@@ -63,10 +69,13 @@ Still unverified, and recorded as unverified rather than assumed:
     dead at it. That is the confirmation to look for, independent of parsing Google's
     error string — which may not name the quota at all.
 
-The remaining improvement plan lives in `~/.claude/plans/spicy-sparking-crystal.md` —
-**that file is NOT auto-loaded**, unlike this one. Parts 1–4 and 6 are DONE (2 and 4 ended
-in a deliberate *no change*, both recorded below); 5 is now instrumented and waiting for
-one clean PerDay refusal.
+Two plan files, **neither auto-loaded** (unlike this one):
+- `~/.claude/plans/spicy-sparking-crystal.md` — **all six parts closed.** 2 and 4 ended in
+  a deliberate *no change* and 5 is closed by the dashboard reading above; all three
+  reasons are recorded here so they are not relitigated on a hunch.
+- `~/.claude/plans/velvet-spinning-fountain.md` — Part A (retry a transient 429/503
+  instead of exiling the run to Ollama) is **DONE**; Part B is the one command at the top
+  of this section, waiting on the 10:00 quota window.
 
 ## Current status — BUILT, TESTED, and running
 
@@ -97,6 +106,31 @@ SQLite + optional Google Sheets + Telegram alert`
   structured output + a Hebrew prompt whose core rule is *return null, never
   guess*. On quota (429) or repeated errors it falls back to a local Ollama model
   for the rest of the run; a client-side min-interval paces Gemini under the RPM cap.
+  - **A TRANSIENT 429/503 IS RETRIED, NOT LATCHED** (2026-08-05). There was no retry at
+    all: any error matching `_is_quota_error` set `_primary_exhausted` for the whole
+    process, so a per-minute blip and a daily exhaustion were the same thing and the
+    blip cost an entire run — the 18:00 run that day ground at **~2 min/post** on Ollama,
+    reaching group 1 of 15 in 90 minutes, while the allowance was intact (the counter
+    went on past refusals at 252 and 389 to 501).
+  - **The AI Studio usage dashboard is the sizing, and it is not close**: ~500–750
+    requests/day at **~100% success**, with only **2–7 errors a day**, split between
+    `429 TooManyRequests` and `503 ServiceUnavailable`. Under 1% of requests fail and
+    each one was forfeiting a run. (Its axis reads UTC-8 — independent confirmation of
+    the 10:00-Israel reset.)
+  - **503 counts too.** `_is_quota_error` never matched it, so it took the
+    consecutive-error path and spent a post on the local model at first sight, despite
+    being about as common as 429.
+  - **RETRYING IS THE DISCRIMINATOR.** Google often names no quota metric — both 08-05
+    refusals came back `unknown` — so parsing PerDay/PerMinute cannot be relied on. A
+    retry that succeeds proves the refusal was transient. The string test is used only
+    to SKIP retries when the error explicitly says per-day, where waiting cannot help.
+  - Google's own `retryDelay` is honoured when present, else 5/15/45 s backoff, every
+    sleep capped by `GEMINI_RETRY_MAX_SLEEP_SEC` so one poisoned post can't park a run.
+  - **`GEMINI_MIN_INTERVAL_SEC` stays 4.0.** Raising it for RPM headroom was proposed and
+    dropped: at ~4 429s per ~700 requests the cap is not being saturated, and slowing
+    every request 11% to chase a sub-1% error rate is the wrong trade.
+  - The run summary prints retries and how many kept a post on Gemini — the old
+    behaviour was only detectable by noticing the counter frozen while posts advanced.
 - **Output = local SQLite + Telegram, plus an OPTIONAL Google Sheets sink**
   (`sheets.py`, service account; silent no-op until `GOOGLE_SHEET_ID` + creds
   exist). The sheet is a browsable/sortable mirror; SQLite stays the fast local
