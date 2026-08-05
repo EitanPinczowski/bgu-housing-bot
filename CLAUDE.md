@@ -30,9 +30,17 @@ Still unverified, and recorded as unverified rather than assumed:
   posts of the 40 before the browser crashed. The next run that loses quota is the test.
 - `LLM_DAILY_BUDGET = 900` is still a guess, but it now **measures itself**: a real
   refusal records the count and the provider's own metric name, and `doctor` reports it.
-  A refusal was captured at 252 on 08-05 and is NOT usable — the window carried on past
-  it successfully, and its kind was never recorded, so it was a rate-limit blip rather
-  than the daily ceiling. Only a **PerDay** refusal may set the budget.
+  Only a **PerDay** refusal may set the budget.
+  - **Two refusals on 08-05 (at 252 and 389) are both UNUSABLE, and the reason is the
+    reading you want for the next one: THE COUNT KEPT CLIMBING AFTERWARDS** (252 → 259,
+    389 → 393). A daily exhaustion is terminal for the window — nothing succeeds after
+    it — so a refusal the window carries on past is a rate-limit blip, whatever the error
+    text says. Neither recorded a metric name, so `kind` was `unknown` and `doctor`
+    correctly advised nothing. **Had this been taken at face value it would have argued
+    for cutting the budget from 900 to ~250, on evidence that says the opposite.**
+  - Corollary worth keeping: if a future refusal IS the daily ceiling, the counter stops
+    dead at it. That is the confirmation to look for, independent of parsing Google's
+    error string — which may not name the quota at all.
 
 The remaining improvement plan lives in `~/.claude/plans/spicy-sparking-crystal.md` —
 **that file is NOT auto-loaded**, unlike this one. Parts 1–4 and 6 are DONE (2 and 4 ended
