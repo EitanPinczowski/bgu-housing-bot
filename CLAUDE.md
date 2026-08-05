@@ -4,6 +4,34 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
+## OPEN RIGHT NOW — read this first (2026-08-05)
+
+Two things are mid-flight and exist nowhere else. Clear them before starting new work.
+
+1. **THE SUITE IS RED — 2 tests.** `tests/test_map_listings.py::
+   test_missing_features_file_degrades_quietly` and one sibling. Cause: `landmarks_svg`
+   now reads the real `landmarks.json` through `geocode.landmarks()`, so a test that
+   stubs `features()` and expects an empty render gets seven real polygons — "no data
+   files, draw nothing" is no longer true for the surveyed layer. Fix by stubbing
+   `geocode.landmarks` in those tests, or by having the surveyed layer respect an
+   injected `feats`. They were committed red by mistake: `pytest -q | tail -2 && git
+   commit` discards pytest's exit code through the pipe. Use `pytest -q && git commit`.
+2. **THE REPLAY HAS NOT RUN** since `landmarks.kmz` was imported. All 7 landmarks
+   (`הבלוק`, `מגדלי דוד`, `מרכז הנגב`, `אביסרור`, `מגדל הספורט`, `טטריס`, `מגדל למדן`)
+   geocode and draw correctly, but they have changed **zero** verdicts. Do
+   `backup_db.py` → `replay.py` (dry) → READ THE DIFF → `--apply` → restart
+   `serve_dashboard.py` → `publish.py`.
+
+Still unverified, and recorded as unverified rather than assumed:
+- `LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired. Closest: a run reached 39 local
+  posts of the 40 before the browser crashed. The next run that loses quota is the test.
+- `LLM_DAILY_BUDGET = 900` is a guess. The counter only became accurate on 2026-08-04
+  (counting moved into `_pace_gemini`), so the first real 429 after that is what sets it.
+
+The remaining improvement plan lives in `~/.claude/plans/spicy-sparking-crystal.md` —
+**that file is NOT auto-loaded**, unlike this one. Parts 2 (detection lag, median 3.3 h),
+4 (alert gate), 6 (doctor into the digest) are open; 1 and 3 are done; 5 is blocked above.
+
 ## Current status — BUILT, TESTED, and running
 
 The full pipeline (parse → deterministic cleanups → hard filters → geocode →
