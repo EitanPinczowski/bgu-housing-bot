@@ -85,12 +85,47 @@ def _low_confidence_section() -> list:
     return out
 
 
+def _health_section() -> list:
+    """`doctor.py`'s hard failures, one line each, and nothing at all when it is clean.
+
+    EVERY failure of the 2026-08-04/05 sessions — the wedged lock eating 17 scheduled
+    slots, the 22-hour stale dashboard server, the runs that slept through their trigger —
+    was found because a person happened to run `doctor.py`. Nothing pushed. A check nobody
+    reads is not a check, so the FAILs ride the digest that already goes out daily, and
+    silence starts meaning healthy instead of unobserved.
+
+    Only FAIL, never WARN: a digest that cries every day is one you stop opening, which is
+    the failure mode this is meant to fix, not repeat. The remedy string comes along
+    because `doctor`'s own `fix` section is what makes a row actionable.
+
+    Wrapped, and deliberately last in `build`: a broken health check must not be able to
+    suppress the unmapped-locations report that has always been this digest's job."""
+    try:
+        import doctor
+        rows = doctor.checks()
+    except Exception as e:                     # noqa: BLE001 - never break the digest
+        return [notifier._esc(f"⚠️ לא הצלחתי להריץ את בדיקת התקינות: {e}")]
+    bad = [(n, d, r) for n, s, d, r in rows if s == doctor.FAIL]
+    if not bad:
+        return []
+    out = [notifier._esc(f"🚨 בדיקת תקינות — {len(bad)} תקלות:")]
+    for name, detail, remedy in bad:
+        out.append(notifier._esc(f"• {name}: {detail}"))
+        if remedy:
+            out.append(notifier._esc(f"   ↳ {remedy}"))
+    return out
+
+
 def build(days: int = 1, suggest: bool = True) -> str | None:
     rows = storage.unknown_locations(days)
     low = _low_confidence_section()
-    if not rows and not low:
+    health = _health_section()
+    if not rows and not low and not health:
         return None
     lines: list = []
+    if health:
+        # first: a wedged scraper is why there are no listings to report on below
+        lines += health + [""]
     if rows:
         head = f"🗺️ מקומות שלא הצלחתי למפות ({days} ימים אחרונים) — שווה להוסיף לטבלת הגאוקוד:"
         lines += [notifier._esc(head), ""]

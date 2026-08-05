@@ -153,6 +153,14 @@ BLACKLIST_NEIGHBORHOODS = [
     # the NAMED areas that carry no letter. Substrings chosen to avoid false matches.
     "נאות אברהם", "נאות לון", "העיר העתיקה", "נווה מנחם", "כלניות", "סיגליות",
     "נחל בקע", "מרכז העיר", "שכונה דרום", "קרית יהודית", "הרובע", "רסקו",
+    # 2026-08-05 — the two names that kept topping the DM digest's "couldn't map" list
+    # (×2 each). Neither is in OSM, in the surveyed neighbourhoods, or in landmarks.json,
+    # so nothing free can place them, and a govmap POI lookup is the measured trap (no
+    # house number to validate the answer against). The user's call: both sit in the RED
+    # zone, so there is nothing to place — dropping by name is the honest answer and it
+    # costs no geocode or LLM work. `מרכז אזרחי` is a full phrase on purpose: bare `מרכז`
+    # would swallow the `מרכז הנגב` landmark.
+    "נאות הדרים", "מרכז אזרחי",
 ]
 
 # Neighborhoods where the 500m amber grace does NOT apply: anything OUTSIDE the
