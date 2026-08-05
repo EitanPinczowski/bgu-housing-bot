@@ -847,6 +847,26 @@ SQLite + optional Google Sheets + Telegram alert`
   bare try/except around close() would have sailed straight into the same permanent wait.
   Abandoning a half-closed browser is the cheap side of the trade: `reap_orphan_browsers`
   clears it next run, while a held lock costs every scheduled run until someone notices.
+- **A CRAWLING RUN IS NOT A HUNG ONE, AND THE STALL TEST CANNOT SEE IT** (user, 2026-08-05).
+  `MAX_RUN_MINUTES` (120) is a hard WALL-CLOCK ceiling in the same watchdog thread. The
+  18:00 run that day was 90 minutes in, still on group 1 of 15 at ~2 min/post with a fresh
+  heartbeat throughout — healthy by every existing measure, holding the lock against every
+  later slot, and it managed 5 of 15 groups in 88 minutes.
+  - **It reverses the decision recorded right above it in `config.py`** ("judged by
+    PROGRESS, not elapsed time", because legitimate local-Ollama runs reached 99/195/268
+    minutes). Safe now only because of two later mechanisms: the fallback cap (40 posts)
+    ends those grinds, and a transient 429/503 no longer latches a run onto Ollama at all.
+    **If either is ever weakened, raise or remove this ceiling too.**
+  - `validate()` refuses a ceiling at or below `STALL_MINUTES` — it would fire first every
+    time, making the stall test dead code and killing healthy runs.
+  - **Wall clock, not monotonic**, on purpose: the 00:46 run that slept through the night
+    took 8.5 h for ~23 min of work, and that is exactly what this must catch.
+  - The abort appends an `ABORT` line to `search_log.txt`, because `os._exit` skips
+    main's `END` line and the run would otherwise be indistinguishable from a silent
+    crash. `stats.py` counts aborts separately and does not also call them "started and
+    never finished".
+  - **`_abort` writes through `config.DATA_DIR`** — a test that does not patch it appends
+    fake aborts to the real operational log. That happened; the fixture patches it now.
 - **A hung run must not block the day.** `scraper.start_self_watchdog()` (started by
   `main.py` right after the lock) aborts a run that makes no progress for
   `STALL_MINUTES`. Before it existed, `is_wedged()` was only consulted by the NEXT run,
