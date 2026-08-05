@@ -962,6 +962,22 @@ the scraper MUST be conservative and the user must stay in control:
   couldn't map are logged (`unknown_locations`) and surfaced by the daily DM
   digest — pin the frequent ones into `geocode.STATIC_TABLE`. The zone can be
   regenerated from a My Maps KMZ via `load_zone_from_kmz.py`.
+- **ONE SCRAPED BLOCK IS NOT ALWAYS ONE POST** (`scraper._clean_story`, 2026-08-05).
+  A block can run on into the NEXT story, and that story has its own price, address and
+  phone. Measured: **404 of 6,502 archived posts (6%)** carry an embedded author+age
+  header — 32 live MATCHes, 20 NEEDS_DATA. Mostly harmless (the tail is a comment and the
+  right flat was still extracted), but the reported case was a couple's *wanted*-ad
+  followed by a stranger's offer: the LLM extracted the OFFER, so the listing showed the
+  wanted-ad's text under the wanted-ad's permalink. The `_TAIL_MARKERS` cut never fired
+  because that block had no "View more comments".
+  - The boundary is the **author line + bare relative age** (`3h`, `13h`) FB renders above
+    every story after the first. The post's own header does not survive cleaning in that
+    shape — its timestamp is the CSS-scrambled single characters dropped just above — so a
+    surviving pair marks the next story. Cutting there keeps the post the permalink
+    belongs to, which is the first one.
+  - Index 0/1 is excluded, or the cut eats the post itself and leaves an empty body.
+  - Fixes future scrapes only. The 404 already archived keep their merged text; re-parsing
+    them needs `replay.py --llm`, which spends Gemini quota.
 - **FB DOM is unstable:** all selectors live in the FRAGILE block of `scraper.py`
   with a multi-selector fallback chain; expect periodic tuning. `FacebookBlock`
   detection aborts a run on a checkpoint/login wall (never retries).
