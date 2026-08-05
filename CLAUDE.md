@@ -24,6 +24,12 @@ in the previous handoff is cleared — the suite is GREEN (514 passing, `ruff` c
   `publish.py`.** It was not applied because a live scrape held the DB every time the
   window opened (a run starts on the hour, all day); do it in a gap, and re-read the dry
   diff first since the archive has grown since.
+  - **CHECK OSRM IS UP FIRST — `doctor.py`, or the curl in "Verify the base".** It is a
+    Docker container and it was found DOWN later the same afternoon. A replay with OSRM
+    unreachable still completes: it silently falls back to the straight-line estimate and
+    writes those walk minutes, and the AMBER boundary is a 20-minute WALK, so applying
+    while it is down bakes the approximation into every listing's tier and score. The
+    tuning workflow never said this; it matters more for `--apply` than for a dry run.
 
 Still unverified, and recorded as unverified rather than assumed:
 - `LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired. Closest: a run reached 39 local
@@ -927,6 +933,12 @@ the scraper MUST be conservative and the user must stay in control:
   or a threshold, run `python replay.py` to preview which stored listings flip,
   then `python replay.py --apply` to write it (updates the DB + rebuilds the
   Sheet, no Telegram). `stats.py` shows the funnel.
+  - **Two preconditions for `--apply`, neither of which announces itself.** OSRM must be
+    UP: it is a Docker container, a replay without it silently substitutes the
+    straight-line walk estimate, and the AMBER boundary IS a walk time — so applying
+    while it is down bakes the approximation into every tier and score. And no scrape may
+    be running: runs start on the hour all day, both processes write the same SQLite, and
+    a collision leaves the DB half-rewritten. `doctor.py` answers both in one command.
 - **`save_listing` ENRICHES, never replaces:** every nullable column is written as
   `COALESCE(new, old)`, so a thinner later read (the LLM missed the price this time)
   can only add detail, never blank a field. The recomputed verdict
