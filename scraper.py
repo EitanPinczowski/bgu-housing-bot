@@ -506,13 +506,23 @@ def _clean_story(raw: str) -> str:
         if _NUM_RE.match(s):       # reaction/comment counts
             continue
         out.append(s)
-    # Never at index 0/1: that is this post's own header, and cutting there would
-    # leave nothing at all.
-    for i in range(2, len(out)):
-        if _NEXT_STORY_AGE.match(out[i]) and len(out[i - 1]) <= 40:
-            out = out[:i - 1]
-            break
-    return "\n".join(out).strip()
+    return "\n".join(cut_at_next_story(out)).strip()
+
+
+def cut_at_next_story(lines: list) -> list:
+    """Drop everything from the next story's author+age header onwards.
+
+    Public because `replay.py` needs it too: the 404 posts already archived carry their
+    merged text, and re-parsing them has to apply the same boundary WITHOUT rewriting
+    the archive (which is the record of what was actually scraped, and sometimes the
+    only copy of a flat that was never captured on its own).
+
+    Never cuts at index 0/1 — that is this post's own header, and cutting there would
+    leave nothing at all."""
+    for i in range(2, len(lines)):
+        if _NEXT_STORY_AGE.match(lines[i]) and len(lines[i - 1]) <= 40:
+            return lines[:i - 1]
+    return lines
 
 
 def _age_from_aria(aria: str) -> Optional[float]:

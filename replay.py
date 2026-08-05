@@ -7,6 +7,13 @@ Replay the classifier over every archived post — re-test filter / zone / thres
     python replay.py --llm      # re-run the LLM extraction too — for prompt.py/llm.py edits
                                 #   (uses Gemini quota)
     python replay.py --changed  # only list posts whose verdict/score changed
+    python replay.py --llm --only-merged --min-score 1
+                                # re-read ONLY the posts whose archived text runs on
+                                #   into a second Facebook story (their stored parse
+                                #   mixed two posts). --min-score 1 narrows 404 such
+                                #   posts to the 58 that actually produce a listing —
+                                #   no merged DROP/NOT_AD carries a score, measured
+                                #   2026-08-05 — so it costs 58 Gemini calls, not 404.
     python replay.py --apply    # WRITE the results: update DB scores/tiers, add
                                 #   newly-qualifying listings, drop now-RED ones,
                                 #   and rebuild the Sheet. No Telegram (bulk change).
@@ -33,6 +40,7 @@ except Exception:
 
 import geocode
 import pipeline
+import scraper          # for cut_at_next_story only — no browser is started
 import sheets
 import storage
 from models import ListingExtract, Status
@@ -52,6 +60,21 @@ _PRUNE_ORPHANS = "--prune-orphans" in sys.argv   # drop rows whose key no longer
 # as an alias for the narrower bare-neighborhood-only subset.)
 _ONLY_IMPRECISE = "--only-imprecise" in sys.argv
 _ONLY_BARE = "--only-bare-nbhd" in sys.argv
+# --only-merged : replay ONLY posts whose archived raw_text runs on into a SECOND
+# Facebook story. Those were parsed from the merged blob, so the listing can carry one
+# post's flat under another post's permalink. Pair with --llm to re-read just those.
+_ONLY_MERGED = "--only-merged" in sys.argv
+
+
+def _is_merged_post(post) -> bool:
+    """True if the archived text still contains a next-story author+age header.
+
+    Measured 2026-08-05: 404 of 6,606 archived posts, 58 of them producing a live
+    listing. `scraper._clean_story` cuts these at scrape time now, so this only ever
+    matches history."""
+    raw = post.get("raw_text") or ""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    return len(scraper.cut_at_next_story(lines)) < len(lines)
 
 
 def _is_imprecise_post(post, bare_nbhd_only: bool = False) -> bool:
@@ -93,7 +116,15 @@ def _reclassify(post):
     if _USE_LLM:
         if not post["raw_text"]:
             return None
-        return pipeline.process_post(post["raw_text"], source_url=post["source_url"],
+        # ONE STORY PER POST, applied HERE rather than to the archive. A block can run
+        # on into a second story carrying its own price, address and phone, and the
+        # stored parse came from that merged text. `posts.raw_text` is deliberately left
+        # alone: it is the record of what was actually scraped, and the trailing content
+        # is sometimes the only copy of a flat never captured on its own. Truncating at
+        # read time gives the same verdict and destroys nothing.
+        lines = [ln.strip() for ln in post["raw_text"].splitlines() if ln.strip()]
+        text = "\n".join(scraper.cut_at_next_story(lines))
+        return pipeline.process_post(text, source_url=post["source_url"],
                                      group=post["group"], images=imgs,
                                      comments=post["comments"], commit=False)
     if not post["parsed_json"]:
@@ -114,6 +145,9 @@ def main() -> None:
             skipped += 1
             continue
         if (_ONLY_IMPRECISE or _ONLY_BARE) and not _is_imprecise_post(p, bare_nbhd_only=_ONLY_BARE):
+            skipped += 1
+            continue
+        if _ONLY_MERGED and not _is_merged_post(p):
             skipped += 1
             continue
         res = _reclassify(p)

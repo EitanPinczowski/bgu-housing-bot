@@ -46,3 +46,38 @@ def test_age_hours_tolerates_a_missing_or_broken_timestamp():
     assert replay._age_hours({}) is None
     assert replay._age_hours({"posted_at": None}) is None
     assert replay._age_hours({"posted_at": "not-a-date"}) is None
+
+
+# --- --only-merged: the posts whose archived text holds two Facebook stories --------
+
+def test_only_merged_selects_posts_that_run_into_a_second_story():
+    """404 of 6,606 archived posts on 2026-08-05. Their stored parse came from the
+    merged blob, so the listing can carry one post's flat under another's permalink."""
+    import replay
+    merged = {"raw_text": "\n".join([
+        "Noya Moyal", "זוג סטודנטים מחפשים דירה", "שכירות עד 3,300",
+        "Avidan Mandelman", "1h", "דירה של 95 מטר", "איתי - 0522629429"])}
+    single = {"raw_text": "\n".join([
+        "Shaked Avikzer", "מתפנה דירת 4 חדרים ברגר 133", "מחיר 3200"])}
+    assert replay._is_merged_post(merged) is True
+    assert replay._is_merged_post(single) is False
+    assert replay._is_merged_post({"raw_text": None}) is False
+
+
+def test_the_reparse_cut_does_not_touch_the_archive(monkeypatch):
+    """The cut is applied to the text HANDED to the LLM, never written back.
+    `posts.raw_text` is the record of what was actually scraped, and the trailing story
+    is sometimes the only copy of a flat never captured on its own."""
+    import replay
+    raw = "\n".join(["Noya Moyal", "מחפשים דירה", "Avidan Mandelman", "1h",
+                     "דירה של 95 מטר", "איתי - 0522629429"])
+    post = {"raw_text": raw, "images": None, "source_url": "u", "group": "g",
+            "comments": None, "parsed_json": None}
+    seen = {}
+    monkeypatch.setattr(replay, "_USE_LLM", True)
+    monkeypatch.setattr(replay.pipeline, "process_post",
+                        lambda text, **kw: seen.setdefault("text", text))
+    replay._reclassify(post)
+    assert "מחפשים דירה" in seen["text"]
+    assert "0522629429" not in seen["text"], "the second story must not reach the LLM"
+    assert post["raw_text"] == raw, "the archive itself is untouched"
