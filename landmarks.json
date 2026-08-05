@@ -31,7 +31,7 @@
    34.7967109
   ],
   "extent_m": 123.4,
-  "source": "Untitled layer (1).kmz"
+  "source": "Untitled layer (2).kmz"
  },
  "מרכז הנגב": {
   "polygon_latlon": [
@@ -61,7 +61,7 @@
    34.7957936
   ],
   "extent_m": 134.5,
-  "source": "Untitled layer (1).kmz"
+  "source": "Untitled layer (2).kmz"
  },
  "אביסרור": {
   "polygon_latlon": [
@@ -119,7 +119,7 @@
    34.7983952
   ],
   "extent_m": 298.6,
-  "source": "Untitled layer (1).kmz"
+  "source": "Untitled layer (2).kmz"
  },
  "מגדלי דוד": {
   "polygon_latlon": [
@@ -157,6 +157,36 @@
    34.8031054
   ],
   "extent_m": 115.1,
-  "source": "Untitled layer (1).kmz"
+  "source": "Untitled layer (2).kmz"
+ },
+ "מגדל הספורט": {
+  "polygon_latlon": [
+   [
+    31.2596067,
+    34.7946839
+   ],
+   [
+    31.2591665,
+    34.7948126
+   ],
+   [
+    31.2591298,
+    34.7954456
+   ],
+   [
+    31.259496,
+    34.7954932
+   ],
+   [
+    31.2596067,
+    34.7946839
+   ]
+  ],
+  "centroid": [
+   31.2594011,
+   34.7950238
+  ],
+  "extent_m": 89.7,
+  "source": "Untitled layer (2).kmz"
  }
 }

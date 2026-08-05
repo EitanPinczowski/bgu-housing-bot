@@ -542,7 +542,13 @@ def geocode_cached(location_text: Optional[str]):
     precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
     numbered = bool(_house_number(location_text))
     best_pos, best_coords, skipped_street = None, None, None
-    for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
+    # A SURVEYED LANDMARK IS A KEY IN ITS OWN RIGHT. Without this line `landmarks.json`
+    # could only re-grade and re-centre a name STATIC_TABLE already knew, so importing a
+    # KMZ for a new place (`מגדל הספורט`, 90 m) placed nothing at all — the loop never
+    # matched it. Importing a survey is now enough on its own; no code edit per landmark.
+    surveyed = {k: tuple(v["centroid"]) for k, v in landmarks().items() if v.get("centroid")}
+    for key, coords in (list(STATIC_TABLE.items()) + list(_load_user_pins().items())
+                        + list(surveyed.items())):
         k = _normalize(key)
         if not k:
             continue
@@ -673,7 +679,12 @@ def _resolve_detailed(location_text: Optional[str]):
     # street-level fix. `שלמה המלך, שכונה ג` came back `static_street` 1,070 m from
     # שלמה המלך: the right point was never found, and the wrong one claimed to be good.
     skipped_street_coords = skipped_grade = None
-    for key, coords in list(STATIC_TABLE.items()) + list(_load_user_pins().items()):
+    # Surveyed landmarks are keys in their own right — see the twin loop above. THERE
+    # ARE TWO of these loops; patching only one placed nothing, because the live path
+    # runs this one.
+    surveyed = {k: tuple(v["centroid"]) for k, v in landmarks().items() if v.get("centroid")}
+    for key, coords in (list(STATIC_TABLE.items()) + list(_load_user_pins().items())
+                        + list(surveyed.items())):
         k = _normalize(key)
         if not k:
             continue
