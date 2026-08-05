@@ -218,6 +218,26 @@ def _strip_prefix(n: str) -> Optional[str]:
     return None
 
 
+def _strip_road_type(n: str) -> Optional[str]:
+    """'רחוב בזל' -> 'בזל'. None when there is no leading road-type WORD to drop.
+
+    `_pool_key` has always ignored these words when deciding whether two OSM entries are
+    one road; the QUERY side did not. A post that writes the street out in full therefore
+    reached only the word-run tier — and that tier requires a 4-character run, so a street
+    whose name is shorter resolved to NOTHING at all. Measured: `בזל` alone is `exact`,
+    `רחוב בזל` was `(None, None)`, while `רחוב רמב"ם` and `רחוב בעלי התוספות` worked and
+    hid it. `בזל` is one of 194 single-word street names of four characters or fewer.
+
+    Note this strips a WORD, not the single letter `_strip_prefix` handles — the two are
+    different failures and both occur. The result only ever feeds an EXACT index lookup,
+    so it cannot invent a fuzzy match."""
+    parts = n.split()
+    out = list(parts)
+    while len(out) > 1 and out[0] in _ROAD_TYPES:
+        out = out[1:]
+    return " ".join(out) if out != parts else None
+
+
 @lru_cache(maxsize=512)
 def canonical(name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """(real_street_name, how) for a messy token, or (None, None) if we can't place it
@@ -231,6 +251,16 @@ def canonical(name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     bare = _strip_prefix(n)                        # 2) prefix-stripped exact (beats fuzzy!)
     if bare and bare in idx:
         return idx[bare], "prefix"
+    # 2b) a leading road-type WORD dropped: 'רחוב בזל' -> 'בזל'. EXACT lookups only, and
+    # the hit must be that street's OWN name — `_index` also holds the single-letter
+    # prefix aliases, so a plain `road in idx` answers `כיכר אבות` with `אבות` -> `האבות`,
+    # a street **2,506 m** away. That is the same trap tier 3b guards with this same test,
+    # and it fired the moment this tier was added (`test_every_static_entry_sits_on_the
+    # _street_it_names`). Deliberately NOT offered to the fuzzy tiers below for that
+    # reason: rescuing a short name must not widen what a road-type word can match.
+    road = _strip_road_type(n)
+    if road and _norm(idx.get(road, "")) == road:
+        return idx[road], "prefix"
     words = _words_index()                         # 3) UNIQUE word match ('רגר' -> 'שדרות יצחק רגר')
     for cand in filter(None, (n, bare)):
         hits = words.get(cand)
