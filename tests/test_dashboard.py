@@ -316,6 +316,18 @@ def test_legend_explains_the_map_without_javascript(temp_db, monkeypatch, tmp_pa
     assert "initLayers();" in page
 
 
+def test_every_switch_class_has_something_driving_it(temp_db, monkeypatch, tmp_path):
+    """A `.no-X` rule in the CSS is only half a layer — the landmarks shipped with the
+    switch class and no checkbox, so they were drawn permanently on, which is exactly
+    the untoggleable-gates problem the marker-class rule exists to prevent."""
+    import re
+    monkeypatch.setattr(dashboard, "OUT", tmp_path / "d.html")
+    _save("k1", "רגר 5")
+    legend = dashboard.build().split('<details id="legend"')[1].split("</details>")[0]
+    for cls in sorted(set(re.findall(r"\.no-(\w+)\s", dashboard.map_listings.STREET_CSS))):
+        assert f'data-layer="{cls}"' in legend, f".no-{cls} has no switch"
+
+
 # --- the shared snapshot -----------------------------------------------------------
 def test_snapshot_removes_write_controls_and_dates_itself(temp_db, monkeypatch, tmp_path):
     """A file someone was SENT has no server behind it. Buttons that could only alert

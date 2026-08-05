@@ -280,9 +280,20 @@ def test_base_svg_now_includes_streets_and_landmarks(monkeypatch):
 
 
 def test_missing_features_file_degrades_quietly(tmp_path, monkeypatch):
+    """`landmarks_svg` draws from TWO independent files, so a missing `area_features.json`
+    must take out the campus and Soroka and nothing else — the hand-drawn surveys in
+    `landmarks.json` are not derived from it and must survive its absence."""
+    import geocode
     monkeypatch.setattr(map_listings, "_FEATURES_PATH", tmp_path / "nope.json")
     assert map_listings.features() == {"landmarks": [], "streets": []}
     assert map_listings.streets_svg(_xy, _BOUNDS) == ([], [])
+
+    svg = "".join(map_listings.landmarks_svg(_xy))
+    assert "#3949ab" not in svg and "#ad1457" not in svg    # campus + Soroka gone
+    assert svg.count('class="lmk"') == len(geocode.landmarks())   # the surveys remain
+
+    # and with no source at all it is still empty rather than an error
+    monkeypatch.setattr(geocode, "landmarks", dict)
     assert map_listings.landmarks_svg(_xy) == []
 
 

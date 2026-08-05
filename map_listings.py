@@ -192,7 +192,6 @@ STREET_CSS = """
       vector-effect:non-scaling-stroke}
 .lmk-l{fill:#00695c;paint-order:stroke;stroke:#fff;stroke-width:2.6px}
 .no-lmk .lmk,.no-lmk .lmk-l{display:none!important}
-@media (prefers-color-scheme:dark){.lmk{stroke:#4db6ac;fill:#4db6ac}.lmk-l{fill:#4db6ac;stroke:#12161a}}
 .gate-l{fill:#5d4037;paint-order:stroke;stroke:#fff;stroke-width:2.6px}
 /* the GREEN|AMBER|RED field. Faint, because streets and dots have to read over it. */
 .tier{fill-opacity:.19;pointer-events:none}
@@ -207,9 +206,14 @@ STREET_CSS = """
 .no-tier .noamber{display:none!important}
 /* DARK. The page has had a full dark theme since D4; the map never did, so at night it
    was a white slab inside a dark page. The tier hues are dimmed rather than inverted —
-   at .19 opacity the light ones glow against a dark background. */
+   at .19 opacity the light ones glow against a dark background.
+   ONE dark block, not one per layer: a second dark media query opened earlier in this
+   sheet reads as the dark theme to anything that splits on the first occurrence, and
+   leaves the real overrides below looking absent. */
 @media (prefers-color-scheme:dark){
   .mapbg{fill:#12161a}
+  .lmk{stroke:#4db6ac;fill:#4db6ac}
+  .lmk-l{fill:#4db6ac;stroke:#12161a}
   .st-cas{stroke:#12161a;stroke-opacity:.55}
   .st-art{stroke:#c3ccd6;stroke-opacity:.85}
   .st-min{stroke:#78838f;stroke-opacity:.65}

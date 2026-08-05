@@ -2629,6 +2629,9 @@ def _legend_html() -> str:
 {ln("border-top-width:2.4px;border-color:#c8ccd2", "עורק ראשי · קו דק = רחוב פנימי")}
 {sw("#3949ab", "אוניברסיטת בן גוריון")}
 {sw("#ad1457", "סורוקה")}
+<div class="li"><span class="sw" style="background:#00695c;opacity:.4;
+  border:1.6px solid #00695c"></span> ציוני דרך שהפוסטים מזכירים (הבלוק, מגדלי דוד…) —
+  מצוירים בגודל שנמדד, כך שהמתאר עצמו מראה כמה מדויק מיקום שנמסר לפיו</div>
 <div class="li">★ שערי הקמפוס (השם מופיע בזום) — כל חישוב AMBER נמדד אליהם</div>
 <div class="li">🚌 קו 669 · 🚆 לרכבת · 🏋️ חדר כושר</div>
 <h4>שכבות</h4>
@@ -2636,6 +2639,7 @@ def _legend_html() -> str:
 {lay("streets", "רחובות ושמותיהם", True)}
 {lay("nbhd", "גבולות שכונות", True)}
 {lay("gates", "שערי הקמפוס", True)}
+{lay("lmk", "ציוני דרך מסומנים", True)}
 {lay("amen", "סימוני תחבורה וחדר כושר", True)}
 {lay("rings", f"טבעות הליכה 5/10/15/{config.MAX_WALK_MINUTES} דק׳ מהשערים", False)}
 <h4>התנהגות</h4>
