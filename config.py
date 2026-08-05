@@ -498,6 +498,24 @@ MAX_HOURS_BETWEEN_RUNS = 5
 # for this many minutes the run is wedged and gets killed so the next one can proceed.
 # Well above the slowest single post (~3.3 min) so a slow local-LLM run is never touched.
 STALL_MINUTES = 30
+# ...AND A HARD WALL-CLOCK CEILING ON TOP OF THAT (user, 2026-08-05).
+# The stall test above only catches a run that stops PROGRESSING. A run that crawls is
+# invisible to it: on 08-05 the 18:00 run was 90 minutes in, still on group 1 of 15 at
+# ~2 min/post, heartbeat fresh the whole time — perfectly "healthy" and useless, holding
+# the DB lock against every later slot.
+# This reverses the deliberate choice recorded just above ("judged by PROGRESS, not
+# elapsed time", because legitimate local-Ollama runs reached 99/195/268 minutes). Two
+# things changed and make the ceiling safe now:
+#   1. LOCAL_FALLBACK_MAX_POSTS_PER_RUN (40) ends a run before it can grind for hours —
+#      verified firing twice on 08-04, where those 268-minute runs came from.
+#   2. A transient 429/503 is retried rather than latching the whole run onto Ollama,
+#      so falling back at all is now rare.
+# Worst legitimate case left is ~40 capped local posts (~80 min) plus scraping overhead,
+# which fits under this. Raise it if a real run is ever killed; do not lower it without
+# re-checking those two mechanisms.
+# Wall clock, NOT monotonic: a run that slept through the night (the 00:46 run on 08-05
+# took 8.5 h for ~23 min of work) is exactly what this must catch.
+MAX_RUN_MINUTES = 120
 # Per-navigation cap inside a group. The 2026-07-27 hang produced ZERO output — it stuck
 # on the very first page load and sat there for 37h; a page timeout raises instead.
 PAGE_TIMEOUT_MS = 90_000
@@ -632,6 +650,11 @@ def validate() -> None:
     if LLM_BATCH_SIZE < 1:
         problems.append(f"LLM_BATCH_SIZE ({LLM_BATCH_SIZE}) must be >= 1 "
                         "(1 disables batching; 0 or less would extract nothing)")
+    if MAX_RUN_MINUTES and MAX_RUN_MINUTES <= STALL_MINUTES:
+        problems.append(f"MAX_RUN_MINUTES ({MAX_RUN_MINUTES}) <= STALL_MINUTES "
+                        f"({STALL_MINUTES}) — the wall-clock ceiling would fire before a "
+                        "stall could ever be detected, making STALL_MINUTES dead code "
+                        "and killing healthy runs")
     if LOCAL_FALLBACK_MAX_POSTS_PER_RUN < 1:
         problems.append(f"LOCAL_FALLBACK_MAX_POSTS_PER_RUN "
                         f"({LOCAL_FALLBACK_MAX_POSTS_PER_RUN}) must be >= 1 — 0 would "

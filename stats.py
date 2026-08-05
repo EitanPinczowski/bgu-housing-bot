@@ -183,10 +183,15 @@ def _run_reliability() -> None:
     lost: dict = {}
     by_design: dict = {}
     started: dict = {}
+    aborted: dict = {}
     for line in lines:
         s = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+START\b", line)
         if s:
             started[s.group(1)] = started.get(s.group(1), 0) + 1
+            continue
+        a = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+ABORT\s*(.*)", line)
+        if a:
+            aborted[a.group(1)] = aborted.get(a.group(1), 0) + 1
             continue
         m = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+(END|SKIP)\s*(.*)", line)
         if not m:
@@ -225,7 +230,13 @@ def _run_reliability() -> None:
         in_flight = 1 if scraper.run_in_progress() else 0
     except Exception:                              # never let this break the report
         in_flight = 0
-    crashed = sum(max(0, started.get(d, 0) - full[d] - hot[d]) for d in days) - in_flight
+    n_aborted = sum(aborted.get(d, 0) for d in days)
+    if n_aborted:
+        print(f"  {n_aborted} run(s) ABORTED by the watchdog (stalled, or past "
+              f"MAX_RUN_MINUTES) — deliberate, and the slot was freed")
+    # an aborted run also has a START and no END; don't accuse it twice
+    crashed = (sum(max(0, started.get(d, 0) - full[d] - hot[d]) for d in days)
+               - in_flight - n_aborted)
     if crashed > 0:
         print(f"  {crashed} run(s) STARTED and never finished — took the slot, produced "
               f"nothing, and are invisible to END/SKIP")

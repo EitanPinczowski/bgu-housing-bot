@@ -306,3 +306,93 @@ def test_the_keep_awake_guard_is_released_with_the_lock():
     code = "\n".join(ln for ln in tail.splitlines() if not ln.strip().startswith("#"))
     assert "stop_keep_awake()" in code
     assert code.index("stop_keep_awake()") < code.index("scraper.release_lock()")
+
+
+# --- the self-watchdog's TWO independent limits ------------------------------------
+
+def _watchdog_probe(monkeypatch, tmp_path, *, elapsed_min, heartbeat_min,
+                    cap=120, stall=30):
+    """Run one iteration of the watchdog loop's body and report what it aborted on.
+
+    The real loop sleeps 60s forever and ends in os._exit, so both are stubbed: the
+    sleep raises to break out after one pass, and _exit records instead of killing
+    the test runner.
+    """
+    import scraper
+    # DATA_DIR first: `_abort` appends an ABORT line to search_log.txt, and without
+    # this the test writes into the real operational run log (it did — two fake aborts
+    # dated 2026-08-05 20:08 had to be removed by hand).
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "MAX_RUN_MINUTES", cap)
+    monkeypatch.setattr(config, "STALL_MINUTES", stall)
+    monkeypatch.setattr(scraper, "reap_orphan_browsers", lambda: None)
+    monkeypatch.setattr(scraper, "heartbeat_age",
+                        lambda: None if heartbeat_min is None else heartbeat_min * 60)
+    aborted = {}
+    monkeypatch.setattr(scraper.os, "_exit", lambda code: (_ for _ in ()).throw(
+        SystemExit(code)))
+
+    clock = [1000.0]                      # a clock we advance by hand
+    monkeypatch.setattr(scraper.time, "time", lambda: clock[0])
+
+    calls = {"n": 0}
+
+    def fake_sleep(_s):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise SystemExit(0)          # loop ran clean, nothing tripped
+
+    monkeypatch.setattr(scraper.time, "sleep", fake_sleep)
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    thread_target = {}
+    monkeypatch.setattr(scraper.threading, "Thread",
+                        lambda target=None, **kw: type("T", (), {
+                            "start": lambda self: thread_target.setdefault("f", target)})())
+    scraper.start_self_watchdog()          # captures the start time from `clock`
+    clock[0] += elapsed_min * 60           # ...now let the run age
+    try:
+        thread_target["f"]()
+    except SystemExit as exc:
+        aborted["code"] = exc.code
+    aborted["log"] = "\n".join(printed)
+    return aborted
+
+
+def test_a_crawling_run_is_aborted_on_wall_clock(monkeypatch, tmp_path):
+    """The stall test cannot see this: on 2026-08-05 the 18:00 run was 90 minutes in,
+    still on group 1 of 15 at ~2 min/post, heartbeat fresh the whole time — healthy by
+    every existing measure and holding the lock against every later slot."""
+    out = _watchdog_probe(monkeypatch, tmp_path, elapsed_min=150, heartbeat_min=1, cap=120)
+    assert out["code"] == 2
+    assert "150 min" in out["log"] and "limit 120" in out["log"]
+
+
+def test_a_healthy_run_under_the_ceiling_is_left_alone(monkeypatch, tmp_path):
+    out = _watchdog_probe(monkeypatch, tmp_path, elapsed_min=45, heartbeat_min=1, cap=120)
+    assert out.get("code") == 0, out["log"]      # loop completed, nothing aborted
+    assert "aborting" not in out["log"]
+
+
+def test_the_stall_limit_still_fires_independently(monkeypatch, tmp_path):
+    """A run wedged after 10 minutes must not have to wait out the 2-hour ceiling."""
+    out = _watchdog_probe(monkeypatch, tmp_path, elapsed_min=10, heartbeat_min=45, cap=120, stall=30)
+    assert out["code"] == 2
+    assert "no progress" in out["log"]
+
+
+def test_the_ceiling_cannot_be_set_below_the_stall_limit():
+    """It would fire first every time, making STALL_MINUTES dead and killing healthy
+    runs."""
+    real = config.MAX_RUN_MINUTES
+    try:
+        config.MAX_RUN_MINUTES = 10          # below STALL_MINUTES (30)
+        try:
+            config.validate()
+        except SystemExit as exc:
+            assert "MAX_RUN_MINUTES" in str(exc)
+        else:
+            raise AssertionError("validate() accepted a ceiling below the stall limit")
+    finally:
+        config.MAX_RUN_MINUTES = real

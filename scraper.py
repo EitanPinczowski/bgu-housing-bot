@@ -169,19 +169,41 @@ def start_self_watchdog() -> None:
     call, so a normal exception or sys.exit would never be reached; and the browsers
     are killed first, because an orphaned Chromium left behind is how three
     unkillable processes ended up sitting on the profile for four days."""
+    started = time.time()          # wall clock: a run that SLEPT must still be caught
+
+    def _abort(why: str) -> None:
+        print(f"[scraper] {why} — aborting this run so the next one can start",
+              flush=True)
+        # SAY SO IN THE RUN LOG. `os._exit` skips main's own END line, so an abort is
+        # otherwise indistinguishable from a silent crash — it just shows up in
+        # stats.py as one more "started and never finished". Written here rather than
+        # through main._log_search because main imports scraper, not the other way.
+        try:
+            with open(config.DATA_DIR / "search_log.txt", "a", encoding="utf-8") as f:
+                f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M:%S}  ABORT  {why}\n")
+        except Exception as exc:
+            print(f"[scraper] could not log the abort: {exc}", flush=True)
+        try:
+            reap_orphan_browsers()
+        finally:
+            os._exit(2)
+
     def loop():
         while True:
             time.sleep(60)
+            # TWO different failures, and the stall test cannot see the second one.
+            # A run that CRAWLS keeps its heartbeat fresh forever: on 2026-08-05 the
+            # 18:00 run was 90 minutes in and still on group 1 of 15 at ~2 min/post,
+            # looking perfectly healthy while holding the lock against every later slot.
+            cap = getattr(config, "MAX_RUN_MINUTES", 0)
+            if cap:
+                ran = (time.time() - started) / 60
+                if ran > cap:
+                    _abort(f"run has taken {ran:.0f} min (limit {cap})")
             age = heartbeat_age()
-            if age is None or age <= config.STALL_MINUTES * 60:
-                continue
-            print(f"[scraper] no progress for {age / 60:.0f} min "
-                  f"(limit {config.STALL_MINUTES}) — aborting this run so the next "
-                  f"one can start", flush=True)
-            try:
-                reap_orphan_browsers()
-            finally:
-                os._exit(2)
+            if age is not None and age > config.STALL_MINUTES * 60:
+                _abort(f"no progress for {age / 60:.0f} min "
+                       f"(limit {config.STALL_MINUTES})")
 
     threading.Thread(target=loop, daemon=True, name="scraper-watchdog").start()
 

@@ -72,3 +72,20 @@ def test_the_run_in_flight_right_now_is_not_called_a_crash(tmp_path, monkeypatch
     out = _log(tmp_path, monkeypatch, "2026-08-05 15:00:03  START  LIVE  groups=3/15\n"
                                       "2026-08-05 08:00:02  END    LIVE  100s  posts=5")
     assert "STARTED and never finished" not in out, out
+
+
+def test_a_watchdog_abort_is_its_own_category(tmp_path, monkeypatch):
+    """An abort is deliberate and frees the slot, so it must not be reported as one
+    more anonymous crash — and must not be counted twice, since `os._exit` also leaves
+    it with a START and no END."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    out = _log(tmp_path, monkeypatch, "\n".join([
+        "2026-08-05 08:00:02  START  LIVE  groups=15/15",
+        "2026-08-05 10:00:02  ABORT  run has taken 150 min (limit 120)",
+        "2026-08-05 12:00:02  START  LIVE  groups=15/15",
+        "2026-08-05 12:30:02  END    LIVE  100s  posts=5",
+    ]))
+    assert "1 run(s) ABORTED by the watchdog" in out, out
+    assert "STARTED and never finished" not in out, "counted twice"
