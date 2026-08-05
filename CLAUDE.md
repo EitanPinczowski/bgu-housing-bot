@@ -4,33 +4,40 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-05)
+## OPEN RIGHT NOW — read this first (2026-08-05, later session)
 
-Two things are mid-flight and exist nowhere else. Clear them before starting new work.
+**ONE thing is outstanding: `replay.py --apply` has still not been run.** Everything else
+in the previous handoff is cleared — the suite is GREEN (514 passing, `ruff` clean).
 
-1. **THE SUITE IS RED — 2 tests.** `tests/test_map_listings.py::
-   test_missing_features_file_degrades_quietly` and one sibling. Cause: `landmarks_svg`
-   now reads the real `landmarks.json` through `geocode.landmarks()`, so a test that
-   stubs `features()` and expects an empty render gets seven real polygons — "no data
-   files, draw nothing" is no longer true for the surveyed layer. Fix by stubbing
-   `geocode.landmarks` in those tests, or by having the surveyed layer respect an
-   injected `feats`. They were committed red by mistake: `pytest -q | tail -2 && git
-   commit` discards pytest's exit code through the pipe. Use `pytest -q && git commit`.
-2. **THE REPLAY HAS NOT RUN** since `landmarks.kmz` was imported. All 7 landmarks
-   (`הבלוק`, `מגדלי דוד`, `מרכז הנגב`, `אביסרור`, `מגדל הספורט`, `טטריס`, `מגדל למדן`)
-   geocode and draw correctly, but they have changed **zero** verdicts. Do
-   `backup_db.py` → `replay.py` (dry) → READ THE DIFF → `--apply` → restart
-   `serve_dashboard.py` → `publish.py`.
+- The 2 red tests are fixed. `landmarks_svg` draws from **two independent files**, so
+  stubbing `_FEATURES_PATH` alone can no longer empty it; the test now asserts what
+  actually matters — a missing `area_features.json` removes the campus and Soroka and
+  leaves the hand-drawn surveys standing. (The pipe warning was right and is worth
+  keeping: `pytest -q | tail` discards pytest's exit code. Read the count, or drop the pipe.)
+- **The dry replay HAS been run and read** (`data/replay_dry_20260805.txt`): **127 changed
+  posts, overwhelmingly rescues** — in the printed sample 23 `DROP→MATCH`, 18
+  `DROP→NEEDS_DATA`, 9 score-only drift, and **no `MATCH→DROP`**, so applying adds
+  listings rather than deleting them. It is not all from the landmarks: the geocode cache
+  warms during a replay and Overpass has been down on all four mirrors, so addresses that
+  failed at classification time now resolve.
+  **Still to do: `backup_db.py` → `replay.py --apply` → restart `serve_dashboard.py` →
+  `publish.py`.** It was not applied because a live scrape held the DB every time the
+  window opened (a run starts on the hour, all day); do it in a gap, and re-read the dry
+  diff first since the archive has grown since.
 
 Still unverified, and recorded as unverified rather than assumed:
 - `LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired. Closest: a run reached 39 local
   posts of the 40 before the browser crashed. The next run that loses quota is the test.
-- `LLM_DAILY_BUDGET = 900` is a guess. The counter only became accurate on 2026-08-04
-  (counting moved into `_pace_gemini`), so the first real 429 after that is what sets it.
+- `LLM_DAILY_BUDGET = 900` is still a guess, but it now **measures itself**: a real
+  refusal records the count and the provider's own metric name, and `doctor` reports it.
+  A refusal was captured at 252 on 08-05 and is NOT usable — the window carried on past
+  it successfully, and its kind was never recorded, so it was a rate-limit blip rather
+  than the daily ceiling. Only a **PerDay** refusal may set the budget.
 
 The remaining improvement plan lives in `~/.claude/plans/spicy-sparking-crystal.md` —
-**that file is NOT auto-loaded**, unlike this one. Parts 2 (detection lag, median 3.3 h),
-4 (alert gate), 6 (doctor into the digest) are open; 1 and 3 are done; 5 is blocked above.
+**that file is NOT auto-loaded**, unlike this one. Parts 1–4 and 6 are DONE (2 and 4 ended
+in a deliberate *no change*, both recorded below); 5 is now instrumented and waiting for
+one clean PerDay refusal.
 
 ## Current status — BUILT, TESTED, and running
 
