@@ -30,6 +30,15 @@ in the previous handoff is cleared — the suite is GREEN (514 passing, `ruff` c
     writes those walk minutes, and the AMBER boundary is a 20-minute WALK, so applying
     while it is down bakes the approximation into every listing's tier and score. The
     tuning workflow never said this; it matters more for `--apply` than for a dry run.
+    **As of 19:30 on 08-05 OSRM is UP and verified** (Docker was repaired — see the
+    orphaned-socket note under "Verify the base"), so this precondition is currently met.
+  - **THE HARD PART IS FINDING A GAP, NOT THE APPLY ITSELF.** A run starts on the hour all
+    day, and on 08-05 the 18:00 full run was still holding the lock at 19:30 — 90 minutes
+    in, at ~2 min/post, because it had fallen through to the local model. Waiting politely
+    for a free lock did not work twice. Practical options: fire it right after a run logs
+    `END` (the gap before the next hour), or disable the `BGU Housing Scraper*` scheduled
+    tasks for the duration and re-enable them after. `python -c "import scraper;
+    print(scraper.run_in_progress())"` is the check.
 
 Still unverified, and recorded as unverified rather than assumed:
 - ~~`LOCAL_FALLBACK_MAX_POSTS_PER_RUN` has never fired.~~ **IT HAS — VERIFIED 2026-08-04,
