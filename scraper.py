@@ -416,6 +416,13 @@ _TS_ABS = re.compile(r"([a-z]{3,})\s+(\d{1,2})(?:,\s*(\d{4}))?[^\d]*?"
 # =============================================================================
 
 _NUM_RE = re.compile(r"^\+?\d[\d,]*$")       # like counts, "+5", "1,234"
+
+# The header Facebook renders above every story AFTER the first one in a scraped
+# block: an author line, then a bare relative age ("1h", "13h", "3d"). The post's
+# OWN header does not survive `_clean_story` in this form — its timestamp is the
+# CSS-scrambled single characters dropped a few lines below — so a surviving pair
+# marks where the NEXT story (or a comment) begins.
+_NEXT_STORY_AGE = re.compile(r"^\d{1,2}\s*[smhdw]$")
 _HEBREW_RE = re.compile(r"[֐-׿]")  # at least one Hebrew letter
 
 # --- Facebook block / checkpoint detection (part of the FRAGILE surface) ------
@@ -468,8 +475,22 @@ def open_browser():
 
 def _clean_story(raw: str) -> str:
     """Strip FB noise from one story's inner_text and cut the comments tail,
-    leaving (mostly) the post body. Author name / a stray inline comment may
-    remain — harmless for the LLM, which reads the body and ignores the rest."""
+    leaving (mostly) the post body.
+
+    IT ALSO STOPS AT THE NEXT STORY. This used to say a stray inline comment "may
+    remain — harmless for the LLM", and for a comment it is. It is not harmless when
+    the block runs on into a whole SECOND POST, which carries its own price, address
+    and phone: measured 2026-08-05, **404 of 6,502 archived posts (6%)** contained an
+    embedded author+age header, 32 of them live MATCHes. In the case that surfaced it,
+    a couple's "looking for a flat" post was followed by a stranger's offer for
+    `אליעזר בן יהודה`; the LLM read the merged blob, extracted the OFFER, and the
+    resulting listing pointed at the wanted-ad's permalink and showed its text. The
+    `_TAIL_MARKERS` cut never fired because that block had no "View more comments".
+
+    Cutting at the first surviving author+age header keeps the post the permalink
+    actually belongs to — which is the first one — and is right for both shapes: a
+    trailing comment is dropped (its content is captured separately in `comments`),
+    and a trailing post stops being attributed to this one."""
     cut = len(raw)
     for marker in _TAIL_MARKERS:
         i = raw.find(marker)
@@ -485,6 +506,12 @@ def _clean_story(raw: str) -> str:
         if _NUM_RE.match(s):       # reaction/comment counts
             continue
         out.append(s)
+    # Never at index 0/1: that is this post's own header, and cutting there would
+    # leave nothing at all.
+    for i in range(2, len(out)):
+        if _NEXT_STORY_AGE.match(out[i]) and len(out[i - 1]) <= 40:
+            out = out[:i - 1]
+            break
     return "\n".join(out).strip()
 
 

@@ -279,3 +279,58 @@ def test_ui_chrome_is_filtered_in_both_languages():
 def test_a_story_with_no_comments_yields_nothing():
     import scraper
     assert scraper._comments(_CmtStory("body", [])) == ""
+
+
+# --- one story per record: the block must not run on into the next post ------------
+
+def test_clean_story_stops_at_the_next_post():
+    """The case that surfaced this: a couple's "looking for a flat" post was followed
+    in one scraped block by a stranger's OFFER, so the LLM read both, extracted the
+    offer, and the listing pointed at the wanted-ad's permalink while showing its text.
+    `_TAIL_MARKERS` never fired — the block had no "View more comments"."""
+    out = scraper._clean_story("\n".join([
+        "Noya Moyal",
+        "זוג סטודנטים שנה ב׳, מחפשים דירת 3/3.5 חדרים",
+        "שכירות עד 3,300",
+        "Avidan Mandelman",
+        "1h",
+        "למי שמחפש דירה במחיר של פעם, דירה של 95 מטר",
+        "מחיר - 2500₪",
+        "איתי - 0522629429",
+    ]))
+    assert "מחפשים דירת" in out                    # the post the permalink belongs to
+    assert "Avidan Mandelman" not in out
+    assert "2500" not in out and "0522629429" not in out   # the other post's fields
+
+
+def test_clean_story_also_drops_a_trailing_comment():
+    """Same header shape, and the flat itself must survive — the comment's own text is
+    captured separately in `comments`."""
+    out = scraper._clean_story("\n".join([
+        "Noga Erlich",
+        "מתפנה דירה במצדה 10!",
+        "דירה ל3 שותפים בקומה 4, 1400 ש״ח לשותף",
+        "LivelyDeer99901",
+        "13h",
+        "יקר ברמות",
+    ]))
+    assert "מצדה 10" in out and "1400" in out
+    assert "יקר ברמות" not in out
+
+
+def test_clean_story_leaves_an_ordinary_single_post_alone():
+    body = "\n".join([
+        "Shaked Avikzer",
+        "מתפנה דירת 4 חדרים ברגר 133!",
+        "קומה 2, מחיר 3200₪ לחודש",
+        "050-1234567",
+    ])
+    out = scraper._clean_story(body)
+    assert "רגר 133" in out and "3200" in out and "050-1234567" in out
+
+
+def test_the_cut_never_eats_the_post_it_belongs_to():
+    """The post's own author header must not be mistaken for a next-story header —
+    cutting at index 0/1 would leave an empty body."""
+    out = scraper._clean_story("Noga Erlich\n3h\nמתפנה דירה במצדה 10, 1400 לשותף")
+    assert "מצדה 10" in out, out
