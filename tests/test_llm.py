@@ -354,3 +354,84 @@ def test_the_local_model_does_not_spend_gemini_budget(monkeypatch, tmp_path):
     before = llm.budget_state()[1]
     llm.extract("post")
     assert llm.budget_state()[1] == before
+
+
+# --- Part 5: the budget must be settable from a measurement, not a guess -----------
+
+def test_a_real_refusal_records_where_the_provider_actually_stopped(tmp_path, monkeypatch):
+    """`LLM_DAILY_BUDGET` (900) is a guess. The only thing that can replace it is the
+    count standing when the first real 429 lands — and that was previously visible for a
+    few seconds in the stdout of a run nobody is watching."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(366)
+    assert llm.quota_refusal() is None
+    llm.record_quota_refusal()
+    assert llm.quota_refusal() == 366
+    assert llm.budget_state()[1] == 366, "recording must not lose the running count"
+
+
+def test_only_the_first_refusal_in_a_window_is_kept(tmp_path, monkeypatch):
+    """Where the refusals START is the ceiling; where the last one landed is noise."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(366)
+    llm.record_quota_refusal()
+    llm._spend_budget(20)
+    llm.record_quota_refusal()
+    assert llm.quota_refusal() == 366
+
+
+def test_our_own_ceiling_is_not_recorded_as_a_measurement(tmp_path, monkeypatch):
+    """Our budget tripping says nothing about where Google's is — recording it would play
+    the guess back as if it were evidence. Only `_is_quota_error` paths call this."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(llm.config, "LLM_DAILY_BUDGET", 10)
+    llm._spend_budget(10)
+    assert llm.budget_spent() is True
+    assert llm.quota_refusal() is None, "the client-side ceiling is not a refusal"
+
+
+def test_counting_more_calls_does_not_erase_the_refusal_point(tmp_path, monkeypatch):
+    """`_spend_budget` wrote a bare {window, calls}, so the next run in the same window
+    wiped the measurement before anyone could read `doctor`."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(366)
+    llm.record_quota_refusal()
+    llm._spend_budget(5)                 # a later run in the same window
+    assert llm.quota_refusal() == 366
+    assert llm.budget_state()[1] == 371
+
+
+def test_a_daily_refusal_and_a_per_minute_one_are_told_apart(tmp_path, monkeypatch):
+    """`_is_quota_error` matches RESOURCE_EXHAUSTED / 429 / "quota" alike and threw the
+    text away, so the first refusal ever recorded (252, 2026-08-05) cannot be diagnosed.
+    Only a PerDay refusal may lower LLM_DAILY_BUDGET — treating a burst that was too fast
+    as the daily ceiling would cut the allowance to a fraction of the real one."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(250)
+    llm.record_quota_refusal(
+        "429 RESOURCE_EXHAUSTED quota_metric: generate_content_free_tier_requests, "
+        "quota_id: GenerateRequestsPerDayPerProjectPerModel")
+    assert llm.quota_refusal() == 250
+    assert llm.quota_refusal_kind() == "day"
+
+
+def test_a_per_minute_refusal_is_not_the_daily_ceiling(tmp_path, monkeypatch):
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(30)
+    llm.record_quota_refusal("429 quota_id: GenerateRequestsPerMinutePerProjectPerModel")
+    assert llm.quota_refusal_kind() == "minute"
+
+
+def test_an_undiagnosed_refusal_says_so_rather_than_guessing(tmp_path, monkeypatch):
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(252)
+    llm.record_quota_refusal()                      # no detail — the 2026-08-05 case
+    assert llm.quota_refusal() == 252
+    assert llm.quota_refusal_kind() == "unknown"

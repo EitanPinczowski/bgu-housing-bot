@@ -373,6 +373,24 @@ def _check_llm_budget():
     resets = dates.quota_window_resets_at()
     hrs = max(0.0, (resets - datetime.now()).total_seconds() / 3600)
     msg = f"{used}/{cap} used in window {window} · resets in {hrs:.1f}h"
+    # THE MEASUREMENT THAT REPLACES THE GUESS. 900 was picked out of the air; the real
+    # ceiling is wherever the provider first says no, and that used to be visible only in
+    # the stdout of an unattended run. `llm.record_quota_refusal` now stores it.
+    refused = llm.quota_refusal()
+    if refused is not None:
+        kind = llm.quota_refusal_kind()
+        if kind == "day":
+            return ("llm budget", WARN, f"{msg} · provider refused (PER-DAY) at {refused}",
+                    f"measured: set LLM_DAILY_BUDGET just under {refused} so we stop "
+                    f"before Google does (it is currently {cap})")
+        if kind == "minute":
+            return ("llm budget", PASS, f"{msg} · one PER-MINUTE refusal at {refused}",
+                    "a rate-limit blip, not the daily ceiling — do NOT lower "
+                    "LLM_DAILY_BUDGET on it; consider raising GEMINI_MIN_INTERVAL_SEC")
+        return ("llm budget", WARN, f"{msg} · provider refused at {refused} (kind unknown)",
+                "the error text was not captured for this one, and a per-minute 429 looks "
+                "identical to a daily one — do NOT retune the budget until a refusal "
+                "records its metric (…PerDay vs …PerMinute)")
     if used >= cap:
         return ("llm budget", FAIL, msg,
                 "the client-side ceiling is spent — runs will use the local model "

@@ -229,12 +229,19 @@ def budget_state() -> tuple[str, int]:
 
 
 def _spend_budget(n: int = 1) -> None:
-    """Record n primary-provider requests against the current window."""
+    """Record n primary-provider requests against the current window.
+
+    Carries `refused_at` through. Writing a bare {window, calls} erased the measured
+    refusal point the moment the NEXT run in the same window made a call — so the one
+    number Part 5 exists to capture would be gone before anyone read `doctor`."""
     import json
     window, used = budget_state()
+    refused = quota_refusal()
+    rec = {"window": window, "calls": used + n}
+    if refused is not None:
+        rec["refused_at"] = refused
     try:
-        _BUDGET_PATH.write_text(json.dumps({"window": window, "calls": used + n}),
-                                encoding="utf-8")
+        _BUDGET_PATH.write_text(json.dumps(rec), encoding="utf-8")
     except Exception as exc:                      # a counter must never break a run
         print(f"[llm] could not record budget: {exc}")
 
@@ -243,6 +250,78 @@ def budget_spent() -> bool:
     """Have we used this window's self-imposed allowance?"""
     cap = getattr(config, "LLM_DAILY_BUDGET", 0)
     return bool(cap) and budget_state()[1] >= cap
+
+
+def record_quota_refusal(detail: str = "") -> None:
+    """Remember the counted call number at which GOOGLE ACTUALLY REFUSED, once per window.
+
+    `LLM_DAILY_BUDGET` (900) is a guess, and the only thing that can replace it with a
+    measurement is the count standing when the first real 429 arrives. That number was
+    previously observable for a few seconds inside one run's stdout — you had to be
+    watching `doctor`'s budget row at the moment it happened, on a machine that scrapes
+    unattended. So it records itself, and `doctor` reports it afterwards.
+
+    ONLY a real refusal from the provider. Our own ceiling tripping is not evidence about
+    where theirs is — recording that would just play back the guess as if it were a
+    measurement. First writer per window wins: the interesting number is where the
+    refusals START, not where the last one landed.
+
+    `detail` is the provider's own error text, kept because A DAILY REFUSAL AND A
+    PER-MINUTE ONE ARE THE SAME 429 HERE: `_is_quota_error` matches any of
+    RESOURCE_EXHAUSTED / 429 / "quota", collapses it to a boolean, and the text was
+    thrown away — so the first refusal this recorded (252, 2026-08-05) cannot be
+    diagnosed at all. Google names the metric in the body (…PerDay vs …PerMinute), which
+    is the whole difference between "the real ceiling is 250" and "one burst was too
+    fast". Only a PerDay refusal may be used to set `LLM_DAILY_BUDGET`."""
+    import json
+    window, used = budget_state()
+    try:
+        d = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        d = {}
+    if d.get("window") == window and d.get("refused_at") is not None:
+        return
+    rec = {"window": window, "calls": used, "refused_at": used}
+    if detail:
+        rec["refused_detail"] = str(detail)[:300]
+    try:
+        _BUDGET_PATH.write_text(json.dumps(rec), encoding="utf-8")
+        print(f"[llm] provider refused at {used} counted calls this window — "
+              f"`doctor` will report it; set LLM_DAILY_BUDGET just under it")
+    except Exception as exc:                      # a counter must never break a run
+        print(f"[llm] could not record the refusal point: {exc}")
+
+
+def quota_refusal() -> int | None:
+    """The counted call number at which the provider refused in THIS window, if it has."""
+    return (_refusal_record() or {}).get("refused_at")
+
+
+def _refusal_record() -> dict | None:
+    import json
+    import dates
+    try:
+        d = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return d if d.get("window") == dates.quota_window() and d.get("refused_at") is not None else None
+
+
+def quota_refusal_kind() -> str:
+    """'day' | 'minute' | 'unknown' — which ceiling the provider said we hit.
+
+    Only 'day' may be used to set `LLM_DAILY_BUDGET`: a per-minute refusal says the burst
+    was too fast, not that the allowance is gone, and treating it as the daily ceiling
+    would cut the budget to a fraction of the real one."""
+    rec = _refusal_record()
+    if not rec:
+        return "unknown"
+    s = str(rec.get("refused_detail", "")).lower().replace("_", "").replace(" ", "")
+    if "perday" in s or "requestsperday" in s:
+        return "day"
+    if "perminute" in s:
+        return "minute"
+    return "unknown"
 
 
 def _set_primary_exhausted(why: str) -> None:
@@ -300,6 +379,7 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
         fallback_used += 1
         if _is_quota_error(exc):
             _primary_exhausted = True
+            record_quota_refusal(str(exc))   # their ceiling, and WHICH ceiling
             print(f"[llm] {primary} quota reached — using {fallback} "
                   "for the rest of this run.")
         else:
@@ -415,5 +495,6 @@ def extract_many(posts: list[tuple[str, str | None]]) -> list[ListingExtract]:
         # A quota error must LATCH exactly as it does for a single post, or the next
         # batch pays Gemini's slow retry-backoff all over again.
         if _is_quota_error(exc):
+            record_quota_refusal(str(exc))
             _set_primary_exhausted(f"quota reached on a batch of {len(posts)}")
         return one_by_one(str(exc)[:120])
