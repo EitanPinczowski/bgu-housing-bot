@@ -881,6 +881,13 @@ the scraper MUST be conservative and the user must stay in control:
     Lock-held skips are now counted as losses and the ~1-in-8 `random human-like skip`
     apart from them, because that one is designed and flagging it trains you to ignore
     the row. This is the gate the whole latency question is decided on; there is a test.
+  - **A RUN THAT STARTS AND NEVER ENDS IS A THIRD LOSS, AND END/SKIP CANNOT SEE IT.**
+    The 14:00 full run on 08-05 logged START, wrote no END, and was gone from the process
+    table an hour later. It is not a SKIP (it took the slot) and not an END (it produced
+    nothing), so the row called the day quiet. `START - END` counts it: **7 in 7 days**,
+    on top of the 20 completed and 17 lock-lost. It is a DIFFERENT fault from the wedged
+    lock — a crash releases the lock, so the next slot starts normally and nothing
+    downstream ever complains. The scrape in flight while the report runs is excluded.
   - **The worst lag cluster is one wedged run, not a bad group.** 90 posts at ~17.7 h,
     59 of them in one group, were the 00:46 hot run that slept until 09:15 and read an
     Aug-4-noon backlog at ~06:00. Group `138595033004411`'s 1,066-min median is that
