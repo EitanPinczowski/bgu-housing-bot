@@ -464,8 +464,15 @@ and you scroll the page from outside the map. Hovering a dot opens a small card 
 it; tapping does the same on a phone. Street names appear as they become legible.
 **Shift+drag** (or the `▭ אזור` button) rubber-bands an area and filters to it. The
 legend panel — collapsed, top corner — explains every symbol and switches layers off:
-streets, neighborhood outlines, transit pins, and **walk-time rings** at 5/10/15/20 min
-around each gate, which is the `MAX_WALK_MINUTES` rule behind every AMBER made visible.
+streets, neighborhood outlines, transit pins, campus gates, **landmarks**, and
+**walk-time rings** at 5/10/15/20 min around each gate, which is the `MAX_WALK_MINUTES`
+rule behind every AMBER made visible.
+
+**The landmarks posts actually name** — `הבלוק`, `מגדלי דוד`, `טטריס` … — are drawn in
+teal at the size they were surveyed at, so a flat given as "in הבלוק" sits inside a
+shape that shows how precisely that places it: a 90 m outline and a 300 m one do not
+look alike. They are your own hand-drawn `landmarks.json`; the blue campus and magenta
+Soroka come from OSM.
 
 **What the background colours mean.** The whole map is washed green / amber / red — the
 verdict any flat *at that spot* would get, sampled from the same classifier the pipeline
@@ -672,6 +679,10 @@ adds the Telegram DM (what `watchdog.py` runs).
   private DM only** the day's **unmapped locations** — names the bot extracted but
   couldn't geocode (e.g. a new area nickname), most frequent first, so you can pin
   the common ones to `geocode.STATIC_TABLE` and stop missing that area.
+  It now leads with **`doctor.py`'s hard failures**, one line each with the fix — so a
+  wedged scraper, a stale dashboard or a run that slept through its trigger reaches you
+  without your having to think to check. Only real failures appear, and nothing at all
+  when everything passes: if the digest says nothing about health, health is fine.
 
 **Where things go:** listings (scraper alerts + the morning/evening top-N) go to
 the **group**; operational pings and the DM digest go to **your private DM**.

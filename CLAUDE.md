@@ -442,6 +442,16 @@ SQLite + optional Google Sheets + Telegram alert`
 - `amenities.py` / `load_amenities.py` — walk times to the bus/gym that matter
   (`config.AMENITY_TARGETS`), from MOT GTFS + Overpass. **Display only, never scored.**
 - `fit.py` — 0–100 fit score → ⭐1–5 (zone, walk, price, rooms, freshness, entry date).
+  - **`MIN_ALERT_SCORE` (75) WAS AUDITED 2026-08-05 AND DELIBERATELY LEFT ALONE.** It lets
+    the top **45%** of MATCH rows through (86 of 191, ~1–5 alerts on a normal day), which
+    is neither the silence you stop trusting nor the flood you mute. The distribution is
+    **smooth across 75** — the gate sits inside the densest bucket — so there is no valley
+    to snap the number to, and any new value would be as arbitrary as this one. The only
+    evidence that could justify moving it is which flats the group actually stars, and
+    that is **n=3** (1 saved, 1 dismissed, 1 contacted) against 191 MATCHes. `stats.py`'s
+    `alert gate` row prints the histogram, the gate's position in it, and its own n, and
+    warns only once ≥20 votes exist and a **saved** listing scored below the gate. Do not
+    retune this on the score shape alone; wait for the votes.
 - `storage.py` — SQLite: dedup, listings, votes/marks, unknown-locations, fingerprints, post archive.
 - `sheets.py` — optional Google Sheets sink (append, batch reconcile, sort, rebuild).
 - `notifier.py` — Telegram MarkdownV2 alerts; group-vs-DM routing; albums; vote buttons.
@@ -461,6 +471,18 @@ SQLite + optional Google Sheets + Telegram alert`
 - `scraper.py` / `login.py` / `main.py` — Playwright reader, one-time login, orchestrator.
 - `manual.py` — paste-a-post CLI (risk-free entry point).
 - `top_listings.py` / `digest.py` / `dm_digest.py` — morning/evening top-N, recaps, DM digest.
+  - **`doctor`'s FAILs RIDE THE DM DIGEST** (`dm_digest._health_section`), because every
+    failure of 2026-08-04/05 — the wedged lock that ate 17 scheduled slots, the 22-hour
+    stale dashboard, the runs that slept through their trigger — was found only because a
+    person happened to run `doctor.py`. Nothing ever pushed. A check nobody reads is not a
+    check; now silence means healthy rather than unobserved.
+    - **FAIL only, never WARN.** A digest that cries daily is one you stop opening, which
+      is the exact failure this is meant to fix rather than reproduce.
+    - **A failure ALONE must be enough to send.** `build()` returned None when there was
+      nothing unmapped, so on a quiet day a wedged scraper would have been reported by
+      nobody — the health rows join that emptiness test.
+    - It is wrapped and cannot suppress the rest: a health check that throws reports
+      itself as a line and the unmapped-locations digest still goes out.
 - `bot_listener.py` / `watchdog.py` — vote-button listener + DM-only `/search`
   (`query.py`) and `/status` commands; dependency health check.
 - `query.py` — parse a free Hebrew/English search into filters; ranked SQLite search.
@@ -665,7 +687,23 @@ SQLite + optional Google Sheets + Telegram alert`
   neighborhood outlines, amenity pins, and `walk_rings_svg` (5/10/15/`MAX_WALK_MINUTES`
   from each gate, using the same arithmetic as `zones.est_walk_to_gate_min`).
   Layer switches are one class on the `<svg>`; each layer needs its **own** marker
-  class (`st-l`, `nbhd`/`nbhd-abc`, `amen`) — a `:not()` chain once hid the campus label.
+  class (`st-l`, `nbhd`/`nbhd-abc`, `amen`, `lmk`) — a `:not()` chain once hid the campus label.
+  - **The surveyed landmarks are DRAWN, at their measured extent** (`geocode.landmarks()`,
+    a second source alongside `area_features.json`'s campus/Soroka). They steered geocoding
+    while being invisible, so a dot inside `הבלוק` looked placed from nowhere; a 90 m
+    outline and a 299 m one don't look alike, so the shape itself says how precisely a
+    listing described that way is known. A missing `area_features.json` must not take them
+    with it — different file, and there's a test.
+  - **A `.no-X` CLASS IS ONLY HALF A LAYER — it needs a checkbox driving it.** `lmk`
+    shipped with the switch class, the dark rule and a test asserting the CSS, and was
+    still permanently on and unexplained, because nothing emitted `data-layer="lmk"` in
+    `dashboard._legend_html`. That is the untoggleable-gates problem the marker-class rule
+    exists to prevent, reintroduced by the rule's own wording. A test now walks every
+    `.no-X` in `STREET_CSS` and demands a switch.
+  - **ONE dark media query, not one per layer.** The `.lmk` rules opened a second
+    `@media (prefers-color-scheme:dark)` earlier in `STREET_CSS`; the dark-theme test
+    splits on the first occurrence, so it read the two-line landmark block as the whole
+    theme and reported `.mapbg` unthemed. Dark overrides go in the existing block.
   - **A STREET'S PROMINENCE IS THE TOTAL POLYLINE IT DRAWS**, not the distance between one
     segment's ends, and not its longest segment. Both were wrong and each hid different
     streets: measuring end-to-end understates a curved road (`חיבת ציון`, 13.8 px against
@@ -801,6 +839,33 @@ the scraper MUST be conservative and the user must stay in control:
   full runs**, and re-check with `python group_report.py` and `python stats.py`
   (which now prints time-to-detect and runs/day, both with their n). All other safety rules are untouched (dry-run
   default, jitter, daytime only, read-only, checkpoint-abort).
+- **2026-08-05 — THE LAG IS LOST RUNS, NOT CADENCE. Do not rebalance the schedule.**
+  Detection lag was measured before changing anything, and the schedule is not the
+  binding constraint: **20 of 42 scheduled full runs completed in the 7 days to 08-05
+  (48%), with 17 slots LOST to a held lock.** A slot that never runs cannot be fixed by
+  moving the slots around, and the three lock repairs (bounded teardown, the self
+  watchdog, `start_keep_awake`) all landed 08-04/08-05 — *after* almost all of this data.
+  Re-measure over clean days before touching cadence; the plan's "trim productive groups
+  to pay for a hot pass" trade-off is not needed if the scheduled runs simply happen.
+  - **`stats.py`'s reliability row counted `END|SKIP` TOGETHER, so it read healthiest
+    exactly when runs were being lost** — 08-03 reported 11 runs / **119%** of target
+    while 5 were `lock held` and 4 actually ran. A SKIP is a run that did not happen.
+    Lock-held skips are now counted as losses and the ~1-in-8 `random human-like skip`
+    apart from them, because that one is designed and flagging it trains you to ignore
+    the row. This is the gate the whole latency question is decided on; there is a test.
+  - **The worst lag cluster is one wedged run, not a bad group.** 90 posts at ~17.7 h,
+    59 of them in one group, were the 00:46 hot run that slept until 09:15 and read an
+    Aug-4-noon backlog at ~06:00. Group `138595033004411`'s 1,066-min median is that
+    event, not its posting pattern — don't drop a group on it.
+  - **What IS structural: the overnight gap.** Posts published 19:00–23:00 (27% of the
+    usable sample) have a 500–680-min median because night runs are forbidden. Afternoon
+    posts (13:00–17:00), where hourly coverage already works, sit at 45–139 min. Nothing
+    to fix without breaking the daytime-only rule.
+  - **Two thirds of the archive cannot answer this question at all.** `posted_at` is
+    rewritten on every sighting while `first_seen` is not, and `sig` is a content
+    signature — so a landlord reposting the same text pushes `posted_at` past
+    `first_seen` and the row is dropped as impossible. 1,968 of 3,027 on 08-05, silently
+    until now. The surviving sample is *posts published once*, and `stats.py` now says so.
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.
