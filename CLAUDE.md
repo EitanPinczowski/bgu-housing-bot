@@ -843,6 +843,24 @@ never hardcode. `auth/`, `data/`, `.env` are git-ignored.
 
 - OSRM: `curl.exe "http://localhost:5000/route/v1/foot/34.79,31.25;34.8015,31.2622?overview=false"` → expect `"code":"Ok"` + a duration.
 - Pipeline: `python manual.py`, paste a real post, type `END`.
+- **DOCKER WON'T START AFTER AN UNCLEAN SHUTDOWN: ORPHANED UNIX SOCKETS** (2026-08-05,
+  cost most of an afternoon). Docker Desktop dies with *"An unexpected error occurred …
+  initializing X: listening on unix://…: remove …: The file cannot be accessed by the
+  system"*. Those `.sock` files are zero-length **reparse points** whose backing object
+  died with the crash; Windows can neither open nor delete them, so `Remove-Item` fails
+  with the same error Docker gets. **A reboot does NOT clear them** — they are on disk.
+  - Fix: stop every Docker process, then **rename the PARENT DIRECTORY** (the file itself
+    cannot be touched). Docker recreates it empty on the next start. Renaming beats
+    deleting — it is reversible, and these dirs can hold more than the socket.
+  - **THE ERROR MOVES TO THE NEXT SOCKET**, so fixing one looks like it did nothing.
+    Seen in order: `%LOCALAPPDATA%\Docker\run\dockerInference`, then
+    `%LOCALAPPDATA%\docker-secrets-engine\engine.sock`. Sweep for
+    `Attributes -match "ReparsePoint"` under both roots and clear them all at once.
+  - **Never click "Reset to factory defaults"** on that dialog — it is the other button,
+    and it deletes all images and containers, `osrm_bgu` included (a multi-GB rebuild
+    from the Israel PBF).
+  - Symptom while it is broken: `docker` CLI HANGS rather than erroring, and
+    `wsl -l -v` shows `docker-desktop` **Stopped** with no `dockerd` inside it.
 
 ## SAFETY CONSTRAINTS (must hold for the scraper)
 
