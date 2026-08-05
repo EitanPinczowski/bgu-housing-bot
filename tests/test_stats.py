@@ -46,3 +46,29 @@ def test_the_random_skip_is_not_reported_as_a_fault(tmp_path, monkeypatch):
     ]))
     assert "0 slot(s) LOST" not in out and "LOST" not in out
     assert "1 skipped by design" in out, out
+
+
+def test_a_run_that_starts_and_never_ends_is_counted(tmp_path, monkeypatch):
+    """It is not a SKIP (it took the slot) and not an END (it produced nothing), so a
+    metric built on those two calls the day merely quiet. The 14:00 full run on
+    2026-08-05 did exactly this. Measured over 7 days: 7 of them."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    out = _log(tmp_path, monkeypatch, "\n".join([
+        "2026-08-05 08:00:02  START  LIVE  groups=15/15",
+        "2026-08-05 09:00:02  END    LIVE  100s  posts=5",
+        "2026-08-05 14:00:03  START  LIVE  groups=15/15",     # never ends
+    ]))
+    assert "1 run(s) STARTED and never finished" in out, out
+
+
+def test_the_run_in_flight_right_now_is_not_called_a_crash(tmp_path, monkeypatch):
+    """A healthy scrape mid-run has a START and no END yet; accusing it would make the
+    row cry on every machine that is currently working."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: True)
+    out = _log(tmp_path, monkeypatch, "2026-08-05 15:00:03  START  LIVE  groups=3/15\n"
+                                      "2026-08-05 08:00:02  END    LIVE  100s  posts=5")
+    assert "STARTED and never finished" not in out, out

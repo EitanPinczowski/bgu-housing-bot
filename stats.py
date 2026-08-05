@@ -165,7 +165,14 @@ def _run_reliability() -> None:
     The two skip reasons are not the same thing and are counted apart: the ~1-in-8
     `random human-like skip` is DESIGNED (`SCRAPER_SKIP_RUN_PROBABILITY`) and is not a
     fault, while `lock held` is a wedged run eating the whole slot — 17 of them in the
-    8 days to 2026-08-05, which is the real reason listings were found late."""
+    8 days to 2026-08-05, which is the real reason listings were found late.
+
+    A RUN THAT STARTS AND NEVER ENDS IS COUNTED NOWHERE by END/SKIP alone, and it is a
+    real loss: the 14:00 full run on 2026-08-05 logged START, wrote no END, and was gone
+    from the process table an hour later. It is not a SKIP (it took the slot) and not an
+    END (it produced nothing), so a metric built on those two says the day was merely
+    quiet. `START - END` per day names it. Today's still-running scrape is excluded, or
+    the row would accuse the healthy run currently in flight."""
     path = config.DATA_DIR / "search_log.txt"
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -175,7 +182,12 @@ def _run_reliability() -> None:
     hot: dict = {}
     lost: dict = {}
     by_design: dict = {}
+    started: dict = {}
     for line in lines:
+        s = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+START\b", line)
+        if s:
+            started[s.group(1)] = started.get(s.group(1), 0) + 1
+            continue
         m = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+(END|SKIP)\s*(.*)", line)
         if not m:
             continue
@@ -206,6 +218,17 @@ def _run_reliability() -> None:
         print(f"  {n_lost} slot(s) LOST to a held lock / other fault"
               f" — a wedged run eats the slot it holds")
     print(f"  {sum(by_design[d] for d in days)} skipped by design (random human-like)")
+    # a run in flight right now has a START and no END yet, and is not a crash
+    in_flight = 0
+    try:
+        import scraper
+        in_flight = 1 if scraper.run_in_progress() else 0
+    except Exception:                              # never let this break the report
+        in_flight = 0
+    crashed = sum(max(0, started.get(d, 0) - full[d] - hot[d]) for d in days) - in_flight
+    if crashed > 0:
+        print(f"  {crashed} run(s) STARTED and never finished — took the slot, produced "
+              f"nothing, and are invisible to END/SKIP")
     if pct < 90:
         print("   ← missed runs; check `python doctor.py` wake timers")
 
