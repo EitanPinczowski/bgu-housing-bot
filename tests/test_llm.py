@@ -1,23 +1,11 @@
 """llm.extract fallback ladder: quota latches immediately, transient errors are
 served by the fallback and only abandon the primary after a threshold."""
-import pytest
-
 import config
 import llm
 
 _slept: list = []          # every sleep the retry loop asked for, in order
 
 
-@pytest.fixture(autouse=True)
-def _isolate_budget(tmp_path, monkeypatch):
-    """NO TEST MAY READ THE REAL data/llm_budget.json.
-
-    They did, and it was invisible while `LLM_DAILY_BUDGET` was 900: the live counter
-    sat at 506, comfortably under, so `budget_spent()` was False and nothing looked
-    wrong. Lowering the budget to 480 — the real limit — made the operational file
-    read as ALREADY SPENT and broke 14 tests that had nothing to do with budgets.
-    A test that depends on production state passes or fails for reasons of its own."""
-    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "llm_budget.json")
 
 
 def _setup(monkeypatch, fail_with, retries=0):
