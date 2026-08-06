@@ -4,38 +4,34 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-05, evening)
+## OPEN RIGHT NOW — read this first (2026-08-06)
 
-**ONE command is outstanding, and it needs the quota window that opens at 10:00 Israel:**
+**Nothing is blocking. Two things are OWED, both cheap:**
 
-```bash
-python replay.py --llm --only-merged --min-score 1 --changed   # dry — READ IT
-python replay.py --llm --only-merged --min-score 1 --apply     # then write
-```
+1. **A larger model A/B.** `gemini-3.1-flash-lite` was promoted to the ladder's first
+   rung on **n=48** (it reads prices correctly where 3.5 does not — see the LLM section).
+   That is a real result but a small sample, so confirm it when quota allows:
+   ```bash
+   python model_ab.py sample 25            # ~100 posts
+   python model_ab.py ask gemini-3.1-flash-lite
+   python model_ab.py ask gemini-3.5-flash-lite
+   python model_ab.py report gemini-3.5-flash-lite gemini-3.1-flash-lite
+   ```
+   **Never while a scrape is running** — pacing is per PROCESS, the RPM limit is per
+   project, so two writers issue ~27/min against a limit of 15.
+2. **`prune_orphan_listings` is BROKEN — do not run `replay.py --prune-orphans`.** It
+   builds its live-key set from `make_dedup_key` (2,942 keys) when a listing legitimately
+   holds any key `dedup_keys` yields (5,238), so it would delete **21 rows, 11 of them
+   real** — measured 2026-08-06, including `אלכסנדר ינאי 30` at score 98 and
+   `אברהם אבינו 11` at 93. Fix it to compare against `dedup_keys` before ever using it.
 
-That re-reads the **58 archived posts whose text runs on into a second Facebook story**,
-whose stored parse therefore mixed two posts. `phone:522629429` is the reported example:
-its listing carries Avidan Mandelman's flat under a *different* couple's "looking for a
-flat" permalink. Expect it to flip `MATCH → NOT_AD` and the listing to disappear for good
-(it was deleted once and came back on the 19:29 `--apply`, exactly as predicted, because
-`--apply` reuses the stored parse). ~58 Gemini calls. The usual `--apply` preconditions
-still hold: **OSRM up** and **no scrape running** (`doctor.py` answers both), backup first.
-
-Everything else is done: the suite is GREEN (528 passing, `ruff` clean) and `doctor.py`
-is all-green.
-- **`replay.py --apply` HAS been run** (2026-08-05 19:29, after `backup_db.py` wrote
-  `listings-20260805-192914.sqlite` and OSRM was verified). 6,606 posts, **152 changed:
-  42 rescued to MATCH, 2 dropped, 80 duplicates merged**; listings 350 → **357**
-  (MATCH 201, NEEDS_DATA 156); sheet rebuilt. No lock contention — the scraper tasks were
-  paused for it.
-- Docker was broken all afternoon and is **fixed** — see the orphaned-socket note under
-  "Verify the base". OSRM is up.
-
-- The 2 red tests are fixed. `landmarks_svg` draws from **two independent files**, so
-  stubbing `_FEATURES_PATH` alone can no longer empty it; the test now asserts what
-  actually matters — a missing `area_features.json` removes the campus and Soroka and
-  leaves the hand-drawn surveys standing. (The pipe warning was right and is worth
-  keeping: `pytest -q | tail` discards pytest's exit code. Read the count, or drop the pipe.)
+Done today: the 58 merged posts were re-parsed (`--llm --only-merged --min-score 1
+--apply`: 47 changed, 20 dropped, 3 rescued, 9 duplicates merged) and
+`phone:522629429` is gone for good. The suite is GREEN (554 passing, `ruff` clean) and
+`doctor.py` is all-green.
+- Docker was broken on 08-05 and is **fixed** — see the orphaned-socket note under
+  "Verify the base". OSRM is up. Listings are at **374**.
+- `pytest -q | tail` discards pytest's exit code. Read the count, or drop the pipe.
 - **THE HARD PART OF AN `--apply` IS FINDING A GAP.** A run starts on the hour all day,
   and on 08-05 the 18:00 full run held the lock for 90+ minutes at ~2 min/post because it
   had fallen through to the local model. Waiting politely for a free lock failed twice.
@@ -111,12 +107,39 @@ SQLite + optional Google Sheets + Telegram alert`
 
 ## Key decisions (do not silently reverse these)
 
-- **LLM = Google Gemini free tier** (`gemini-flash-lite-latest`, chosen for the
-  largest free daily quota on this key), behind a small interface in `llm.py` so
+- **LLM = Google Gemini free tier, as a PINNED MODEL LADDER** (`config.GEMINI_MODELS` =
+  `gemini-3.1-flash-lite` then `gemini-3.5-flash-lite`), behind a small interface in `llm.py` so
   it can swap to an OpenAI-compatible endpoint (Ollama/Groq). Guaranteed
   structured output + a Hebrew prompt whose core rule is *return null, never
   guess*. On quota (429) or repeated errors it falls back to a local Ollama model
   for the rest of the run; a client-side min-interval paces Gemini under the RPM cap.
+  - **THE QUOTA IS PER PROJECT PER MODEL, SO A SECOND MODEL DOUBLES THE DAY** (2026-08-06).
+    Each rung has its own RPD 500, taking the ceiling to ~1,000 against ~700–870 demand.
+    Only a **PerDay** exhaustion advances a rung; a per-minute 429 or a 503 is retried in
+    place, because advancing on a blip would burn the reserve on a problem that clears
+    itself in seconds. `llm.active_model()` is the rung in use; `_model_rung` is per
+    process, so every run starts back at the best model.
+  - **3.1 LEADS BECAUSE IT MEASURED BETTER, NOT BECAUSE IT IS NEWER — IT ISN'T.**
+    `model_ab.py`, 48 posts × 2 passes per model: 0 `is_apartment_ad` flips, and on
+    PRICE they disagreed 5 times with **3.1 right all five**. The prompt says to divide a
+    total rent by the residents; 3.1 does, 3.5 either ignores it (a 3-room flat at 3,000
+    total came back as 3,000 **per room**, which the ≤2000 filter then DROPS) or returns
+    null (a MATCH demoted to NEEDS_DATA). Both of 3.5's failure modes lose real flats.
+    Confirmed by reading the source posts, not by trusting percentages.
+    - The address column reads 54% and means nothing: the differences are `רחוב X` vs `X`
+      and `שכונה ב` vs `שכונה ב׳`. Same place. Same artefact the batching work hit.
+    - 3.1 is **100% self-consistent on every field**; 3.5 is 88% on rooms and 77% on
+      address *against itself*. That noise floor is what retired an earlier scare from a
+      4-post smoke test where 3.5 appeared to "lose" room counts.
+    - **n=48 — reversible on purpose.** Swap the order back in `GEMINI_MODELS` if a
+      larger sample or the live funnel disagrees. A bigger confirmation run is still owed.
+  - **PIN THE MODEL, NEVER `-latest`.** The alias moves, and a silent swap changes what is
+    extracted from thousands of posts. (It was not the cause of the 08-06 outage — the
+    per-model usage chart shows one model all week — but it is a standing hazard.)
+  - **The budget is counted PER MODEL** (`llm.budget_state(model)`), or the first rung
+    running out would stop the whole ladder. A legacy flat count is attributed to NO
+    model: charging it to "the first rung" billed 429 calls to a model that had made
+    ~100 and would have stopped it 375 calls early.
   - **A TRANSIENT 429/503 IS RETRIED, NOT LATCHED** (2026-08-05). There was no retry at
     all: any error matching `_is_quota_error` set `_primary_exhausted` for the whole
     process, so a per-minute blip and a daily exhaustion were the same thing and the
