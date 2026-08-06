@@ -484,15 +484,47 @@ def open_browser():
 
     Returns (playwright, context). The caller must close BOTH (context first,
     then playwright.stop()) — see main.py.
-    """
-    p = sync_playwright().start()
-    context = p.chromium.launch_persistent_context(
-        str(config.SCRAPER_PROFILE_DIR),
-        headless=config.SCRAPER_HEADLESS,
-        locale="he-IL",
-        timezone_id="Asia/Jerusalem",
-    )
-    return p, context
+
+    RETRIES, BECAUSE A FAILED LAUNCH USED TO COST THE WHOLE SLOT. Every traceback in
+    the run log is this one call, and the run died before reading a single post — no
+    END line, nothing downstream to complain, just a run that vanished (9 of them in
+    the 7 days to 2026-08-05). Both observed causes are transient and clear on a second
+    attempt:
+      * "the profile is already in use by another instance of Chromium" — a leftover
+        Chromium still holding `auth/chrome_profile`. `reap_orphan_browsers()` is
+        exactly the cure and already existed; it was simply never called before a
+        launch, only after a wedge had already been detected.
+      * "Timeout 180000ms exceeded".
+
+    Reaping is safe here for the reason its own docstring gives: `main.py` calls this
+    while HOLDING the lock, so anything still driving that profile is a leftover.
+
+    Each failed attempt stops its playwright handle before the next one starts —
+    otherwise every retry leaks a driver process, which is how orphans accumulate in
+    the first place."""
+    tries = max(1, getattr(config, "BROWSER_LAUNCH_RETRIES", 2) + 1)
+    for attempt in range(tries):
+        p = sync_playwright().start()
+        try:
+            context = p.chromium.launch_persistent_context(
+                str(config.SCRAPER_PROFILE_DIR),
+                headless=config.SCRAPER_HEADLESS,
+                locale="he-IL",
+                timezone_id="Asia/Jerusalem",
+            )
+            return p, context
+        except Exception as exc:
+            try:
+                p.stop()               # never leave the driver behind for the retry
+            except Exception:
+                pass
+            if attempt == tries - 1:
+                raise
+            killed = reap_orphan_browsers()
+            print(f"[scraper] browser launch failed ({str(exc)[:90]}) — "
+                  f"reaped {killed} orphan browser(s), retrying "
+                  f"({attempt + 1}/{tries - 1})", flush=True)
+            time.sleep(getattr(config, "BROWSER_LAUNCH_RETRY_SLEEP_SEC", 5.0))
 
 
 def _clean_story(raw: str) -> str:

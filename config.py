@@ -516,6 +516,18 @@ STALL_MINUTES = 30
 # Wall clock, NOT monotonic: a run that slept through the night (the 00:46 run on 08-05
 # took 8.5 h for ~23 min of work) is exactly what this must catch.
 MAX_RUN_MINUTES = 120
+# HOW MANY TIMES TO RETRY OPENING THE BROWSER BEFORE GIVING UP THE RUN.
+# Every traceback in the run log is the same call — `launch_persistent_context` — and it
+# kills the run before it reads a single post: the slot is simply lost, with no END line
+# to show for it (9 such runs in the 7 days to 2026-08-05). Two observed causes, both
+# transient:
+#   "Opening in existing browser session ... the profile is already in use by another
+#    instance of Chromium"   -> a leftover Chromium still holding auth/chrome_profile
+#   "TimeoutError: launch_persistent_context: Timeout 180000ms exceeded"
+# `reap_orphan_browsers()` is precisely the cure for the first and already existed; it
+# was just never called BEFORE a launch, only after a wedge was detected.
+BROWSER_LAUNCH_RETRIES = 2
+BROWSER_LAUNCH_RETRY_SLEEP_SEC = 5.0
 # Per-navigation cap inside a group. The 2026-07-27 hang produced ZERO output — it stuck
 # on the very first page load and sat there for 37h; a page timeout raises instead.
 PAGE_TIMEOUT_MS = 90_000

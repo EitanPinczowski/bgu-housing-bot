@@ -396,3 +396,77 @@ def test_the_ceiling_cannot_be_set_below_the_stall_limit():
             raise AssertionError("validate() accepted a ceiling below the stall limit")
     finally:
         config.MAX_RUN_MINUTES = real
+
+
+# --- opening the browser: a failed launch must not cost the whole slot -------------
+
+class _FakePW:
+    """Stands in for a sync_playwright() handle."""
+    def __init__(self, outcomes, log):
+        self._outcomes, self._log = outcomes, log
+        self.chromium = self
+        self.stopped = False
+
+    def start(self):
+        return self
+
+    def stop(self):
+        self.stopped = True
+        self._log.append("stop")
+
+    def launch_persistent_context(self, *a, **kw):
+        self._log.append("launch")
+        out = self._outcomes.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def _launch_probe(monkeypatch, outcomes, retries=2):
+    log, handles = [], []
+
+    def fake_sync_playwright():
+        h = _FakePW(outcomes, log)
+        handles.append(h)
+        return h
+
+    monkeypatch.setattr(config, "BROWSER_LAUNCH_RETRIES", retries)
+    monkeypatch.setattr(config, "BROWSER_LAUNCH_RETRY_SLEEP_SEC", 0)
+    monkeypatch.setattr(scraper, "sync_playwright", fake_sync_playwright)
+    monkeypatch.setattr(scraper, "reap_orphan_browsers", lambda: log.append("reap") or 1)
+    monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+    return log, handles
+
+
+def test_a_launch_that_fails_once_is_retried_after_reaping(monkeypatch):
+    """"the profile is already in use by another instance of Chromium" — a leftover
+    Chromium. reap_orphan_browsers() was the documented cure and was never called
+    before a launch, so the run just died and the slot was lost."""
+    err = RuntimeError("Opening in existing browser session. This usually means that "
+                       "the profile is already in use by another instance of Chromium.")
+    log, handles = _launch_probe(monkeypatch, [err, "CONTEXT"])
+    p, ctx = scraper.open_browser()
+    assert ctx == "CONTEXT"
+    assert log == ["launch", "stop", "reap", "launch"]
+    assert handles[0].stopped is True, "a failed attempt must not leak its driver"
+
+
+def test_a_launch_that_keeps_failing_still_raises(monkeypatch):
+    err = RuntimeError("Timeout 180000ms exceeded")
+    log, _ = _launch_probe(monkeypatch, [err, err, err], retries=2)
+    try:
+        scraper.open_browser()
+    except RuntimeError as exc:
+        assert "Timeout" in str(exc)
+    else:
+        raise AssertionError("open_browser swallowed a permanent failure")
+    assert log.count("launch") == 3          # first try + 2 retries
+    assert log.count("stop") == 3            # every attempt cleaned up
+
+
+def test_a_healthy_launch_neither_reaps_nor_retries(monkeypatch):
+    log, _ = _launch_probe(monkeypatch, ["CONTEXT"])
+    p, ctx = scraper.open_browser()
+    assert ctx == "CONTEXT"
+    assert log == ["launch"], log            # no reap, no stop, no second attempt
