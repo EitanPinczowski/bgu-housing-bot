@@ -118,7 +118,7 @@ def _extract_gemini(post_text: str, images=None) -> ListingExtract:
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     resp = client.models.generate_content(
-        model=config.GEMINI_MODEL,
+        model=active_model(),
         contents=contents,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -273,6 +273,37 @@ ocr_used = 0
 # instead of costing ~2 min each on Ollama.
 retries_attempted = 0
 retries_succeeded = 0
+# Which rung of the model ladder is in use. Fresh per run (each scheduled run is a new
+# process), so every run starts back at the best model rather than inheriting an
+# exhaustion that may have expired.
+_model_rung = 0
+
+
+def _ladder() -> list:
+    """The models to try, best first. Falls back to the single-model setting."""
+    return list(getattr(config, "GEMINI_MODELS", None) or [config.GEMINI_MODEL])
+
+
+def active_model() -> str:
+    """The model requests are being sent to right now."""
+    lad = _ladder()
+    return lad[min(_model_rung, len(lad) - 1)]
+
+
+def _advance_model(why: str) -> bool:
+    """Move to the next rung. True if there was one.
+
+    ONLY a per-day exhaustion should get here. A per-minute 429 or a 503 is retried in
+    place (see `extract`) — advancing on a blip would burn the reserve model on a
+    problem that clears itself in seconds."""
+    global _model_rung
+    lad = _ladder()
+    if _model_rung + 1 >= len(lad):
+        return False
+    _model_rung += 1
+    print(f"[llm] {lad[_model_rung - 1]} {why} — switching to {lad[_model_rung]} "
+          f"(its daily quota is separate)", flush=True)
+    return True
 
 
 def _short_err(exc: Exception) -> str:
@@ -292,15 +323,31 @@ def _short_err(exc: Exception) -> str:
 _BUDGET_PATH = config.DATA_DIR / "llm_budget.json"
 
 
-def budget_state() -> tuple[str, int]:
+def budget_state(model: str | None = None) -> tuple[str, int]:
     """(window, calls used) for the CURRENT quota window. A window that has rolled
-    over reads as 0 — no cleanup job, the stale entry is simply not this window."""
+    over reads as 0 — no cleanup job, the stale entry is simply not this window.
+
+    COUNTED PER MODEL, because the quota is. One shared number would stop the whole
+    ladder the moment its first rung ran out, which is the opposite of the point.
+    `model=None` means the ladder's ACTIVE rung; the flat `calls` key is still summed
+    so a budget file written before the ladder existed does not read as zero."""
     import dates
     window = dates.quota_window()
+    model = model or active_model()
     try:
         import json
         d = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
-        return window, int(d.get("calls", 0)) if d.get("window") == window else 0
+        if d.get("window") != window:
+            return window, 0
+        per = d.get("models") or {}
+        # A LEGACY FLAT COUNT IS NOT ATTRIBUTED TO ANY MODEL. It was written before the
+        # split, so which model spent it is genuinely unknown — and guessing "the first
+        # rung" is actively wrong the moment the ladder is reordered: it charged 429
+        # calls to the model that had made ~100 of them and would have stopped it 375
+        # calls early. Under-protecting for the one window that straddles the upgrade is
+        # the safe direction, because Google's own 429 is the real gate and the ladder
+        # now handles it.
+        return window, int(per.get(model, 0))
     except Exception:
         return window, 0
 
@@ -315,7 +362,8 @@ def _spend_budget(n: int = 1) -> None:
     dropped, so the diagnosis vanished and a later refusal "upgraded" over a record
     that had merely been blanked. Keep everything and overwrite only the count."""
     import json
-    window, used = budget_state()
+    model = active_model()
+    window, used = budget_state(model)
     try:
         rec = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
         if rec.get("window") != window:
@@ -323,7 +371,10 @@ def _spend_budget(n: int = 1) -> None:
     except Exception:
         rec = {}
     rec["window"] = window
-    rec["calls"] = used + n
+    rec.setdefault("models", {})[model] = used + n
+    # `calls` stays as the window TOTAL across models — it is what `doctor` and the run
+    # summary have always shown, and it is still the right headline number.
+    rec["calls"] = sum(int(v) for v in rec["models"].values())
     try:
         _BUDGET_PATH.write_text(json.dumps(rec), encoding="utf-8")
     except Exception as exc:                      # a counter must never break a run
@@ -380,7 +431,15 @@ def record_quota_refusal(detail: str = "") -> None:
     # An upgrade keeps the ORIGINAL count — only the diagnosis improves, not the point
     # at which Google started refusing.
     at = d.get("refused_at") if upgrade else used
-    rec = {"window": window, "calls": used, "refused_at": at, "refused_kind": kind}
+    # MUTATE THE EXISTING RECORD; DO NOT REBUILD IT. Constructing a fresh dict here is
+    # the third time this file has silently dropped a sibling field — first `refused_at`,
+    # then the diagnosis, and now the per-model `models` counts, which reset the whole
+    # ladder's budget to zero the moment a refusal was recorded.
+    rec = d if d.get("window") == window else {}
+    rec["window"] = window
+    rec["refused_at"] = at
+    rec["refused_kind"] = kind
+    rec.setdefault("calls", used)
     if detail:
         rec["refused_detail"] = str(detail)[:500]
         lim = _stated_limit(detail)
@@ -519,6 +578,18 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
                     exc = exc2
                     if not _retryable(exc):
                         break
+        # A PER-DAY EXHAUSTION IS THE ONE THING THE LADDER IS FOR. The quota is per
+        # model, so the next rung has its own untouched allowance — trying it beats
+        # spending the rest of the run on a ~2 min/post local model. Only reached after
+        # the retries above, so a per-minute blip can never burn the reserve.
+        if _quota_kind(str(exc)) == "day" and _advance_model("daily quota exhausted"):
+            record_quota_refusal(str(exc))
+            try:
+                result = _run(primary, post_text, use_img)
+                _consecutive_errors = 0
+                return result
+            except Exception as exc2:
+                exc = exc2               # the next rung failed too — fall through
         fallback_used += 1
         if _is_quota_error(exc):
             _primary_exhausted = True
@@ -593,7 +664,7 @@ def _extract_gemini_many(texts: list[str]) -> list[ListingExtract]:
     )
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     resp = client.models.generate_content(
-        model=config.GEMINI_MODEL,
+        model=active_model(),
         contents=[_SYSTEM_HE, instruction, "\n\nהפוסטים:\n" + numbered],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",

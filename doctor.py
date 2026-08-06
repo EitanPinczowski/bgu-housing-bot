@@ -368,11 +368,18 @@ def _check_llm_budget():
     cap = getattr(config, "LLM_DAILY_BUDGET", 0)
     if not cap:
         return ("llm budget", SKIP, "no client-side ceiling (LLM_DAILY_BUDGET=0)", "")
-    window, used = llm.budget_state()
+    window, used = llm.budget_state()          # the ACTIVE rung — what the gate uses
     import dates
     resets = dates.quota_window_resets_at()
     hrs = max(0.0, (resets - datetime.now()).total_seconds() / 3600)
-    msg = f"{used}/{cap} used in window {window} · resets in {hrs:.1f}h"
+    # SHOW EVERY RUNG, not just the active one. The budget gate is per model because the
+    # quota is, but a row reading "0/480" on a day that made 429 calls is a lie of
+    # omission — the reader wants the window's total and where it went.
+    ladder = getattr(config, "GEMINI_MODELS", None) or [config.GEMINI_MODEL]
+    per = [(m, llm.budget_state(m)[1]) for m in ladder]
+    spread = " · ".join(f"{m.replace('gemini-', '')} {n}" for m, n in per)
+    msg = (f"{used}/{cap} on {llm.active_model().replace('gemini-', '')} "
+           f"[{spread}] · window {window} · resets in {hrs:.1f}h")
     # THE MEASUREMENT THAT REPLACES THE GUESS. 900 was picked out of the air; the real
     # ceiling is wherever the provider first says no, and that used to be visible only in
     # the stdout of an unattended run. `llm.record_quota_refusal` now stores it.

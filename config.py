@@ -214,7 +214,29 @@ LLM_FALLBACK_PROVIDER = "openai_compatible"   # local Ollama (see LLM_* in .env)
 # The "lite" latest alias gets a much larger free daily allowance and handles
 # this structured Hebrew extraction fine. If it ever regresses, check current
 # free RPD at https://ai.google.dev/gemini-api/docs/rate-limits before changing.
-GEMINI_MODEL = "gemini-flash-lite-latest"
+# THE MODEL LADDER. The free quota is per project per MODEL, so a second model carries
+# its own RPD 500 and the day's ceiling becomes ~1,000 instead of 500 — which is what
+# peak demand (~700-870 calls) actually needs. On a PER-DAY refusal the next rung is
+# tried; only when every rung is spent does a run fall to the local model.
+#
+# 3.1 LEADS BECAUSE IT MEASURED BETTER, not because it is newer (it isn't).
+# `model_ab.py`, 48 posts x 2 passes per model, 2026-08-06:
+#   * is_apartment_ad: 100% agreement, 0 flips.
+#   * PRICE: they disagreed 5 times and 3.1 was right ALL FIVE. The prompt says to
+#     divide a total rent by the number of residents; 3.1 does, 3.5 either ignores it
+#     (a 3-room flat at 3,000 total came back as 3,000 PER ROOM, which the <=2000 filter
+#     then DROPS) or gives up and returns null (a MATCH demoted to NEEDS_DATA). Both of
+#     3.5's failure modes lose real flats.
+#   * 3.1 was 100% self-consistent on every field; 3.5 manages 88% on rooms and 77% on
+#     address against ITSELF. The address column looks alarming (54%) and is not — the
+#     differences are `רחוב X` vs `X` and `שכונה ב` vs `שכונה ב׳`, i.e. the same place.
+# n=48, so this is reversible on purpose: swap the order back if a bigger sample or the
+# live funnel disagrees.
+GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+# Pinned, never `-latest`: that alias moves, and a silent model swap changes what is
+# extracted from thousands of posts. Kept as the single-model name for callers that
+# still ask for one (and as the ladder's first rung by default).
+GEMINI_MODEL = GEMINI_MODELS[0]
 # For "openai_compatible" (Ollama / Groq): set base_url + model in llm.py/.env
 # Client-side pacing so we don't trip the free-tier RPM limit (which would 429 us
 # onto the slow local fallback). Minimum seconds between Gemini calls.

@@ -516,14 +516,65 @@ def test_a_503_is_retried_too(monkeypatch):
 
 
 def test_a_per_day_refusal_skips_the_retries(monkeypatch):
-    """Waiting cannot conjure allowance back. Latch at once and spend the time on
-    posts instead."""
+    """Waiting cannot conjure allowance back, so no retries and no sleeping. The one
+    extra call is the LADDER — the next model's daily quota is separate, so it is worth
+    one attempt before a ~2 min/post local model gets the rest of the run."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
     calls = _flaky(monkeypatch, "429 quota_id: GenerateRequestsPerDayPerProject",
                    fail_times=99)
     assert llm.extract("post") == "FALLBACK_OK"
     assert llm._primary_exhausted is True
-    assert calls.count("gemini") == 1               # asked once, no retries
+    assert calls.count("gemini") == 2               # first rung + second rung, no retries
     assert llm.retries_attempted == 0 and _slept == []
+
+
+def test_a_per_day_exhaustion_moves_to_the_next_model(monkeypatch):
+    """The quota is per project per MODEL, so the reserve has its own untouched
+    allowance — 500 more calls instead of falling to Ollama at ~2 min/post."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    seen = []
+
+    def fake_run(provider, text, images=None):
+        if provider != "gemini":
+            return "FALLBACK_OK"
+        seen.append(llm.active_model())
+        if llm.active_model() == "m-one":
+            raise RuntimeError("429 quota_id: GenerateRequestsPerDayPerProject")
+        return "SECOND_MODEL_OK"
+
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    monkeypatch.setattr(llm, "_run", fake_run)
+    assert llm.extract("post") == "SECOND_MODEL_OK"
+    assert seen == ["m-one", "m-two"]
+    assert llm._primary_exhausted is False, "the run keeps its Gemini access"
+    assert llm.active_model() == "m-two"
+
+
+def test_a_blip_never_burns_the_reserve_model(monkeypatch):
+    """A per-minute 429 or a 503 is retried IN PLACE. Advancing on a blip would spend
+    the second model's allowance on a problem that clears itself in seconds."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    _flaky(monkeypatch, "429 RESOURCE_EXHAUSTED", fail_times=1)
+    llm.extract("post")
+    assert llm.active_model() == "m-one", "stayed on the first rung"
+
+
+def test_the_budget_is_counted_per_model(monkeypatch, tmp_path):
+    """One shared number would stop the whole ladder the moment its first rung ran
+    out — the opposite of the point."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    llm._spend_budget(400)
+    assert llm.budget_state("m-one")[1] == 400
+    assert llm.budget_state("m-two")[1] == 0, "the reserve has its own allowance"
+    monkeypatch.setattr(llm, "_model_rung", 1)
+    llm._spend_budget(5)
+    assert llm.budget_state("m-two")[1] == 5
+    assert llm.budget_state("m-one")[1] == 400      # untouched
 
 
 def test_retries_exhausted_falls_back_and_the_post_is_not_lost(monkeypatch):
@@ -611,3 +662,32 @@ def test_a_named_refusal_is_not_overwritten_by_a_later_one(tmp_path, monkeypatch
     llm._spend_budget(20)
     llm.record_quota_refusal(_REAL_REFUSAL.replace("limit: 500", "limit: 999"))
     assert llm.quota_refusal() == first and llm.stated_quota_limit() == 500
+
+
+def test_a_legacy_flat_count_is_not_charged_to_any_model(monkeypatch, tmp_path):
+    """A budget file written before the per-model split cannot say WHICH model spent
+    those calls. Attributing them to "the first rung" is wrong the moment the ladder is
+    reordered — it charged 429 calls to a model that had made ~100 of them, and would
+    have stopped it 375 calls early. Google's own 429 is the real gate."""
+    import json
+    import dates
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    (tmp_path / "b.json").write_text(
+        json.dumps({"window": dates.quota_window(), "calls": 429}), encoding="utf-8")
+    assert llm.budget_state("m-one")[1] == 0
+    assert llm.budget_state("m-two")[1] == 0
+
+
+def test_recording_a_refusal_does_not_reset_the_per_model_counts(monkeypatch, tmp_path):
+    """Third time a writer in this file dropped a sibling field. Rebuilding the record
+    here wiped `models`, which zeroed the whole ladder's budget the instant a refusal
+    was recorded."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    llm._spend_budget(300)
+    llm.record_quota_refusal("429 quota_id: GenerateRequestsPerDayPerProject")
+    assert llm.budget_state("m-one")[1] == 300, "the count survived the refusal"
+    llm._spend_budget(5)
+    assert llm.budget_state("m-one")[1] == 305

@@ -25,6 +25,9 @@ def _never_touch_the_real_budget_file(tmp_path, monkeypatch):
     needs it is not always the module that writes it."""
     import llm
     monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "llm_budget.json")
+    # `_model_rung` is process state: a test that exhausts the first model would leave
+    # every later test running on the second one.
+    monkeypatch.setattr(llm, "_model_rung", 0)
 
 
 @pytest.fixture
