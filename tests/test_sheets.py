@@ -47,3 +47,42 @@ def test_save_listing_row_matches_headers(monkeypatch):
     assert row[sheets.HEADERS.index("balcony/garden")] == "גינה"
     assert row[sheets.HEADERS.index("dedup_key")] == "k"
     assert row[sheets.HEADERS.index("score")] == 90
+
+
+# --- the grid has to be big enough BEFORE we write into it --------------------------
+
+class _FakeWS:
+    def __init__(self, row_count, used_rows=1):
+        self.row_count = row_count
+        self._used = used_rows
+        self.calls = []
+
+    def col_values(self, _c):
+        return ["x"] * self._used            # _next_row = used + 1
+
+    def resize(self, rows=None, cols=None):
+        self.calls.append(("resize", rows))
+        self.row_count = rows
+
+    def update(self, rows, rng, value_input_option=None):
+        self.calls.append(("update", rng))
+
+
+def test_the_sheet_is_grown_before_a_write_runs_off_its_grid():
+    """`APIError: [400]: Range (Sheet1!A393:T393) exceeds grid limits. Max rows: 392` —
+    four times. Not transient, so _retry could not help, and save_listing swallows the
+    failure, so listings silently stopped reaching the mirror."""
+    ws = _FakeWS(row_count=392, used_rows=392)
+    sheets._write_rows(ws, [["a"] * len(sheets.HEADERS)])
+    kinds = [c[0] for c in ws.calls]
+    assert kinds == ["resize", "update"], ws.calls
+    assert ws.calls[0][1] == 393 + 50, "grow with the same headroom as the rebuild"
+
+
+def test_a_sheet_with_room_is_never_resized():
+    """resize() downward DELETES rows, and those rows are listings — so it must be
+    guarded by the comparison, never issued unconditionally."""
+    ws = _FakeWS(row_count=1000, used_rows=10)
+    sheets._write_rows(ws, [["a"] * len(sheets.HEADERS)])
+    assert [c[0] for c in ws.calls] == ["update"], ws.calls
+    assert ws.row_count == 1000

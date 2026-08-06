@@ -118,11 +118,24 @@ def _next_row(ws) -> int:
 
 
 def _write_rows(ws, rows: list) -> None:
-    """Write rows at an explicitly computed next-row, never via append_row."""
+    """Write rows at an explicitly computed next-row, never via append_row.
+
+    GROWS THE GRID FIRST. Writing past the worksheet's row count fails with
+    `APIError: [400]: Range (Sheet1!A393:T393) exceeds grid limits. Max rows: 392` —
+    four times so far. `_retry` cannot help (a grid error is not transient) and
+    `save_listing` swallows failures by design, so listings silently stopped reaching
+    the mirror while SQLite carried on fine. Only the rebuild path ever resized.
+
+    ONLY EVER GROWS. `resize(rows=N)` with an N below the current count DELETES rows,
+    and those rows are listings — so this is guarded by the comparison rather than
+    issued unconditionally."""
     if not rows:
         return
     start = _next_row(ws)
     end = start + len(rows) - 1
+    have = getattr(ws, "row_count", 0) or 0
+    if end > have:
+        _retry(lambda: ws.resize(rows=end + 50))     # same headroom as the rebuild
     rng = f"A{start}:{_col_letter(len(HEADERS))}{end}"
     _retry(lambda: ws.update(rows, rng, value_input_option="USER_ENTERED"))
 
