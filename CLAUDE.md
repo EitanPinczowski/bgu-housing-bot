@@ -229,6 +229,22 @@ SQLite + optional Google Sheets + Telegram alert`
   - **Why calls grew**: 302 fresh posts/day on 07-30 → **1,184** on 08-02, mostly real
     post volume (August is peak season; per-run fresh went 51–93 → 233–347). The four
     pre-LLM gates already absorb ~27%, so the worst day was ~865 actual calls.
+  - **A CHEAP PRE-LLM TEXT GATE IS A MEASURED DEAD END — do not retry** (2026-08-06,
+    over all 6,939 archived posts). The idea is to save quota by skipping posts before
+    they reach the LLM. Every candidate costs real listings:
+    | rule | would skip | MATCH/NEEDS_DATA LOST |
+    |---|---|---|
+    | text < 40 chars | 192 (2.8%) | **35** |
+    | text < 120 chars | 863 (12.4%) | **92** |
+    | says `מחפש/ת דירה` (a wanted ad) | 761 (11.0%) | **19** |
+    | no housing word at all | 267 (3.8%) | **47** |
+    - **The cause is the OCR path, and it is structural.** 57–68% of the listings each
+      gate would lose are IMAGE posts — the ad text is in the picture, so `raw_text` is
+      short and keyword-free by definition, and the LLM reads the image. Any gate that
+      judges a post by its TEXT throws those away. The rest are ordinary short posts that
+      still resolve.
+    - Not needed anyway: the model ladder took capacity to ~1,000/day against ~700–870
+      demand, so the shortfall this was meant to close is gone.
   - **A local Ollama "is this an ad" triage is a MEASURED DEAD END — do not retry.**
     Timed on 12 real archived posts: `gemma2:9b` is 11/12 correct but **25.4 s median
     per post** (≈106 min added per run, to save the ~20% of calls that are NOT_AD);
