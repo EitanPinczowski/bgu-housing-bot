@@ -673,7 +673,18 @@ def record_post(sig: str, raw_text: str, comments, images, group, source_url,
                  "group"=excluded."group", source_url=excluded.source_url,
                  parsed_json=excluded.parsed_json, verdict=excluded.verdict,
                  reason=excluded.reason, tier=excluded.tier, score=excluded.score,
-                 posted_at=COALESCE(excluded.posted_at, posts.posted_at)""",
+                 -- KEEP THE EARLIEST PUBLICATION, NEVER THE LATEST. This was
+                 -- COALESCE(excluded, posts), so the NEW value won whenever it was
+                 -- non-null. `sig` is a content signature, so a landlord REPOSTING the
+                 -- same text lands on this row and pushed posted_at forward, while
+                 -- first_seen correctly stayed at the first sighting — leaving the row
+                 -- reading "seen before it was posted". stats._detection_lag then drops
+                 -- it as impossible: 1,968 of 3,027 rows (65%) on 2026-08-05, which is
+                 -- why the detection-lag figure the whole latency question rests on was
+                 -- computed over a third of the archive.
+                 -- MIN over two zero-padded ISO strings is chronological.
+                 posted_at=MIN(COALESCE(excluded.posted_at, posts.posted_at),
+                               COALESCE(posts.posted_at, excluded.posted_at))""",
             (sig, raw_text, comments or "", json.dumps(images or []), group, source_url,
              extract.model_dump_json() if extract else None,
              res.status.value, res.reason, res.location_tier, res.score, posted_at))

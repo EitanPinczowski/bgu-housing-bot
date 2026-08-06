@@ -592,3 +592,53 @@ def test_saving_a_listing_does_not_disturb_its_manual_location(temp_db):
     storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key="k1", score=80,
                                         location_tier="GREEN", extract=e))
     assert storage.manual_location("k1") == (31.2605, 34.7965)
+
+
+# --- posted_at: the FIRST publication, never a repost's -----------------------------
+
+def _posted_at(sig):
+    import sqlite3
+    with sqlite3.connect(config.DB_PATH) as c:
+        row = c.execute("SELECT posted_at FROM posts WHERE sig=?", (sig,)).fetchone()
+    return row[0] if row else None
+
+
+def test_a_repost_does_not_move_posted_at_forward(temp_db):
+    """`sig` is a content signature, so a landlord reposting the same text lands on the
+    same archive row. COALESCE(new, old) let the later publication win while first_seen
+    correctly stayed at the first sighting — so the row read "seen before it was posted"
+    and stats._detection_lag discarded it. That was 1,968 of 3,027 rows."""
+    res = _res("phone:1")
+    storage.record_post("sig-repost", "טקסט", "", [], "g", None, res.extract, res,
+                        age_hours=5)          # published 5h before we saw it
+    first = _posted_at("sig-repost")
+    assert first is not None
+
+    # seen again later, and Facebook now calls it 1h old — a repost of the same text
+    storage.record_post("sig-repost", "טקסט", "", [], "g", None, res.extract, res,
+                        age_hours=1)
+    assert _posted_at("sig-repost") == first, "a repost overwrote the original time"
+
+
+def test_an_unknown_age_never_erases_a_known_one(temp_db):
+    """A later sighting that could not parse an age passes None; the row must keep what
+    it had rather than fall back to nothing."""
+    res = _res("phone:2")
+    storage.record_post("sig-none", "טקסט", "", [], "g", None, res.extract, res,
+                        age_hours=3)
+    known = _posted_at("sig-none")
+    storage.record_post("sig-none", "טקסט", "", [], "g", None, res.extract, res,
+                        age_hours=None)
+    assert _posted_at("sig-none") == known
+
+
+def test_a_first_ever_age_is_recorded_even_if_the_row_exists(temp_db):
+    """The row may have been archived before an age could be parsed. When one finally
+    arrives it must be taken, not discarded by the MIN against NULL."""
+    res = _res("phone:3")
+    storage.record_post("sig-late", "טקסט", "", [], "g", None, res.extract, res,
+                        age_hours=None)
+    assert _posted_at("sig-late") is None
+    storage.record_post("sig-late", "טקסט", "", [], "g", None, res.extract, res,
+                        age_hours=2)
+    assert _posted_at("sig-late") is not None
