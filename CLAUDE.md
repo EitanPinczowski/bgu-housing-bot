@@ -552,6 +552,12 @@ SQLite + optional Google Sheets + Telegram alert`
     retune this on the score shape alone; wait for the votes.
 - `storage.py` — SQLite: dedup, listings, votes/marks, unknown-locations, fingerprints, post archive.
 - `sheets.py` — optional Google Sheets sink (append, batch reconcile, sort, rebuild).
+  - **`_write_rows` GROWS THE GRID FIRST.** Writing past the worksheet's row count fails
+    with `Range (Sheet1!A393:T393) exceeds grid limits. Max rows: 392` — 4 times before
+    this was fixed. `_retry` cannot help (not transient) and `save_listing` swallows
+    failures by design, so listings silently stopped reaching the mirror while SQLite was
+    fine. **Only ever grow:** `resize(rows=N)` below the current count DELETES rows, and
+    those rows are listings.
 - `notifier.py` — Telegram MarkdownV2 alerts; group-vs-DM routing; albums; vote buttons.
   - **A VOTE BUTTON CARRIES A TOKEN, NEVER THE dedup_key.** Telegram caps `callback_data`
     at **64 BYTES** and answers BUTTON_DATA_INVALID by rejecting the **whole message**,
@@ -835,6 +841,20 @@ SQLite + optional Google Sheets + Telegram alert`
     flag once, because the cable can come out mid-run. On battery — and when the power
     state is UNKNOWN — it holds nothing; an unanswered question must not pin the machine
     awake.
+- **THE "STARTED AND NEVER FINISHED" RUNS ARE A FAILED BROWSER LAUNCH** (2026-08-05).
+  Every traceback in `scraper_runs.log` is the same call, `open_browser()` →
+  `launch_persistent_context`, and the run dies before reading a post: no `END`, nothing
+  downstream to complain, the slot simply gone. Nine in the 7 days to 08-05. Two causes,
+  both transient: *"the profile is already in use by another instance of Chromium"* (a
+  leftover Chromium on `auth/chrome_profile`) and *"Timeout 180000ms exceeded"*.
+  - `open_browser()` now retries `BROWSER_LAUNCH_RETRIES` times, calling
+    `reap_orphan_browsers()` between attempts — which was already written and documented
+    as exactly the cure, and was just never called BEFORE a launch, only after a wedge.
+  - Reaping is safe here for the reason its own docstring gives: `main.py` calls this
+    **while holding the lock**, so anything still driving the profile is a leftover.
+  - **Each failed attempt stops its playwright handle first.** Otherwise every retry
+    leaks a driver process — which is how orphans accumulate, so getting that wrong
+    would feed the very problem this fixes.
 - **A CRASHED run wedges the day differently from a HUNG one** (2026-08-04). The
   self-watchdog aborts a run that stops making PROGRESS; it does nothing for a run that
   finished scraping and then died in CLEANUP. Playwright's node subprocess went down with
@@ -1004,11 +1024,15 @@ the scraper MUST be conservative and the user must stay in control:
     usable sample) have a 500–680-min median because night runs are forbidden. Afternoon
     posts (13:00–17:00), where hourly coverage already works, sit at 45–139 min. Nothing
     to fix without breaking the daytime-only rule.
-  - **Two thirds of the archive cannot answer this question at all.** `posted_at` is
+  - **Two thirds of the archive cannot answer this question at all.** `posted_at` was
     rewritten on every sighting while `first_seen` is not, and `sig` is a content
-    signature — so a landlord reposting the same text pushes `posted_at` past
-    `first_seen` and the row is dropped as impossible. 1,968 of 3,027 on 08-05, silently
-    until now. The surviving sample is *posts published once*, and `stats.py` now says so.
+    signature — so a landlord reposting the same text pushed `posted_at` past
+    `first_seen` and the row was dropped as impossible. 1,968 of 3,027 on 08-05, silently
+    until then. The surviving sample is *posts published once*, and `stats.py` says so.
+    - **FIXED at the source** (`record_post` now keeps the EARLIEST of the two, not the
+      newest). **Forward-only**: rows already overwritten have genuinely lost the original
+      publication time and there is nothing honest to rebuild it from. The unusable share
+      should fall as new posts are archived — `stats.py` prints it, so it is checkable.
 - **Dry-run by default** — print what it *would* process; only commit/notify
   when explicitly run with `--live`.
 - Read-only: it never posts, comments, messages, or interacts. Only scrolls/reads.
