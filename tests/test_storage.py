@@ -642,3 +642,89 @@ def test_a_first_ever_age_is_recorded_even_if_the_row_exists(temp_db):
     storage.record_post("sig-late", "טקסט", "", [], "g", None, res.extract, res,
                         age_hours=2)
     assert _posted_at("sig-late") is not None
+
+
+# --- pruning orphans: a dead KEY is not a dead FLAT ---------------------------------
+
+def _row(key):
+    """Is this dedup_key still in the listings table?"""
+    import sqlite3
+    with sqlite3.connect(config.DB_PATH) as c:
+        return c.execute("SELECT 1 FROM listings WHERE dedup_key=?", (key,)).fetchone()
+
+
+def _listing(key, addr, phone=None, score=80):
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                       available_rooms_count=2, total_roommates_in_apt=3,
+                       street_address_or_neighborhood=addr,
+                       contact_phone_or_link=phone)
+    return PipelineResult(status=Status.MATCH, dedup_key=key, location_tier="GREEN",
+                          score=score, extract=e)
+
+
+def _archive(sig, addr, phone=None):
+    """Put a post in the archive so its parse contributes live keys."""
+    res = _listing("k-" + sig, addr, phone)
+    storage.record_post(sig, "טקסט", "", [], "g", None, res.extract, res)
+
+
+def test_a_sole_orphan_row_is_never_pruned(temp_db):
+    """The premise that a dead key means a dead flat is false — key formats changed,
+    retention nulls parses, and a re-parse moves the key while the flat stays real.
+    Measured on the live DB: orphan-alone would have deleted 21 rows, 11 of them real,
+    including a MATCH scoring 83 with a phone on it."""
+    _archive("sig-live", "רגר 1")                      # gives the archive some live keys
+    storage.save_listing(_listing("phone:999|רוטנברג|13", "ברוטנברג 13", "054-2403990"))
+    assert storage.prune_orphan_listings() == 0
+    assert _row("phone:999|רוטנברג|13") is not None
+
+
+def test_a_redundant_orphan_is_pruned(temp_db):
+    """Both conditions required: key-orphaned AND another row still represents the
+    flat, so dropping this one loses nothing."""
+    e = ListingExtract(is_apartment_ad=True, available_rooms_count=2,
+                       street_address_or_neighborhood="אלון 5",
+                       contact_phone_or_link="055-1234")
+    live_key = storage.dedup_keys(e)[0]
+    res = PipelineResult(status=Status.MATCH, dedup_key=live_key,
+                         location_tier="GREEN", score=80, extract=e)
+    storage.record_post("sig-alon", "טקסט", "", [], "g", None, e, res)   # makes it live
+    storage.save_listing(res)
+    storage.save_listing(_listing("hash:deadbeefdeadbeef", "אלון 5"))    # the orphan
+    assert storage.prune_orphan_listings() == 1
+    assert _row("hash:deadbeefdeadbeef") is None
+    assert _row(live_key) is not None                 # the flat survives
+
+
+def test_the_last_row_of_a_flat_survives_even_if_every_key_is_dead(temp_db):
+    """Two orphans for one flat is still a real flat. Pruning both would lose it, so
+    the count is decremented as rows go and the final one is always kept."""
+    _archive("sig-live", "רגר 1")
+    storage.save_listing(_listing("hash:aaaaaaaaaaaaaaaa", "אלון 7"))
+    storage.save_listing(_listing("hash:bbbbbbbbbbbbbbbb", "אלון 7"))
+    assert storage.prune_orphan_listings() == 1
+    left = [k for k in ("hash:aaaaaaaaaaaaaaaa", "hash:bbbbbbbbbbbbbbbb") if _row(k)]
+    assert len(left) == 1, "the flat must not disappear entirely"
+
+
+def test_an_alternative_key_is_not_an_orphan(temp_db):
+    """A listing legitimately holds ANY key the parse yields. Comparing against
+    `make_dedup_key` alone counted 2,942 live keys instead of 5,238 and invented 11
+    false orphans by itself."""
+    e = ListingExtract(is_apartment_ad=True, available_rooms_count=2,
+                       street_address_or_neighborhood="אלון 5",
+                       contact_phone_or_link="055-1234")
+    keys = storage.dedup_keys(e)
+    assert len(keys) > 1, "this test needs a parse that yields several keys"
+    res = PipelineResult(status=Status.MATCH, dedup_key=keys[-1], location_tier="GREEN",
+                         score=80, extract=e)
+    storage.record_post("sig-alt", "טקסט", "", [], "g", None, e, res)
+    storage.save_listing(res)                       # stored under a NON-primary key
+    assert storage.prune_orphan_listings() == 0
+    assert _row(keys[-1]) is not None
+
+
+def test_an_empty_archive_never_wipes_listings(temp_db):
+    storage.save_listing(_listing("phone:1|אלון 5", "אלון 5", "055-1"))
+    storage.save_listing(_listing("phone:2|אלון 5", "אלון 5", "055-2"))
+    assert storage.prune_orphan_listings() == 0     # nothing to compare against

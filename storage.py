@@ -752,28 +752,52 @@ def delete_listing(dedup_key: str) -> None:
 
 
 def prune_orphan_listings() -> int:
-    """Delete listing rows whose dedup_key can't be reproduced from ANY current
-    archived post's parse — i.e. the post that created them was later re-parsed to a
-    different key, leaving the old row orphaned (e.g. today's Ollama re-parse). Safe:
-    a live listing's key is always derivable from its archived parse, so real rows are
-    never removed; no-ops if the live-key set is empty (nothing to compare against).
-    Returns rows removed."""
+    """Delete listing rows that are BOTH key-orphaned AND redundant.
+
+    "Orphaned" = the dedup_key can't be reproduced from any current archived parse,
+    e.g. the post was later re-parsed to a different key. "Redundant" = another row
+    still represents the same flat, so dropping this one loses nothing.
+
+    BOTH CONDITIONS ARE REQUIRED, and the second one is the whole safety of this
+    function. Measured 2026-08-06 on the live DB, orphan-alone would have deleted **21
+    rows, 11 of them real listings** — `אלכסנדר ינאי 30` at score 98, `אברהם אבינו 11`
+    at 93. The premise that a dead key means a dead flat is simply false:
+      * the key FORMAT changed over time (`phone:X|street|number` -> `phone:X|address`),
+      * retention nulls `parsed_json` on old posts,
+      * a re-parse legitimately moves the key while the flat stays real.
+    Three rows survive all of that today with no duplicate anywhere — including
+    `ברוטנברג 13`, a MATCH scoring 83 with a phone number on it.
+
+    The key set is `dedup_keys`, not `make_dedup_key`: a listing legitimately holds ANY
+    key a parse yields. Comparing against the primary alone counted 2,942 live keys
+    instead of 5,238 and invented 11 of those false orphans by itself.
+
+    No-ops if the live-key set is empty (nothing to compare against). Returns rows
+    removed."""
     with _conn() as c:
         live = set()
         for (pj,) in c.execute("SELECT parsed_json FROM posts WHERE parsed_json IS NOT NULL AND parsed_json != ''"):
             try:
-                live.add(make_dedup_key(ListingExtract.model_validate_json(pj)))
+                live.update(dedup_keys(ListingExtract.model_validate_json(pj)))
             except Exception:
                 continue
         if not live:
             return 0                       # archive gives us nothing — don't wipe listings
+        rows = c.execute("SELECT dedup_key, address FROM listings").fetchall()
+        # How many rows represent each flat, under the same grouping the duplicate
+        # merge uses (numbered address, else the row's own key so it groups alone).
+        seen: dict = {}
+        for k, addr in rows:
+            seen[_group_key(k, addr)] = seen.get(_group_key(k, addr), 0) + 1
         removed = 0
-        for (k,) in c.execute("SELECT dedup_key FROM listings").fetchall():
-            if k not in live:
-                c.execute("DELETE FROM listings WHERE dedup_key=?", (k,))
-                c.execute("DELETE FROM marks WHERE dedup_key=?", (k,))
-                c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (k,))
-                removed += 1
+        for k, addr in rows:
+            if k in live or seen.get(_group_key(k, addr), 0) < 2:
+                continue                   # still reachable, or the only row for its flat
+            c.execute("DELETE FROM listings WHERE dedup_key=?", (k,))
+            c.execute("DELETE FROM marks WHERE dedup_key=?", (k,))
+            c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (k,))
+            seen[_group_key(k, addr)] -= 1     # never take the last row of a flat
+            removed += 1
         return removed
 
 
