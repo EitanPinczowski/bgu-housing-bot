@@ -184,6 +184,7 @@ def _run_reliability() -> None:
     by_design: dict = {}
     started: dict = {}
     aborted: dict = {}
+    longest: dict = {}
     for line in lines:
         s = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+START\b", line)
         if s:
@@ -200,6 +201,9 @@ def _run_reliability() -> None:
         for d in (full, hot, lost, by_design):
             d.setdefault(day, 0)
         if kind == "END":
+            d = re.search(r"\b(\d+)s\b", rest)          # "END LIVE 5286s posts=137"
+            if d:
+                longest[day] = max(longest.get(day, 0), int(d.group(1)) / 60)
             if "LIVE-HOT" in rest:
                 hot[day] += 1
             else:
@@ -240,6 +244,27 @@ def _run_reliability() -> None:
     if crashed > 0:
         print(f"  {crashed} run(s) STARTED and never finished — took the slot, produced "
               f"nothing, and are invisible to END/SKIP")
+    # HOW CLOSE IS A HEALTHY RUN TO THE CEILING THAT WOULD KILL IT? MAX_RUN_MINUTES
+    # aborts a run that crawls, but a legitimate full run measured 88 min against a
+    # 120 limit on 2026-08-05 — real margin, not much of it, and August is peak posting
+    # season. Say so while there is still time to raise the ceiling deliberately,
+    # rather than discovering it when a healthy run is killed.
+    # 70%, not 75%: the run that motivated this was 88 min against 120, which is 73% —
+    # a threshold that would not have flagged its own motivating case is decoration.
+    worst = max((longest.get(d, 0) for d in days), default=0)
+    cap = getattr(config, "MAX_RUN_MINUTES", 0)
+    if worst:
+        # Over the ceiling and close to it are different messages. The window still
+        # contains the 509-minute run that slept through the night — that one is what
+        # the ceiling is FOR, and calling it "close to" the limit would be nonsense.
+        if cap and worst > cap:
+            note = "   ← would now be ABORTED (the ceiling is newer than this run)"
+        elif cap and worst > cap * 0.70:
+            note = "   ← close to the ceiling"
+        else:
+            note = ""
+        print(f"  longest completed run {worst:.0f} min"
+              + (f" (ceiling {cap})" if cap else "") + note)
     if pct < 90:
         print("   ← missed runs; check `python doctor.py` wake timers")
 

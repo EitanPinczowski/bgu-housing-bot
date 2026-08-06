@@ -89,3 +89,43 @@ def test_a_watchdog_abort_is_its_own_category(tmp_path, monkeypatch):
     ]))
     assert "1 run(s) ABORTED by the watchdog" in out, out
     assert "STARTED and never finished" not in out, "counted twice"
+
+
+def test_the_longest_run_is_reported_and_flagged_near_the_ceiling(tmp_path, monkeypatch):
+    """MAX_RUN_MINUTES kills a run that crawls, but a legitimate full run measured 88
+    min against a 120 limit. Surface the squeeze before a healthy run is killed."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(config, "MAX_RUN_MINUTES", 120)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    out = _log(tmp_path, monkeypatch, "\n".join([
+        "2026-08-05 08:00:02  END    LIVE  1800s  posts=50",     # 30 min
+        "2026-08-05 18:00:02  END    LIVE  5286s  posts=137",    # 88 min
+    ]))
+    assert "longest completed run 88 min (ceiling 120)" in out, out
+    assert "close to the ceiling" in out
+
+
+def test_a_comfortable_run_is_not_flagged(tmp_path, monkeypatch):
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(config, "MAX_RUN_MINUTES", 120)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    out = _log(tmp_path, monkeypatch,
+               "2026-08-05 08:00:02  END    LIVE  1800s  posts=50")
+    assert "longest completed run 30 min" in out
+    assert "close to the ceiling" not in out
+
+
+def test_a_run_past_the_ceiling_is_not_called_close_to_it(tmp_path, monkeypatch):
+    """The window still holds the 509-minute run that slept through the night. That is
+    what the ceiling is FOR — describing it as "close to" the limit is nonsense."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(config, "MAX_RUN_MINUTES", 120)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    out = _log(tmp_path, monkeypatch,
+               "2026-08-05 09:15:22  END    LIVE-HOT  30543s  posts=154")
+    assert "longest completed run 509 min" in out
+    assert "would now be ABORTED" in out
+    assert "close to the ceiling" not in out
