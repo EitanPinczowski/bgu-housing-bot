@@ -95,8 +95,17 @@ def cmd_sample(per_bucket: int) -> None:
 
 def cmd_ask(model: str) -> None:
     sample = json.loads(_sample_path().read_text(encoding="utf-8"))
-    real = config.GEMINI_MODEL
+    # PIN THE LADDER, not `config.GEMINI_MODEL`. `_extract_gemini` sends to
+    # `llm.active_model()`, which reads GEMINI_MODELS[_model_rung] — so setting the old
+    # single-model name would have left this harness silently measuring whichever model
+    # the ladder happened to be on, i.e. reporting one model's answers under another's
+    # name. A one-rung ladder also means a quota error cannot quietly hop to the other
+    # model mid-run and mix the two into one column.
+    real_models, real_single = config.GEMINI_MODELS, config.GEMINI_MODEL
+    real_rung = llm._model_rung
+    config.GEMINI_MODELS = [model]
     config.GEMINI_MODEL = model
+    llm._model_rung = 0
     out = {"model": model, "runs": [[], []]}
     try:
         for pass_no in (0, 1):                    # answer, then the noise floor
@@ -108,7 +117,8 @@ def cmd_ask(model: str) -> None:
                 if i % 10 == 0:
                     print(f"  {model} pass {pass_no + 1}: {i}/{len(sample)}", flush=True)
     finally:
-        config.GEMINI_MODEL = real
+        config.GEMINI_MODELS, config.GEMINI_MODEL = real_models, real_single
+        llm._model_rung = real_rung
         _answers_path(model).write_text(json.dumps(out, ensure_ascii=False),
                                         encoding="utf-8")
     print(f"wrote {_answers_path(model)}")

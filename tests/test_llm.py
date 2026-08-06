@@ -734,3 +734,14 @@ def test_only_when_every_rung_is_spent_does_ollama_take_over(monkeypatch, tmp_pa
                         "GEMINI_OK" if p == "gemini" else "FALLBACK_OK")
     assert llm.extract("post") == "FALLBACK_OK"
     assert llm._primary_exhausted is True
+
+
+def test_the_model_actually_sent_follows_the_ladder_not_the_legacy_name(monkeypatch):
+    """`config.GEMINI_MODEL` is now only a convenience alias for the ladder's first
+    rung. Anything that selects a model by setting it — `model_ab.py` did — would be
+    silently measuring whichever model the ladder was on, and reporting one model's
+    answers under another's name."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["ladder-model"])
+    monkeypatch.setattr(config, "GEMINI_MODEL", "legacy-name")
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    assert llm.active_model() == "ladder-model"

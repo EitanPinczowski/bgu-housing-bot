@@ -32,22 +32,33 @@ _TASK = "BGU Replay Quota"
 
 
 def _gemini_available() -> bool:
-    """True if a minimal Gemini call succeeds (quota is back). False on a quota error
-    (still exhausted) or any other error (retry next hour)."""
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        client.models.generate_content(
-            model=config.GEMINI_MODEL, contents=["ping"],
-            config=types.GenerateContentConfig(max_output_tokens=1))
-        return True
-    except Exception as exc:
-        if llm._is_quota_error(exc):
-            print(f"{datetime.now():%H:%M}  gemini quota still exhausted — will retry")
-        else:
-            print(f"{datetime.now():%H:%M}  gemini probe error (will retry): {exc}")
-        return False
+    """True if a minimal Gemini call succeeds on ANY rung of the ladder (quota is back).
+    False on a quota error (still exhausted) or any other error (retry next hour).
+
+    EVERY RUNG, not just the first. The quota is per project per MODEL, so the reserve
+    can be wide open while the primary is spent — probing only `GEMINI_MODEL` would
+    report "still exhausted" and skip a replay that had 500 calls available to it."""
+    from google import genai
+    from google.genai import types
+    ladder = getattr(config, "GEMINI_MODELS", None) or [config.GEMINI_MODEL]
+    last = None
+    for model in ladder:
+        try:
+            client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+            client.models.generate_content(
+                model=model, contents=["ping"],
+                config=types.GenerateContentConfig(max_output_tokens=1))
+            return True
+        except Exception as exc:
+            last = exc
+            if not llm._is_quota_error(exc):
+                break            # not a quota problem — trying another model won't help
+    if last is not None and llm._is_quota_error(last):
+        print(f"{datetime.now():%H:%M}  gemini quota still exhausted on every model "
+              f"({', '.join(ladder)}) — will retry")
+    else:
+        print(f"{datetime.now():%H:%M}  gemini probe error (will retry): {last}")
+    return False
 
 
 def main() -> None:
