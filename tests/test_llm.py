@@ -312,7 +312,12 @@ def test_a_stale_window_reads_as_zero(monkeypatch, tmp_path):
 
 def test_spending_the_budget_takes_the_same_path_as_a_429(monkeypatch, tmp_path):
     """It must latch the primary off and route to the fallback, exactly like a real
-    quota error — that is what makes Part 1's run cap fire and end the run cleanly."""
+    quota error — that is what makes Part 1's run cap fire and end the run cleanly.
+
+    Pinned to a ONE-MODEL ladder, because with a reserve rung the budget now climbs to
+    it first (see the ladder tests below); the latch is what happens once every rung is
+    spent, which is what this test is about."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["only-model"])
     monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
     monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 2)
     monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
@@ -691,3 +696,41 @@ def test_recording_a_refusal_does_not_reset_the_per_model_counts(monkeypatch, tm
     assert llm.budget_state("m-one")[1] == 300, "the count survived the refusal"
     llm._spend_budget(5)
     assert llm.budget_state("m-one")[1] == 305
+
+
+def test_our_own_budget_climbs_the_ladder_before_giving_up(monkeypatch, tmp_path):
+    """Caught live: `daily budget of 480 spent — using openai_compatible` while the
+    reserve model sat at 0 of its own 500. The budget is PER MODEL, so the first rung
+    filling up says nothing about the second — our own gate was defeating the ladder it
+    exists to feed."""
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 100)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    llm._spend_budget(100)                       # m-one is full, m-two untouched
+    monkeypatch.setattr(llm, "_run", lambda p, t, images=None:
+                        "GEMINI_OK" if p == "gemini" else "FALLBACK_OK")
+    assert llm.extract("post") == "GEMINI_OK"
+    assert llm.active_model() == "m-two"
+    assert llm._primary_exhausted is False
+
+
+def test_only_when_every_rung_is_spent_does_ollama_take_over(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "GEMINI_MODELS", ["m-one", "m-two"])
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 100)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    monkeypatch.setattr(llm, "_primary_exhausted", False)
+    llm._spend_budget(100)
+    monkeypatch.setattr(llm, "_model_rung", 1)
+    llm._spend_budget(100)                       # both rungs full
+    monkeypatch.setattr(llm, "_model_rung", 0)
+    monkeypatch.setattr(llm, "_run", lambda p, t, images=None:
+                        "GEMINI_OK" if p == "gemini" else "FALLBACK_OK")
+    assert llm.extract("post") == "FALLBACK_OK"
+    assert llm._primary_exhausted is True

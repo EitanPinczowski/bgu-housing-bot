@@ -542,8 +542,17 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
     # Our own ceiling, checked BEFORE Google's. Stopping a little early is what keeps
     # the local fallback available for genuine surprises instead of spending it on a
     # quota we could see coming.
-    if not _primary_exhausted and budget_spent():
-        _set_primary_exhausted(f"daily budget of {config.LLM_DAILY_BUDGET} spent")
+    #
+    # IT MUST CLIMB THE LADDER, NOT JUMP STRAIGHT TO OLLAMA. The budget is per model, so
+    # the first rung filling up says nothing about the second — and this latched anyway:
+    # caught live on 2026-08-06, `daily budget of 480 spent — using openai_compatible`
+    # while the reserve model sat at 0 of its own 500. Our own gate was defeating the
+    # ladder it was supposed to feed.
+    while not _primary_exhausted and budget_spent():
+        if not _advance_model(f"client-side budget of {config.LLM_DAILY_BUDGET} spent"):
+            _set_primary_exhausted(
+                f"daily budget of {config.LLM_DAILY_BUDGET} spent on every model")
+            break
 
     if _primary_exhausted and fallback:
         fallback_used += 1
