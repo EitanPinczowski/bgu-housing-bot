@@ -1,5 +1,6 @@
 """doctor health checks: each dependency reports the right status, and every FAIL
 carries a remediation hint (the point of the command). All deps mocked, no network."""
+import config
 import doctor
 
 
@@ -200,3 +201,32 @@ def test_hot_pass_scheduled_check(monkeypatch):
     assert doctor._check_hot_scheduled()[1] == doctor.PASS
     monkeypatch.setattr(doctor, "_task_wake_flags", lambda: None)
     assert doctor._check_hot_scheduled()[1] == doctor.SKIP
+
+
+def test_a_budget_above_googles_stated_limit_is_a_hard_failure(tmp_path, monkeypatch):
+    """LLM_DAILY_BUDGET was 900 against a real limit of 500, so it could never bind and
+    Google refused first — which is exactly what sends a run to the local model. The
+    number Google states in its refusal is the one to trust."""
+    import doctor
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 900)
+    llm._spend_budget(506)
+    llm.record_quota_refusal(
+        "429 RESOURCE_EXHAUSTED ... limit: 500, model: gemini-3.5-flash-lite "
+        "quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+    name, status, detail, remedy = doctor._check_llm_budget()
+    assert name == "llm budget" and status == doctor.FAIL, (status, detail)
+    assert "500" in detail and "500" in remedy
+    assert "900" in remedy                      # says what it currently is
+
+
+def test_a_budget_under_the_stated_limit_is_not_a_failure(tmp_path, monkeypatch):
+    import doctor
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    monkeypatch.setattr(config, "LLM_DAILY_BUDGET", 480)
+    llm._spend_budget(490)
+    llm.record_quota_refusal("429 ... limit: 500 ... quotaId: GenerateRequestsPerDay")
+    _name, status, _detail, _remedy = doctor._check_llm_budget()
+    assert status != doctor.FAIL

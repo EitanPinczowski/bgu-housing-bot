@@ -379,10 +379,20 @@ def _check_llm_budget():
     refused = llm.quota_refusal()
     if refused is not None:
         kind = llm.quota_refusal_kind()
+        stated = llm.stated_quota_limit()
         if kind == "day":
-            return ("llm budget", WARN, f"{msg} · provider refused (PER-DAY) at {refused}",
-                    f"measured: set LLM_DAILY_BUDGET just under {refused} so we stop "
-                    f"before Google does (it is currently {cap})")
+            # Google NAMES its limit in the refusal; prefer that over our own count,
+            # which includes retries and OCR calls and so runs slightly ahead.
+            if stated and cap > stated:
+                return ("llm budget", FAIL,
+                        f"{msg} · Google states a limit of {stated}/day",
+                        f"LLM_DAILY_BUDGET ({cap}) is ABOVE Google's real ceiling "
+                        f"({stated}), so it can never bind — set it just under {stated}")
+            return ("llm budget", WARN, f"{msg} · provider refused (PER-DAY) at {refused}"
+                    + (f", stated limit {stated}" if stated else ""),
+                    f"measured: set LLM_DAILY_BUDGET just under "
+                    f"{stated or refused} so we stop before Google does "
+                    f"(it is currently {cap})")
         if kind == "minute":
             return ("llm budget", PASS, f"{msg} · one PER-MINUTE refusal at {refused}",
                     "a rate-limit blip, not the daily ceiling — do NOT lower "

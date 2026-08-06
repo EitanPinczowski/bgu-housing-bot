@@ -1,9 +1,23 @@
 """llm.extract fallback ladder: quota latches immediately, transient errors are
 served by the fallback and only abandon the primary after a threshold."""
+import pytest
+
 import config
 import llm
 
 _slept: list = []          # every sleep the retry loop asked for, in order
+
+
+@pytest.fixture(autouse=True)
+def _isolate_budget(tmp_path, monkeypatch):
+    """NO TEST MAY READ THE REAL data/llm_budget.json.
+
+    They did, and it was invisible while `LLM_DAILY_BUDGET` was 900: the live counter
+    sat at 506, comfortably under, so `budget_spent()` was False and nothing looked
+    wrong. Lowering the budget to 480 — the real limit — made the operational file
+    read as ALREADY SPENT and broke 14 tests that had nothing to do with budgets.
+    A test that depends on production state passes or fails for reasons of its own."""
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "llm_budget.json")
 
 
 def _setup(monkeypatch, fail_with, retries=0):
@@ -559,3 +573,53 @@ def test_a_non_retryable_error_keeps_the_old_ladder(monkeypatch):
     assert calls.count("gemini") == 1                # no retries for this class
     assert llm.retries_attempted == 0
     assert llm._primary_exhausted is False           # not yet at the threshold
+
+
+# --- the budget must be sized from Google's own number, not from a usage chart -------
+
+_REAL_REFUSAL = (
+    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your "
+    "current quota... * Quota exceeded for metric: generativelanguage.googleapis.com/"
+    "generate_content_free_tier_requests, limit: 500, model: gemini-3.5-flash-lite\n"
+    "Please retry in 38.495166512s.', 'details': [{'quotaId': "
+    "'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaValue': '500'}]}}"
+)
+
+
+def test_the_stated_limit_is_read_out_of_the_refusal(tmp_path, monkeypatch):
+    """LLM_DAILY_BUDGET was 900 against a real limit of 500 because it had been set from
+    a usage chart — which shows where you have BEEN, never where the cap IS. The refusal
+    states it outright, so read it."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    assert llm._stated_limit(_REAL_REFUSAL) == 500
+    llm._spend_budget(506)
+    llm.record_quota_refusal(_REAL_REFUSAL)
+    assert llm.stated_quota_limit() == 500
+    assert llm.quota_refusal_kind() == "day"
+
+
+def test_an_unknown_refusal_is_upgraded_by_a_later_named_one(tmp_path, monkeypatch):
+    """First-writer-wins is right for the COUNT, but holding an `unknown` detail is how
+    the answer ("limit: 500") was thrown away and had to be recovered by hand."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(250)
+    llm.record_quota_refusal("429 RESOURCE_EXHAUSTED")      # names nothing
+    assert llm.quota_refusal_kind() == "unknown"
+    llm._spend_budget(10)
+    llm.record_quota_refusal(_REAL_REFUSAL)                 # names PerDay + the limit
+    assert llm.quota_refusal_kind() == "day"
+    assert llm.stated_quota_limit() == 500
+
+
+def test_a_named_refusal_is_not_overwritten_by_a_later_one(tmp_path, monkeypatch):
+    """Where the refusals START is the ceiling; a later one is noise."""
+    import llm
+    monkeypatch.setattr(llm, "_BUDGET_PATH", tmp_path / "b.json")
+    llm._spend_budget(480)
+    llm.record_quota_refusal(_REAL_REFUSAL)
+    first = llm.quota_refusal()
+    llm._spend_budget(20)
+    llm.record_quota_refusal(_REAL_REFUSAL.replace("limit: 500", "limit: 999"))
+    assert llm.quota_refusal() == first and llm.stated_quota_limit() == 500

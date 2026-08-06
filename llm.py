@@ -308,15 +308,22 @@ def budget_state() -> tuple[str, int]:
 def _spend_budget(n: int = 1) -> None:
     """Record n primary-provider requests against the current window.
 
-    Carries `refused_at` through. Writing a bare {window, calls} erased the measured
-    refusal point the moment the NEXT run in the same window made a call — so the one
-    number Part 5 exists to capture would be gone before anyone read `doctor`."""
+    CARRIES THE WHOLE REFUSAL RECORD THROUGH, not a named subset. Writing a bare
+    {window, calls} erased the measured refusal point the moment the NEXT run in the
+    same window made a call. Preserving only `refused_at` fixed that and then repeated
+    it one field later: `refused_kind`, `refused_detail` and `stated_limit` were still
+    dropped, so the diagnosis vanished and a later refusal "upgraded" over a record
+    that had merely been blanked. Keep everything and overwrite only the count."""
     import json
     window, used = budget_state()
-    refused = quota_refusal()
-    rec = {"window": window, "calls": used + n}
-    if refused is not None:
-        rec["refused_at"] = refused
+    try:
+        rec = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
+        if rec.get("window") != window:
+            rec = {}                    # a stale window is not this window's record
+    except Exception:
+        rec = {}
+    rec["window"] = window
+    rec["calls"] = used + n
     try:
         _BUDGET_PATH.write_text(json.dumps(rec), encoding="utf-8")
     except Exception as exc:                      # a counter must never break a run
@@ -356,11 +363,29 @@ def record_quota_refusal(detail: str = "") -> None:
         d = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
     except Exception:
         d = {}
-    if d.get("window") == window and d.get("refused_at") is not None:
+    # First writer per window wins — the interesting number is WHERE THE REFUSALS
+    # STARTED, and a later one is noise. The single exception is an upgrade: if the
+    # stored refusal named no quota and this one does, it is strictly better evidence.
+    # Holding the first `unknown` is how "limit: 500" was thrown away and had to be
+    # recovered by hand.
+    have = d.get("window") == window and d.get("refused_at") is not None
+    # The kind is computed from the FULL error and STORED. Re-deriving it from the
+    # truncated copy silently loses it: `quotaId: …PerDay…` sits near the end of
+    # Google's body, past the 300-character cut, while `limit: 500` sits early — so a
+    # genuine PerDay refusal read back as `unknown` and a later one "upgraded" over it.
+    kind = _quota_kind(str(detail)) if detail else "unknown"
+    upgrade = have and _stored_kind(d) == "unknown" and kind != "unknown"
+    if have and not upgrade:
         return
-    rec = {"window": window, "calls": used, "refused_at": used}
+    # An upgrade keeps the ORIGINAL count — only the diagnosis improves, not the point
+    # at which Google started refusing.
+    at = d.get("refused_at") if upgrade else used
+    rec = {"window": window, "calls": used, "refused_at": at, "refused_kind": kind}
     if detail:
-        rec["refused_detail"] = str(detail)[:300]
+        rec["refused_detail"] = str(detail)[:500]
+        lim = _stated_limit(detail)
+        if lim:
+            rec["stated_limit"] = lim
     try:
         _BUDGET_PATH.write_text(json.dumps(rec), encoding="utf-8")
         print(f"[llm] provider refused at {used} counted calls this window — "
@@ -384,6 +409,24 @@ def _refusal_record() -> dict | None:
     return d if d.get("window") == dates.quota_window() and d.get("refused_at") is not None else None
 
 
+_LIMIT_RE = re.compile(r"(?:\blimit:\s*|\"?quotaValue\"?:\s*['\"])(\d{2,7})")
+
+
+def _stated_limit(text: str):
+    """The daily cap Google NAMES in its own refusal, or None.
+
+    `LLM_DAILY_BUDGET` was 900 against a real limit of 500, because it had been set from
+    a usage chart — which shows where you have been, never where the cap is. The refusal
+    says it plainly (`limit: 500`, `quotaValue: '500'`), so read it and stop guessing."""
+    m = _LIMIT_RE.search(str(text))
+    return int(m.group(1)) if m else None
+
+
+def stated_quota_limit():
+    """Google's own stated daily limit from this window's refusal, if it gave one."""
+    return (_refusal_record() or {}).get("stated_limit")
+
+
 def quota_refusal_kind() -> str:
     """'day' | 'minute' | 'unknown' — which ceiling the provider said we hit.
 
@@ -391,7 +434,13 @@ def quota_refusal_kind() -> str:
     was too fast, not that the allowance is gone, and treating it as the daily ceiling
     would cut the budget to a fraction of the real one."""
     rec = _refusal_record()
-    return _quota_kind(str(rec.get("refused_detail", ""))) if rec else "unknown"
+    return _stored_kind(rec) if rec else "unknown"
+
+
+def _stored_kind(rec: dict) -> str:
+    """The kind as RECORDED. Falls back to re-parsing the stored detail for records
+    written before the kind was stored explicitly."""
+    return rec.get("refused_kind") or _quota_kind(str(rec.get("refused_detail", "")))
 
 
 def _set_primary_exhausted(why: str) -> None:
@@ -474,8 +523,15 @@ def extract(post_text: str, comments: str | None = None, images=None) -> Listing
         if _is_quota_error(exc):
             _primary_exhausted = True
             record_quota_refusal(str(exc))   # their ceiling, and WHICH ceiling
-            print(f"[llm] {primary} quota reached — using {fallback} "
-                  "for the rest of this run.")
+            # SAY WHICH CEILING AND WHAT GOOGLE CALLED IT. "quota reached" alone left
+            # today's run indistinguishable from a rate-limit blip, and answering "why
+            # is it on Ollama when the dashboard says we had quota?" took a hand-made
+            # API call to find `limit: 500`.
+            lim = _stated_limit(str(exc))
+            print(f"[llm] {primary} quota reached "
+                  f"({_short_err(exc)}"
+                  + (f", Google states limit {lim}/day" if lim else "")
+                  + f") — using {fallback} for the rest of this run.")
         else:
             # Transient error: serve THIS post from the fallback so it isn't lost,
             # and only abandon the primary after enough consecutive failures.

@@ -218,7 +218,16 @@ GEMINI_MODEL = "gemini-flash-lite-latest"
 # For "openai_compatible" (Ollama / Groq): set base_url + model in llm.py/.env
 # Client-side pacing so we don't trip the free-tier RPM limit (which would 429 us
 # onto the slow local fallback). Minimum seconds between Gemini calls.
-GEMINI_MIN_INTERVAL_SEC = 4.0
+# 4.5 = 13.3/min against a MEASURED RPM LIMIT OF 15 (AI Studio's Rate Limit page,
+# 2026-08-06). It was 4.0 — exactly 15/min, zero headroom — and that page shows a peak
+# of **17**, i.e. we were going over.
+# This was proposed, then dropped the day before, on the reasoning that 429s were under
+# 1% of requests so "the cap is plainly not being saturated". That inference was WRONG:
+# the error rate was low because the DAILY ceiling bit first and exiled the run to
+# Ollama, not because the per-minute cap had room. Measure the cap; do not infer it from
+# how often it complains. TPM is nowhere near binding (28.55K of 250K), so requests —
+# not tokens — are the constraint.
+GEMINI_MIN_INTERVAL_SEC = 4.5
 # Beyond quota (429), also switch to the local fallback after this many CONSECUTIVE
 # non-quota Gemini errors (transient 500s/timeouts) — so a Gemini hiccup doesn't
 # fail post after post. Each failing post still gets served by the fallback.
@@ -274,13 +283,25 @@ LOCAL_FALLBACK_MAX_POSTS_PER_RUN = 40
 LLM_BATCH_SIZE = 1
 # A CLIENT-SIDE DAILY CEILING, so we stop BEFORE Google does. Hitting the real 429 is
 # what makes a run fall through to the local model and crawl; stopping ourselves a
-# little early leaves the fallback for genuine surprises. Under the ~1,000/day observed
-# ceiling with room for OCR calls and retries.
+# little early leaves the fallback for genuine surprises.
 # Counted against the QUOTA WINDOW (10:00 Israel to 10:00 — see dates.quota_window),
 # never the calendar day: a midnight-reset counter would hand the 08:00 run a full
 # budget it does not have, which is worse than no counter at all.
 # 0 disables the ceiling and leaves only Google's own 429.
-LLM_DAILY_BUDGET = 900
+#
+# 480, AND THE NUMBER COMES FROM GOOGLE, NOT FROM A GUESS (2026-08-06). It was 900,
+# chosen "under the ~1,000/day observed ceiling" — but a usage chart shows where you
+# have BEEN, never where the cap IS, so 900 sat above the real limit and could never
+# bind. The refusal states it outright:
+#   Quota exceeded for metric: generate_content_free_tier_requests, limit: 500,
+#   model: gemini-3.5-flash-lite
+#   quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: '500'
+# Our own counter read 506 at that moment, so it was accurate all along — the ceiling
+# was simply set too high to protect anything. 480 leaves ~20 for the OCR calls and
+# retries that also spend quota.
+# **If a future refusal names a different `limit:`, follow it** — `doctor`'s llm budget
+# row reports the value Google last stated, precisely so this is not guessed again.
+LLM_DAILY_BUDGET = 480
 
 # ---------------------------------------------------------------------------
 # Geocoding. Static name table is primary (see geocode.py) for slang/

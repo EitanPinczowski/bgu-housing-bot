@@ -53,21 +53,32 @@ Still unverified, and recorded as unverified rather than assumed:
   **43** on 07-24. Unread posts are never marked seen, so the next run took them. This was
   carried as "unverified" long after the evidence existed — check `grep "local fallback
   cap reached" data/scraper_runs.log` before repeating that claim.
-- `LLM_DAILY_BUDGET = 900` — **question closed, leave it alone.** The AI Studio usage
-  dashboard shows ~500–750 requests/day at **~100% success**: the per-day ceiling has
-  never actually been reached, so there is nothing to measure a new number from and
-  nothing to fix. The self-measuring instrumentation stays (it is what proved the day's
-  refusals transient), and only a **PerDay** refusal may ever move the budget.
-  - **Two refusals on 08-05 (at 252 and 389) are both UNUSABLE, and the reason is the
-    reading you want for the next one: THE COUNT KEPT CLIMBING AFTERWARDS** (252 → 259,
-    389 → 393). A daily exhaustion is terminal for the window — nothing succeeds after
-    it — so a refusal the window carries on past is a rate-limit blip, whatever the error
-    text says. Neither recorded a metric name, so `kind` was `unknown` and `doctor`
-    correctly advised nothing. **Had this been taken at face value it would have argued
-    for cutting the budget from 900 to ~250, on evidence that says the opposite.**
-  - Corollary worth keeping: if a future refusal IS the daily ceiling, the counter stops
-    dead at it. That is the confirmation to look for, independent of parsing Google's
-    error string — which may not name the quota at all.
+- **`LLM_DAILY_BUDGET` IS 480, AND THE NUMBER COMES FROM GOOGLE** (2026-08-06). It was
+  900, "under the ~1,000/day observed ceiling" — read off the usage dashboard, which
+  shows where you have BEEN and never where the cap IS. The real limit was **500**, so
+  the budget sat above it and could never bind; Google refused first, which is precisely
+  what exiles a run to Ollama.
+  - The refusal states it outright and is now parsed and stored:
+    `limit: 500, model: gemini-3.5-flash-lite`,
+    `quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: '500'`.
+    `doctor` **FAILs** when `LLM_DAILY_BUDGET` exceeds the limit Google last stated.
+  - **THE CEILING IS NOT STABLE AND IS PER MODEL.** On 08-04 the same model served
+    ~687 requests with 2 errors — impossible under a 500 cap — so Google *lowered* the
+    allowance mid-week. The AI Studio **Rate Limit** page is the only authoritative
+    source (the docs decline to publish it): 3.5-flash-lite **RPM 15 / TPM 250K / RPD
+    500**, 3.1-flash-lite the same, 2.5-flash-lite RPD **20** and 404 to new users.
+    Never hard-code a limit again; follow what a refusal states.
+  - **Earlier refusals that "kept climbing past" (252 → 259, 389 → 393) were per-minute
+    blips**, and reading them as the daily ceiling would have argued for cutting the
+    budget to ~250. That test is still right — a daily exhaustion is terminal for the
+    window — but it only tells you a refusal is NOT daily. For the actual number, read
+    `limit:`.
+  - **The kind is computed from the FULL error and stored** (`refused_kind`). Re-deriving
+    it from the truncated copy lost it: `quotaId: …PerDay…` sits past the cut while
+    `limit: 500` sits early, so a genuine daily refusal read back as `unknown`.
+  - **`_spend_budget` carries the WHOLE record through.** Writing a bare
+    `{window, calls}` erased the refusal on the next call; preserving only `refused_at`
+    repeated the bug one field later and blanked the diagnosis.
 
 Two plan files, **neither auto-loaded** (unlike this one):
 - `~/.claude/plans/spicy-sparking-crystal.md` — **all six parts closed.** 2 and 4 ended in
@@ -126,9 +137,12 @@ SQLite + optional Google Sheets + Telegram alert`
     to SKIP retries when the error explicitly says per-day, where waiting cannot help.
   - Google's own `retryDelay` is honoured when present, else 5/15/45 s backoff, every
     sleep capped by `GEMINI_RETRY_MAX_SLEEP_SEC` so one poisoned post can't park a run.
-  - **`GEMINI_MIN_INTERVAL_SEC` stays 4.0.** Raising it for RPM headroom was proposed and
-    dropped: at ~4 429s per ~700 requests the cap is not being saturated, and slowing
-    every request 11% to chase a sub-1% error rate is the wrong trade.
+  - **`GEMINI_MIN_INTERVAL_SEC` IS 4.5** (13.3/min against a measured RPM limit of 15).
+    It was 4.0 — exactly 15/min, zero headroom — and the Rate Limit page shows a peak of
+    **17**, so we were over. Raising it was proposed, then dropped on the reasoning that
+    429s were under 1% of requests so the cap "is not being saturated"; that was wrong,
+    because the error rate was low only in that the DAILY ceiling bit first. **Measure a
+    cap, don't infer it from how often it complains.**
   - The run summary prints retries and how many kept a post on Gemini — the old
     behaviour was only detectable by noticing the counter frozen while posts advanced.
 - **Output = local SQLite + Telegram, plus an OPTIONAL Google Sheets sink**
