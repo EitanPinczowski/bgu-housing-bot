@@ -662,7 +662,21 @@ SCRAPER_ALERT_TOP_K = 5
 # at most SCRAPER_MAX_OCR_PER_RUN image extractions per run, one image each; a post
 # counts as "thin" (image carries the text) under OCR_MIN_TEXT_CHARS characters.
 SCRAPER_OCR_IMAGE_ONLY = True
-SCRAPER_MAX_OCR_PER_RUN = 12
+# 40, RAISED FROM 12 (2026-08-07) — THE CAP WAS PROTECTING THE WRONG RESOURCE.
+# Past the cap a post is NOT skipped: `llm.extract` simply drops the image and sends the
+# post anyway, so the request is spent either way and the cap saves only TOKENS. What the
+# free tier meters is REQUESTS PER DAY (500/model), which this never reduced — while TPM,
+# the limit it does affect, sits at **28.55K of 250K (11%)** on the AI Studio rate page.
+# The cost was listings. Measured over the archive: **685 posts carry an image AND text
+# too thin to parse** (the ad is a photo), and they arrive at **56-119 a day** against a
+# ceiling of 12/run ~= 72/day — so on a busy day a third to a half were read blind, from
+# the anti-scrape character noise. Their verdicts show it: 437 DROP, 174 NOT_AD, and only
+# 29 MATCH out of 685.
+# WATCH TWO THINGS after raising it: each OCR post also fetches an image over HTTP, so
+# run duration grows — and runs already reach ~90 min against MAX_RUN_MINUTES (120).
+# `stats.py`'s "longest completed run" row is there for exactly this. If runs start
+# getting aborted, lower this before raising the ceiling.
+SCRAPER_MAX_OCR_PER_RUN = 40
 OCR_MIN_TEXT_CHARS = 40
 # Occasionally skip a scheduled LIVE run entirely (~1 in 8), so the 7×/day
 # cadence isn't perfectly periodic — a real person doesn't check like clockwork.
