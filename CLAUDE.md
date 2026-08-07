@@ -8,17 +8,14 @@ check they're within a hand-drawn walkable zone, and alert on Telegram.
 
 **Nothing is blocking. Two things are OWED, both cheap:**
 
-1. **A larger model A/B.** `gemini-3.1-flash-lite` was promoted to the ladder's first
-   rung on **n=48** (it reads prices correctly where 3.5 does not — see the LLM section).
-   That is a real result but a small sample, so confirm it when quota allows:
-   ```bash
-   python model_ab.py sample 25            # ~100 posts
-   python model_ab.py ask gemini-3.1-flash-lite
-   python model_ab.py ask gemini-3.5-flash-lite
-   python model_ab.py report gemini-3.5-flash-lite gemini-3.1-flash-lite
-   ```
-   **Never while a scrape is running** — pacing is per PROCESS, the RPM limit is per
-   project, so two writers issue ~27/min against a limit of 15.
+1. **The prompt's PRICE DIVISION RULE is the real open problem.** The n=100 A/B (run
+   2026-08-07, `data/model_ab/`) showed **neither model reliably divides a total rent by
+   the number of residents** — the rule `_SYSTEM_HE` states. 3.5 usually answers null;
+   3.1 sometimes answers the whole flat's rent as the per-room price. Both lose flats,
+   3.1's more quietly. Tightening that one prompt line is worth more than any model
+   swap, and it is testable with `model_ab.py` against a fixed sample.
+   **Never run the harness while a scrape is running** — pacing is per PROCESS, the RPM
+   limit is per project, so two writers issue ~27/min against a limit of 15.
 2. ~~`prune_orphan_listings` is BROKEN~~ — **FIXED 2026-08-06**, see the note under
    `storage.py`. It would have deleted 21 rows, 11 of them real; it now removes 2.
 
@@ -116,20 +113,30 @@ SQLite + optional Google Sheets + Telegram alert`
     place, because advancing on a blip would burn the reserve on a problem that clears
     itself in seconds. `llm.active_model()` is the rung in use; `_model_rung` is per
     process, so every run starts back at the best model.
-  - **3.1 LEADS BECAUSE IT MEASURED BETTER, NOT BECAUSE IT IS NEWER — IT ISN'T.**
-    `model_ab.py`, 48 posts × 2 passes per model: 0 `is_apartment_ad` flips, and on
-    PRICE they disagreed 5 times with **3.1 right all five**. The prompt says to divide a
-    total rent by the residents; 3.1 does, 3.5 either ignores it (a 3-room flat at 3,000
-    total came back as 3,000 **per room**, which the ≤2000 filter then DROPS) or returns
-    null (a MATCH demoted to NEEDS_DATA). Both of 3.5's failure modes lose real flats.
-    Confirmed by reading the source posts, not by trusting percentages.
-    - The address column reads 54% and means nothing: the differences are `רחוב X` vs `X`
-      and `שכונה ב` vs `שכונה ב׳`. Same place. Same artefact the batching work hit.
-    - 3.1 is **100% self-consistent on every field**; 3.5 is 88% on rooms and 77% on
-      address *against itself*. That noise floor is what retired an earlier scare from a
-      4-post smoke test where 3.5 appeared to "lose" room counts.
-    - **n=48 — reversible on purpose.** Swap the order back in `GEMINI_MODELS` if a
-      larger sample or the live funnel disagrees. A bigger confirmation run is still owed.
+  - **3.5 LEADS. A PROMOTION OF 3.1 ON n=48 WAS REVERTED AT n=100** (2026-08-07) — the
+    clearest lesson of the whole exercise: **a 48-post A/B is not enough to reorder the
+    models.** At n=48, 3.1 won every one of 5 price disagreements by dividing a total
+    rent by the residents as the prompt asks. At n=100 they disagree 15 times (13 with
+    3.5 self-consistent, so not noise) and **3.1 twice returns the WHOLE FLAT'S rent as
+    the per-room price** — 2,800 where 3.5 said 1,400 for 2 roommates, 3,000 where 3.5
+    said 1,000 for 3. n=48 had simply caught 3.1's good cases. Both gates failed.
+    - **The failure modes cost differently.** 3.1's error INFLATES the price and the
+      ≤2000 filter then drops the flat silently; 3.5's usual miss is null, which lands in
+      NEEDS_DATA where a person still sees it. Prefer the visible failure.
+    - 3.1 is not simply worse — 11 of the 15 are `3.5=null` against a real 3.1 number, so
+      it finds prices 3.5 misses. **The honest fix is the PROMPT's division rule**, which
+      neither model applies reliably. Until that is tightened, neither ordering is clearly
+      right and the safer failure mode wins.
+    - The two `is_apartment_ad` flips at n=100 are NOT evidence against 3.1: one is a
+      flatmate-wanted post that the prompt says IS an ad (3.1 right, 3.5 wrong), the other
+      is one of the 346 un-reparsed MERGED posts, so the input itself is polluted.
+    - The address column (79% self vs 65% cross) still means little: `רחוב X` vs `X`,
+      `שכונה ב` vs `שכונה ב׳`. Same place. Same artefact the batching work hit.
+    - 3.1 is ~100% self-consistent on every field; 3.5 is 91% on rooms and 79% on address
+      *against itself*. That noise floor is what retired an early scare from a 4-post
+      smoke test where 3.5 appeared to "lose" room counts.
+    - **The ladder is unaffected** — 3.1 stays the reserve rung, which is where the
+      doubled daily capacity comes from. Only the ORDER changed back.
   - **PIN THE MODEL, NEVER `-latest`.** The alias moves, and a silent swap changes what is
     extracted from thousands of posts. (It was not the cause of the 08-06 outage — the
     per-model usage chart shows one model all week — but it is a standing hazard.)

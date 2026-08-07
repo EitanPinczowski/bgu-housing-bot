@@ -219,20 +219,25 @@ LLM_FALLBACK_PROVIDER = "openai_compatible"   # local Ollama (see LLM_* in .env)
 # peak demand (~700-870 calls) actually needs. On a PER-DAY refusal the next rung is
 # tried; only when every rung is spent does a run fall to the local model.
 #
-# 3.1 LEADS BECAUSE IT MEASURED BETTER, not because it is newer (it isn't).
-# `model_ab.py`, 48 posts x 2 passes per model, 2026-08-06:
-#   * is_apartment_ad: 100% agreement, 0 flips.
-#   * PRICE: they disagreed 5 times and 3.1 was right ALL FIVE. The prompt says to
-#     divide a total rent by the number of residents; 3.1 does, 3.5 either ignores it
-#     (a 3-room flat at 3,000 total came back as 3,000 PER ROOM, which the <=2000 filter
-#     then DROPS) or gives up and returns null (a MATCH demoted to NEEDS_DATA). Both of
-#     3.5's failure modes lose real flats.
-#   * 3.1 was 100% self-consistent on every field; 3.5 manages 88% on rooms and 77% on
-#     address against ITSELF. The address column looks alarming (54%) and is not — the
-#     differences are `רחוב X` vs `X` and `שכונה ב` vs `שכונה ב׳`, i.e. the same place.
-# n=48, so this is reversible on purpose: swap the order back if a bigger sample or the
-# live funnel disagrees.
-GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+# 3.5 LEADS. 3.1 was briefly promoted on n=48 and the promotion was REVERTED when the
+# confirmation run at n=100 overturned it (2026-08-07). Both gates failed at the larger
+# sample, and the reason the first result looked so clean is instructive:
+#   * At n=48 the two models disagreed on PRICE 5 times and 3.1 divided the total rent
+#     by the residents correctly all five, which is what the prompt asks. At n=100 they
+#     disagree 15 times (13 with 3.5 self-consistent, so not noise) and **3.1 returns the
+#     WHOLE FLAT'S rent as the per-room price twice** — 2,800 where 3.5 said 1,400 for 2
+#     roommates, 3,000 where 3.5 said 1,000 for 3. Neither model applies the rule
+#     reliably; n=48 had simply caught 3.1's good cases.
+#   * The failure modes are not equally expensive. 3.1's error INFLATES the price, and
+#     the <=2000 filter then drops the flat silently. 3.5's usual miss is null, which
+#     lands in NEEDS_DATA where a person still sees it. Prefer the visible failure.
+#   * 3.1 does find prices 3.5 misses (11 of the 15 are 3.5=null vs a 3.1 number), so it
+#     is not simply worse — the honest fix is the PROMPT's division rule, which both
+#     models apply inconsistently. Until that is tightened, neither ordering is clearly
+#     right and the safer failure mode wins.
+# The ladder itself is unaffected: 3.1 remains the reserve rung, which is where the
+# doubled daily capacity comes from.
+GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 # Pinned, never `-latest`: that alias moves, and a silent model swap changes what is
 # extracted from thousands of posts. Kept as the single-model name for callers that
 # still ask for one (and as the ladder's first rung by default).
