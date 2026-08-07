@@ -707,3 +707,50 @@ def test_the_street_gate_still_refuses_a_coincidence():
     assert geocode._names_a_street("האוני", geocode._normalize("ליד האוני")) is False
     assert geocode._names_a_street("הגאונים", geocode._normalize("ליד האוני")) is False
     assert geocode.geocode_detailed("גר בשכונה ג ליד האוני")[1] == "static_area"
+
+
+# --- ...and when the TEXT cannot answer, use what the model extracted --------------
+
+def _px_counts(price, text, mates=None, avail=None):
+    """Price recovery where the divisor may have to come from the extract itself."""
+    from models import ListingExtract
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=price,
+                       total_roommates_in_apt=mates, available_rooms_count=avail)
+    e = pipeline._recover_price_per_room(e, text)
+    return e.price_per_room_ils, e.price_is_derived
+
+
+def test_an_image_post_still_gets_its_total_divided():
+    """The rule required `דירת N חדרים` in raw_text, so it missed every IMAGE post — the
+    ad is a picture, raw_text is the anti-scrape junk, and the LLM read the flat from the
+    image. Measured 2026-08-07: 125 archived posts dropped for price alone where
+    price/residents lands under the cap, most with no readable text at all."""
+    junk = "Zohar Renee Golan e͏ p͏ o͏ s͏ S͏ t͏ r͏ 1͏ m͏ 5͏ 4͏ a͏ 9͏"
+    assert _px_counts(3000, junk, mates=3) == (1000, True)
+    assert _px_counts(3450, junk, mates=4) == (862, True)
+    # available_rooms_count is the fallback when the model gave no resident count
+    assert _px_counts(2800, junk, avail=2) == (1400, True)
+
+
+def test_the_extracted_divisor_never_overrides_a_per_person_price():
+    """A per-person phrasing means the number really IS per room. That guard must hold
+    whichever divisor is used."""
+    text = "מחפשים שותף, 2600 לשותף בדירת 3 חדרים"
+    assert _px_counts(2600, text, mates=3) == (2600, False)
+
+
+def test_no_divisor_means_no_division():
+    junk = "Ohad Isak n͏ e͏ t͏ S͏ s͏ p͏ o͏ o͏ d͏ r͏ 4͏ 7͏ 1͏ 8͏"
+    assert _px_counts(2800, junk) == (2800, False)          # nothing to divide by
+    assert _px_counts(2800, junk, mates=1) == (2800, False)  # one resident is not a share
+
+
+def test_a_flat_that_is_still_too_expensive_stays_dropped():
+    junk = "Tomer Katan e͏ r͏ n͏ s͏ o͏ t͏ d͏ S͏ p͏ o͏"
+    assert _px_counts(9000, junk, mates=2) == (9000, False)  # 4500/room — the drop stands
+
+
+def test_the_text_rule_still_wins_when_the_text_does_say_it():
+    """N-1 bedrooms from `דירת N חדרים` is the established convention and must not be
+    replaced by the resident count when the text is readable."""
+    assert _px_counts(2400, 'להשכרה דירת 3 חדרים, 2400 ש"ח', mates=4) == (1200, True)

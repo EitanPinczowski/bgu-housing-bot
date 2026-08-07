@@ -240,20 +240,32 @@ def _recover_price_per_room(e, raw_text):
       4. the derived per-room figure actually lands under the cap.
     Anything else is left exactly as the LLM read it."""
     price = e.price_per_room_ils
-    if price is None or price <= config.MAX_PRICE_PER_ROOM_ILS or not raw_text:
+    if price is None or price <= config.MAX_PRICE_PER_ROOM_ILS:
         return e
-    if _PER_PERSON_RE.search(raw_text):
+    if raw_text and _PER_PERSON_RE.search(raw_text):
         return e
-    m = _WHOLE_APT_RE.search(raw_text)
-    if not m:
+    m = _WHOLE_APT_RE.search(raw_text or "")
+    share = None
+    if m:
+        try:
+            rooms = int(float(m.group(1)))
+        except ValueError:
+            rooms = 0
+        if 2 <= rooms <= 10:               # rooms-1 must be >= 1: never divide by zero
+            share = rooms - 1
+    if share is None:
+        # THE TEXT CANNOT ALWAYS ANSWER, AND ON THE WORST CASES IT NEVER DOES. This
+        # required `דירת N חדרים` in raw_text, so it missed every IMAGE post — where the
+        # ad is a picture, `raw_text` is the anti-scrape junk, and the LLM read the flat
+        # from the image instead. Measured 2026-08-07: **125 archived posts were dropped
+        # for price alone where price/residents lands under the cap**, and most carry no
+        # readable text at all. Same structural trap as the pre-LLM text gates.
+        # So fall back to what the MODEL extracted, which came from the image when the
+        # text was blank: the number of residents is exactly the divisor this rule wants.
+        share = e.total_roommates_in_apt or e.available_rooms_count
+    if not share or share < 2:
         return e
-    try:
-        rooms = int(float(m.group(1)))
-    except ValueError:
-        return e
-    if rooms < 2 or rooms > 10:            # rooms-1 must be >= 1: never divide by zero
-        return e
-    derived = round(price / (rooms - 1))
+    derived = round(price / share)
     if derived > config.MAX_PRICE_PER_ROOM_ILS:
         return e                            # still too expensive — the drop was right
     e.price_per_room_ils = derived
