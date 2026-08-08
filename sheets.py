@@ -84,6 +84,7 @@ def _worksheet():
             _retry(lambda: ws.resize(cols=len(HEADERS)))
         if _retry(lambda: ws.row_values(1)) != HEADERS:   # (re)write header if outdated
             _retry(lambda: ws.update([HEADERS], "A1"))
+        _format_as_table(ws)
         _ws = ws
         return ws
     except Exception as exc:
@@ -96,6 +97,54 @@ def _worksheet():
             print(f"[sheets] disabled — could not open the sheet: {exc}")
             _disabled = True
         return None
+
+
+def _format_as_table(ws) -> None:
+    """Centre every cell, and grow the sheet's TABLE to cover every data row.
+
+    The sheet already carries a native Google Sheets Table (`Rental_Housing_Listings`),
+    which is what gives the top of the sheet its banding, header and filter. A table does
+    NOT grow with the rows we append: measured 2026-08-08 it covered rows 1-200 while 413
+    were in use, so everything past 200 sat outside it and looked like a plain paste.
+    Extending its range is the whole job — do not add a basic filter or a banded range
+    instead, because the table supplies both and Sheets refuses the overlap outright:
+    "You can't apply a filter to a range that partially intersects a table."
+
+    Centring is applied to WHOLE COLUMNS so rows appended by a later run inherit it.
+
+    Best-effort and independent: `save_listing` swallows failures by design and cosmetics
+    must not be the one thing that loses a listing."""
+    last = _col_letter(len(HEADERS))
+    try:
+        ws.format(f"A:{last}", {"horizontalAlignment": "CENTER",
+                                "verticalAlignment": "MIDDLE"})
+    except Exception as exc:
+        print(f"[sheets] could not centre the cells: {str(exc)[:90]}")
+    try:
+        _grow_table(ws)
+    except Exception as exc:
+        print(f"[sheets] could not extend the table: {str(exc)[:90]}")
+
+
+def _grow_table(ws) -> None:
+    """Extend the worksheet's table so it ends at the last used row, never before it."""
+    meta = _retry(lambda: ws.spreadsheet.fetch_sheet_metadata())
+    sheet = next((s for s in meta.get("sheets", [])
+                  if s.get("properties", {}).get("sheetId") == ws.id), None)
+    tables = (sheet or {}).get("tables") or []
+    if not tables:
+        return                       # no table on this sheet — nothing to grow
+    used = len(_retry(lambda: ws.col_values(_DEDUP_COL)))
+    table = tables[0]
+    rng = dict(table.get("range") or {})
+    if used <= int(rng.get("endRowIndex") or 0):
+        return                       # already covers every row we have written
+    rng["endRowIndex"] = used
+    # Only the RANGE is sent: `fields` scopes the update so the table's own colours,
+    # name and column properties are left exactly as the user set them.
+    _retry(lambda: ws.spreadsheet.batch_update({"requests": [{"updateTable": {
+        "table": {"tableId": table["tableId"], "range": rng}, "fields": "range"}}]}))
+    print(f"[sheets] table extended to row {used}")
 
 
 def _seen() -> set:

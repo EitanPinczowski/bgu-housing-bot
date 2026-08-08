@@ -86,3 +86,82 @@ def test_a_sheet_with_room_is_never_resized():
     sheets._write_rows(ws, [["a"] * len(sheets.HEADERS)])
     assert [c[0] for c in ws.calls] == ["update"], ws.calls
     assert ws.row_count == 1000
+
+
+# --- the mirror should read as a table -----------------------------------------------
+
+class _TableWS:
+    """A worksheet carrying a native Sheets Table, like the real mirror."""
+    id = 7
+
+    def __init__(self, table_end=200, used=413, tables=True):
+        self.calls = []
+        self._used = used
+        self.spreadsheet = self
+        self._tables = ([{"tableId": "T1", "name": "Rental_Housing_Listings",
+                          "range": {"sheetId": 7, "startRowIndex": 0,
+                                    "endRowIndex": table_end,
+                                    "startColumnIndex": 0, "endColumnIndex": 20}}]
+                        if tables else [])
+
+    def format(self, rng, fmt):
+        self.calls.append(("format", rng, fmt))
+
+    def col_values(self, _c):
+        return ["x"] * self._used
+
+    def fetch_sheet_metadata(self):
+        return {"sheets": [{"properties": {"sheetId": 7}, "tables": self._tables}]}
+
+    def batch_update(self, body):
+        self.calls.append(("batch_update", body))
+
+
+def test_every_cell_is_centred_by_whole_column():
+    """Whole columns, not the rows that exist today — Sheets carries column formatting
+    onto rows appended later, so tomorrow's listing comes out centred too."""
+    ws = _TableWS()
+    sheets._format_as_table(ws)
+    rng, fmt = ws.calls[0][1], ws.calls[0][2]
+    assert ":" in rng and not any(ch.isdigit() for ch in rng), rng
+    assert fmt == {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}
+
+
+def test_the_table_is_grown_to_the_last_used_row():
+    """A Sheets table does NOT grow with appended rows. Measured 2026-08-08: it covered
+    rows 1-200 while 413 were in use, so everything past 200 sat outside it."""
+    ws = _TableWS(table_end=200, used=413)
+    sheets._format_as_table(ws)
+    upd = [c for c in ws.calls if c[0] == "batch_update"]
+    assert len(upd) == 1, ws.calls
+    req = upd[0][1]["requests"][0]["updateTable"]
+    assert req["table"]["range"]["endRowIndex"] == 413
+    assert req["table"]["tableId"] == "T1"
+    # only the RANGE is sent, so the user's colours/name/columns survive untouched
+    assert req["fields"] == "range"
+
+
+def test_a_table_that_already_covers_everything_is_left_alone():
+    ws = _TableWS(table_end=413, used=413)
+    sheets._format_as_table(ws)
+    assert not [c for c in ws.calls if c[0] == "batch_update"]
+
+
+def test_a_sheet_with_no_table_is_not_given_one():
+    """The table is the user's; this only ever extends what is already there."""
+    ws = _TableWS(tables=False)
+    sheets._format_as_table(ws)
+    assert not [c for c in ws.calls if c[0] == "batch_update"]
+
+
+def test_formatting_never_breaks_the_mirror():
+    """save_listing swallows failures by design; cosmetics must not be the one thing
+    that loses a listing."""
+    class Boom(_TableWS):
+        def format(self, rng, fmt):
+            raise RuntimeError("no permission")
+
+        def fetch_sheet_metadata(self):
+            raise RuntimeError("network")
+
+    sheets._format_as_table(Boom())        # must not raise
