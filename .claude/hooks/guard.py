@@ -49,10 +49,17 @@ RULES = [
                "PUBLIC and git history is permanent, so ~350 landlords' phone numbers "
                "could never be taken back"}),
 
+    # Two corrections, both found by this guard failing on real commands:
+    #  * `pytest(?![-\w])`, not `pytest\b` — \b matches at the HYPHEN, so the word
+    #    boundary turned `pip install pytest-xdist | tail` into a blocked command. The
+    #    rule is about running the RUNNER, never a package named after it.
+    #  * ANY pipe, not just one straight into tail/head. `pytest | tr | grep | tail`
+    #    slipped through and discards the exit code exactly as much — CLAUDE.md's rule is
+    #    "read the count, or drop the pipe", not "avoid one particular pipeline".
     ("pytest exit code",
-     r"pytest\b[^|]*\|\s*(tail|head)\b",
-     {"never": "piping pytest discards its EXIT CODE (CLAUDE.md). Read the count, or "
-               "drop the pipe"}),
+     r"(?<!\|\s)\bpytest(?![-\w])[^|]*\|",
+     {"never": "piping pytest discards its EXIT CODE (CLAUDE.md) — a failing suite then "
+               "reads as a passing one. Read the count, or drop the pipe"}),
 
     ("OSRM container",
      r"docker\s+(rmi|image\s+rm)\b|docker\s+(system|volume|image)\s+prune\b"

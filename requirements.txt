@@ -21,3 +21,14 @@ osmium>=4.3
 # that call is now on the path of every guarded command. OPTIONAL — scraper falls back
 # to the PowerShell query when it is missing.
 psutil>=7.2.2,<8
+
+# --- test runner (dev only; the bot does not import these) ---
+# `-n auto` runs the 609-test suite in 15s instead of 40s. NOT enabled in a config file
+# on purpose: xdist reorders tests, so a difference between serial and parallel is a
+# hidden ordering dependency worth finding, not a default worth hiding behind.
+pytest-xdist>=3.8.0,<4
+# Randomises test order. This suite has been bitten twice by order-dependent state (the
+# real llm_budget.json, and llm._model_rung leaking between tests) — both now guarded by
+# autouse fixtures in conftest. Five seeds found no third case, which is the result, not
+# a reason to drop the plugin: it earns its place on the run that eventually fails.
+pytest-randomly>=4.1.0,<5
