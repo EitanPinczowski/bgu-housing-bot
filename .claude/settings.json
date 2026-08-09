@@ -1,0 +1,48 @@
+{
+  "$comment": [
+    "Project-level Claude settings, committed with the repo. Personal overrides belong",
+    "in settings.local.json, which is git-ignored.",
+    "",
+    "guard.py enforces the preconditions CLAUDE.md describes as 'neither of which",
+    "announces itself'. ruff_edited.py runs the same linter as .pre-commit-config.yaml",
+    "but at edit time. session_start.py prints live state so the hand-dated status block",
+    "in CLAUDE.md stops being the source of truth for things that can be measured."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/ruff_edited.py\"",
+            "timeout": 25
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start.py\"",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  }
+}
