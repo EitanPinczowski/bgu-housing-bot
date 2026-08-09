@@ -151,6 +151,61 @@ def _detection_lag() -> None:
           f"over 3h: {sum(1 for x in lags if x > 180)}")
 
 
+def _osrm_degraded(days: list) -> None:
+    """How many completed runs scored their walk times on the STRAIGHT-LINE estimate.
+
+    A run with OSRM down does not fail, warn, or alert — it quietly writes worse numbers,
+    because the bot is deliberately built to classify without the router. The AMBER
+    boundary IS a walk time, so those runs' tiers and scores are approximations that look
+    exactly like measurements afterwards.
+
+    Measured over the whole log on 2026-08-09: 14 of 88 completed runs (16%), and this
+    was only ever visible by grepping for it. `run_scraper.cmd` had run
+    `docker start osrm_bgu` before every one of them — a container restart cannot help
+    when the Docker ENGINE is down, which is what those runs actually hit.
+
+    Reads `scraper_runs.log`, not `search_log.txt`: the warning is only written there. The
+    line carries no date of its own and is emitted DURING the run, so it appears ABOVE
+    that run's own END — it is therefore attributed to the NEXT END, not the previous
+    timestamp. Attributing backwards happens to give the same answer whenever the run's
+    START is also in the file, which is why it passed on real data and failed on a
+    fixture; the run it belongs to is the one it precedes.
+
+    That file is a best-effort copy (`type "%RUNLOG%" >> ...`), so both halves of the
+    ratio are counted from it and the share stays internally consistent even if a run is
+    missing from it entirely."""
+    path = config.DATA_DIR / "scraper_runs.log"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    down: dict = {}
+    ended: dict = {}
+    pending = False
+    for line in lines:
+        m = re.match(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}", line)
+        if m and re.search(r"\s+END\b", line):
+            day = m.group(1)
+            ended[day] = ended.get(day, 0) + 1
+            if pending:
+                down[day] = down.get(day, 0) + 1
+                pending = False
+        elif "OSRM DOWN" in line:
+            pending = True
+    n_down = sum(down.get(d, 0) for d in days)
+    n_end = sum(ended.get(d, 0) for d in days)
+    if not n_end:
+        return
+    if n_down:
+        print(f"  {n_down}/{n_end} run(s) scored walk times on the STRAIGHT-LINE estimate "
+              f"({round(100 * n_down / n_end)}%) — OSRM was down; tiers and scores from "
+              f"those runs are approximations")
+    total_down, total_end = sum(down.values()), sum(ended.values())
+    if total_end and total_down:
+        print(f"     all time: {total_down}/{total_end} "
+              f"({round(100 * total_down / total_end)}%)")
+
+
 def _run_reliability() -> None:
     """Completed scrapes per day against the target. Measured 2026-07-30 at ~5 of 7
     (a 28% loss) — sleeping through a scheduled slot is invisible otherwise, which is
@@ -244,6 +299,7 @@ def _run_reliability() -> None:
     if crashed > 0:
         print(f"  {crashed} run(s) STARTED and never finished — took the slot, produced "
               f"nothing, and are invisible to END/SKIP")
+    _osrm_degraded(days)
     # HOW CLOSE IS A HEALTHY RUN TO THE CEILING THAT WOULD KILL IT? MAX_RUN_MINUTES
     # aborts a run that crawls, but a legitimate full run measured 88 min against a
     # 120 limit on 2026-08-05 — real margin, not much of it, and August is peak posting

@@ -23,7 +23,10 @@ set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"
 set "PY=C:\Users\eitan\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 
-docker start osrm_bgu >nul 2>&1
+REM Self-heal OSRM. See run_scraper.cmd for why this is doctor --fix and not a bare
+REM `docker start`: the container command cannot help when the Docker ENGINE is down,
+REM and >nul hid that from 14 of 88 runs. --quiet logs the repair, not the whole table.
+"%PY%" -u doctor.py --fix --quiet >> "data\scraper_runs.log" 2>&1
 
 if not exist "data\runs" mkdir "data\runs"
 set "RUNLOG=data\runs\hot-%DATE:~-4%%DATE:~3,2%%DATE:~0,2%-%TIME:~0,2%%TIME:~3,2%.log"

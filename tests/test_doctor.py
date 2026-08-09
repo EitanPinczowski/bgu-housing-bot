@@ -134,10 +134,11 @@ def test_stale_heartbeat_is_only_a_wedge_while_a_run_is_live(monkeypatch):
 
 
 def test_fix_starts_osrm_when_down(monkeypatch):
-    # OSRM down -> --fix runs `docker start <container>` then re-probes
+    # engine fine, CONTAINER stopped -> --fix runs `docker start <container>`, re-probes
     states = iter([False, True])          # down at check, up after start
     monkeypatch.setattr(doctor, "_osrm_ok", lambda: next(states))
     monkeypatch.setattr(doctor, "_osrm_ok_retry", lambda tries=6: True)
+    monkeypatch.setattr(doctor, "_daemon_ok", lambda timeout=12: True)
     calls = {}
     import subprocess
 
@@ -154,6 +155,58 @@ def test_fix_starts_osrm_when_down(monkeypatch):
     assert calls["cmd"][:2] == ["docker", "start"]
     assert calls["cmd"][2] == doctor.config.OSRM_DOCKER_CONTAINER
     assert done and done[0][1] is True     # reported as fixed
+
+
+def test_fix_starts_the_engine_before_the_container(monkeypatch):
+    """`run_scraper.cmd` ran `docker start osrm_bgu` before every scrape and 14 of 88
+    completed runs still logged OSRM DOWN: a container command cannot help when the
+    ENGINE is down. The repair has to happen in that order."""
+    monkeypatch.setattr(doctor, "_osrm_ok", lambda: False)
+    monkeypatch.setattr(doctor, "_daemon_ok", lambda timeout=12: False)
+    monkeypatch.setattr(doctor, "_osrm_ok_retry", lambda tries=6: True)
+    monkeypatch.setattr(doctor, "_start_docker_desktop", lambda: (True, "launched"))
+    import subprocess
+
+    class _R:
+        returncode = 0
+        stdout = stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _R())
+    done = doctor.try_fix()
+    assert [what for what, *_ in done] == ["start Docker Desktop", "start OSRM"]
+
+
+def test_fix_does_not_ask_a_dead_engine_to_start_a_container(monkeypatch):
+    """If Docker Desktop will not come up, `docker start` can only fail confusingly.
+    Stop, and report the reason that actually matters."""
+    monkeypatch.setattr(doctor, "_osrm_ok", lambda: False)
+    monkeypatch.setattr(doctor, "_daemon_ok", lambda timeout=12: False)
+    monkeypatch.setattr(doctor, "_start_docker_desktop",
+                        lambda: (False, "Docker Desktop.exe not found"))
+    done = doctor.try_fix()
+    assert [what for what, *_ in done] == ["start Docker Desktop"]
+    assert done[0][1] is False
+
+
+def test_try_fix_never_runs_a_destructive_docker_command(monkeypatch):
+    """try_fix only ever STARTS things. `osrm_bgu` is a multi-GB rebuild from the Israel
+    PBF, and guard.py blocks prune/rmi from a shell — this must not become the way
+    around that."""
+    monkeypatch.setattr(doctor, "_osrm_ok", lambda: False)
+    monkeypatch.setattr(doctor, "_daemon_ok", lambda timeout=12: True)
+    monkeypatch.setattr(doctor, "_osrm_ok_retry", lambda tries=6: True)
+    seen = []
+    import subprocess
+
+    class _R:
+        returncode = 0
+        stdout = stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: (seen.append(cmd), _R())[1])
+    doctor.try_fix()
+    flat = " ".join(" ".join(c) for c in seen)
+    for forbidden in ("prune", "rmi", "rm ", "kill", "down"):
+        assert forbidden not in flat, f"try_fix ran a destructive docker verb: {flat}"
 
 
 def test_fix_noop_when_osrm_up(monkeypatch):

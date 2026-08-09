@@ -30,6 +30,25 @@ def _never_touch_the_real_budget_file(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_model_rung", 0)
 
 
+@pytest.fixture(autouse=True)
+def _no_test_may_launch_docker_desktop(monkeypatch):
+    """NO TEST MAY START DOCKER DESKTOP.
+
+    `doctor.try_fix()` gained a second repair layer: when the Docker ENGINE is unreachable
+    it launches Docker Desktop and then waits up to ~2 minutes for the engine to answer.
+    `test_fix_starts_osrm_when_down` stubs `subprocess.run` but not `subprocess.Popen`, so
+    the moment that layer existed the test launched the real application and then slept out
+    the full retry loop — the suite went from 59s to 162s, and the 100s was the giveaway.
+
+    Autouse, and here rather than in test_doctor.py, for the same reason as the budget
+    fixture above: the module that needs the guard is not always the module that trips it.
+    A test that wants the real thing can monkeypatch it back explicitly."""
+    import doctor
+    monkeypatch.setattr(
+        doctor, "_start_docker_desktop",
+        lambda: (False, "blocked by the test suite — see conftest"))
+
+
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
     """Point storage at a fresh empty SQLite file for the duration of one test.

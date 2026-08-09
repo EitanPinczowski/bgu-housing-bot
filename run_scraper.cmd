@@ -22,10 +22,16 @@ REM ~30h and its log showed only the start banner — impossible to diagnose. -u
 set "PYTHONUNBUFFERED=1"
 set "PY=C:\Users\eitan\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 
-REM Self-heal the OSRM walk-time server: if the container exists but stopped
-REM (e.g. Docker was restarted), bring it back. Harmless if Docker is down or
-REM it's already running — the bot works without OSRM (just no walk minutes).
-docker start osrm_bgu >nul 2>&1
+REM Self-heal the OSRM walk-time server. This used to be a bare
+REM `docker start osrm_bgu >nul 2>&1`, which cannot help when the Docker ENGINE
+REM itself is down — and 14 of 88 completed runs logged "OSRM DOWN" anyway, with
+REM >nul hiding the reason every time. doctor --fix starts Docker Desktop first
+REM when the engine is unreachable, then the container.
+REM Output goes to the run log, NOT to nul: the whole point is that a failed heal
+REM should leave a trace. --quiet keeps it to the repair lines — the full dependency
+REM table 7x/day would bury the log it is written to. Never fatal: the bot
+REM deliberately still classifies without OSRM, on the straight-line walk estimate.
+"%PY%" -u doctor.py --fix --quiet >> "data\scraper_runs.log" 2>&1
 
 REM Per-run log file. A single shared log is a single point of failure: a wedged
 REM predecessor holding that handle can stop every later run from even starting.

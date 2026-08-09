@@ -129,3 +129,48 @@ def test_a_run_past_the_ceiling_is_not_called_close_to_it(tmp_path, monkeypatch)
     assert "longest completed run 509 min" in out
     assert "would now be ABORTED" in out
     assert "close to the ceiling" not in out
+
+
+def _runs_log(tmp_path, monkeypatch, search_log: str, runs_log: str) -> str:
+    """`_osrm_degraded` reads scraper_runs.log while the rest of the row reads
+    search_log.txt — the OSRM warning is only ever written to the former."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    (tmp_path / "search_log.txt").write_text(search_log, encoding="utf-8")
+    (tmp_path / "scraper_runs.log").write_text(runs_log, encoding="utf-8")
+    out = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a))))
+    stats._run_reliability()
+    return "\n".join(out)
+
+
+def test_a_run_with_osrm_down_is_reported_as_degraded(tmp_path, monkeypatch):
+    """A run with OSRM down does not fail or warn — it quietly writes worse numbers, and
+    the AMBER boundary IS a walk time. 14 of 88 runs all-time, and it was only ever
+    visible by grepping the log for it."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    search = "\n".join([
+        "2026-08-05 08:00:02  END    LIVE  100s  posts=5",
+        "2026-08-05 10:00:02  END    LIVE  100s  posts=5",
+    ])
+    # The warning line carries NO date; it is attributed to the timestamp above it.
+    runs = "\n".join([
+        "geocode misses: 0  ·  ⚠️ OSRM DOWN (used straight-line walk estimate)",
+        "2026-08-05 08:00:02  END    LIVE  100s  posts=5",
+        "2026-08-05 10:00:02  END    LIVE  100s  posts=5",
+    ])
+    out = _runs_log(tmp_path, monkeypatch, search, runs)
+    assert "STRAIGHT-LINE estimate" in out
+    assert "1/2" in out and "50%" in out
+
+
+def test_no_degraded_row_when_osrm_was_up_all_week(tmp_path, monkeypatch):
+    """Silence must mean healthy. A row that prints 0/N every day is one you stop
+    reading, and then it cannot tell you anything when it matters."""
+    import scraper
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 6)
+    monkeypatch.setattr(scraper, "run_in_progress", lambda: False)
+    line = "2026-08-05 08:00:02  END    LIVE  100s  posts=5"
+    out = _runs_log(tmp_path, monkeypatch, line, line)
+    assert "STRAIGHT-LINE" not in out

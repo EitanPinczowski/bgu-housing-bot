@@ -473,8 +473,34 @@ def checks() -> list:
 _ICON = {PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "· "}
 
 
-def report() -> int:
-    rows = checks()
+def report_json(rows=None) -> int:
+    """The same verdict as `report()`, machine-readable.
+
+    Exists so nothing else has to RE-IMPLEMENT these probes. `.claude/hooks/session_start.py`
+    grew its own copies of the OSRM and scrape checks, which is how a project ends up with
+    two views of its own health that can disagree — and the one nobody runs is always the
+    one that is right.
+
+    Takes `rows` so a caller that already has them does not pay for a second round of live
+    HTTP probes.
+    """
+    rows = checks() if rows is None else rows
+    payload = {
+        "generated": datetime.now().isoformat(timespec="seconds"),
+        "checks": [{"name": n, "status": s, "detail": d, "remediation": r}
+                   for n, s, d, r in rows],
+        "chains": {c: [{"backend": b, "status": s} for b, s, _ in backends]
+                   for c, backends in chains()},
+    }
+    hard = [n for n, s, *_ in rows if s == FAIL]
+    payload["failures"] = hard
+    payload["ok"] = not hard
+    print(json.dumps(payload, ensure_ascii=False, indent=1))
+    return 1 if hard else 0
+
+
+def report(rows=None) -> int:
+    rows = checks() if rows is None else rows
     width = max(len(n) for n, *_ in rows)
     print("=== dependencies ===")
     for name, status, detail, _ in rows:
@@ -493,23 +519,82 @@ def report() -> int:
     return 1 if hard else 0
 
 
-def try_fix() -> list:
-    """Attempt to auto-heal what we safely can. Currently: if OSRM is down, start its
-    Docker container and re-probe. Returns [(what, ok, detail)]. Only ever touches the
-    one known container — no arbitrary commands."""
+def _daemon_ok(timeout: int = 12) -> bool:
+    """Is the Docker ENGINE answering? Distinct from "is the container running"."""
     import subprocess
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.returncode == 0 and bool((r.stdout or "").strip())
+    except Exception:
+        return False                # includes the CLI HANGING, which is a known symptom
+
+
+def _daemon_ok_retry(tries: int = 20, gap: int = 6) -> bool:
+    """Docker Desktop takes a while: it boots a WSL VM before the engine answers."""
+    import time
+    for _ in range(tries):
+        if _daemon_ok():
+            return True
+        time.sleep(gap)
+    return False
+
+
+def _start_docker_desktop() -> tuple:
+    """Launch Docker Desktop itself. Returns (ok, detail).
+
+    Starting the APP is a different repair from starting the container, and it is the one
+    that was missing: `run_scraper.cmd` has always run `docker start osrm_bgu` before a
+    scrape, and 14 of 88 completed runs STILL logged 'OSRM DOWN'. `docker start` cannot
+    do anything when the engine itself is not up, which is what those runs hit."""
+    import subprocess
+    for exe in (os.path.expandvars(r"%ProgramFiles%\Docker\Docker\Docker Desktop.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Docker\Docker Desktop.exe")):
+        if os.path.exists(exe):
+            try:
+                subprocess.Popen([exe], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except Exception as exc:
+                return False, f"{type(exc).__name__}: {exc}"
+            return (True, "launched, waiting for the engine") if _daemon_ok_retry() \
+                else (False, "launched but the engine did not come up in ~2 min")
+    return False, "Docker Desktop.exe not found in Program Files or LocalAppData"
+
+
+def try_fix() -> list:
+    """Attempt to auto-heal what we safely can. Returns [(what, ok, detail)].
+
+    ONLY EVER TOUCHES THE ONE KNOWN CONTAINER, and only ever starts things. Nothing here
+    may prune, remove, or reset: `.claude/hooks/guard.py` blocks those from a shell
+    precisely because `osrm_bgu` is a multi-GB rebuild from the Israel PBF, and this
+    function must not become the way around that guard.
+
+    Two layers, because they fail differently:
+      1. the Docker ENGINE is down    -> start Docker Desktop and wait for it
+      2. the CONTAINER is stopped     -> docker start
+    Layer 2 alone was already wired into run_scraper.cmd and was not enough."""
     done = []
-    if not _osrm_ok():
-        container = getattr(config, "OSRM_DOCKER_CONTAINER", "osrm_bgu")
-        try:
-            r = subprocess.run(["docker", "start", container],
-                               capture_output=True, text=True, timeout=60)
-            ok = r.returncode == 0 and _osrm_ok_retry()
-            done.append(("start OSRM", ok,
-                         f"docker start {container}: " + (r.stderr or r.stdout or "").strip()[:80]
-                         if not ok else f"{container} up"))
-        except Exception as exc:
-            done.append(("start OSRM", False, f"{type(exc).__name__}: {exc}"))
+    if _osrm_ok():
+        return done
+
+    import subprocess
+    if not _daemon_ok():
+        ok, detail = _start_docker_desktop()
+        done.append(("start Docker Desktop", ok, detail))
+        if not ok:
+            return done            # no point asking a dead engine to start a container
+
+    container = getattr(config, "OSRM_DOCKER_CONTAINER", "osrm_bgu")
+    try:
+        r = subprocess.run(["docker", "start", container],
+                           capture_output=True, text=True, timeout=60)
+        ok = r.returncode == 0 and _osrm_ok_retry()
+        done.append(("start OSRM", ok,
+                     f"{container} up" if ok else
+                     f"docker start {container}: "
+                     + ((r.stderr or r.stdout or "").strip()[:80] or "no output")))
+    except Exception as exc:
+        done.append(("start OSRM", False, f"{type(exc).__name__}: {exc}"))
     return done
 
 
@@ -525,11 +610,19 @@ def _osrm_ok_retry(tries: int = 6) -> bool:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--fix" in argv:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for what, ok, detail in try_fix():
-            print(f"[doctor --fix] {_ICON[PASS if ok else FAIL]} {what}: {detail}")
-    code = report()
+            print(f"{stamp}  [doctor --fix] {_ICON[PASS if ok else FAIL]} {what}: {detail}")
+    # One pass of checks(), shared by every renderer below: each check makes live network
+    # probes, so calling checks() per consumer doubles the wall time and the traffic.
+    rows = checks()
+    if "--quiet" in argv:
+        # For scheduled callers (run_scraper.cmd) that want the REPAIR logged and not the
+        # whole table: at 7 runs a day the report would bury the log it is written to.
+        code = 1 if any(s == FAIL for _, s, *_ in rows) else 0
+    else:
+        code = report_json(rows) if "--json" in argv else report(rows)
     if "--alert" in argv:
-        rows = checks()
         bad = [(n, r) for n, s, _, r in rows if s == FAIL]
         if bad:
             import notifier
