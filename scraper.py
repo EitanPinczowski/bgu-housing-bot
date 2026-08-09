@@ -101,12 +101,12 @@ def is_wedged() -> bool:
 _RUN_CMDLINE_MARKERS = ("main.py",)
 
 
-def _pid_command_line(pid: int) -> Optional[str]:
-    """The command line of one pid: "" if no such process, None if we couldn't ask.
+def _pid_command_line_ps(pid: int) -> Optional[str]:
+    """The PowerShell implementation, kept as the fallback for a machine without psutil.
 
-    The two empty-ish answers are deliberately different — "the process is gone" is a
-    fact, "PowerShell didn't answer" is not, and a caller that conflates them turns a
-    failed query into a health verdict."""
+    Measured 2026-08-09: 750 ms per call, of which 442 ms is spawning powershell.exe at
+    all. That is paid by `.claude/hooks/guard.py` before every DB-writing command, by the
+    session-start banner, by doctor and by stats."""
     ps = (f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}' "
           "-ErrorAction SilentlyContinue; if ($p) { $p.CommandLine }")
     try:
@@ -119,6 +119,53 @@ def _pid_command_line(pid: int) -> Optional[str]:
     if out.returncode != 0:
         return None
     return (out.stdout or "").strip()
+
+
+def _pid_command_line(pid: int) -> Optional[str]:
+    """The command line of one pid: "" if no such process, None if we couldn't ask.
+
+    THE TWO EMPTY-ISH ANSWERS ARE DELIBERATELY DIFFERENT — "the process is gone" is a
+    fact, "we couldn't ask" is not, and a caller that conflates them turns a failed query
+    into a health verdict. That contract is the whole point of this function and it is
+    what `run_in_progress()` -> `doctor` -> the wedged-scraper alarm is built on.
+
+    psutil answers the same question without spawning a process, so it maps onto that
+    contract directly:
+        NoSuchProcess          -> ""    the process is gone
+        AccessDenied / Error   -> None  it exists but will not tell us
+        otherwise              -> the command line
+
+    AccessDenied is NOT "gone". A pid we lack rights to read is a process that is very
+    much alive, and reporting it as absent would let `run_in_progress()` answer False
+    over a live scrape — precisely the conflation the docstring above forbids.
+
+    AN EMPTY COMMAND LINE FROM A PROCESS THAT EXISTS IS ALSO NOT "GONE". Windows returns
+    no cmdline for some processes without raising — pid 4 (System) is the easy example,
+    measured returning "" rather than AccessDenied. The old PowerShell path had the same
+    blind spot, so this is not a regression, but it matters more now: `guard.py` gates
+    destructive writes on this answer, and "I could not read it" must not arrive as "no
+    scrape is running". `pid_exists` separates the two.
+
+    Falls back to PowerShell when psutil is not installed, so a machine without it still
+    works exactly as before."""
+    try:
+        import psutil
+    except ImportError:
+        return _pid_command_line_ps(pid)
+    pid = int(pid)
+    try:
+        cmd = " ".join(psutil.Process(pid).cmdline())
+        if not cmd and psutil.pid_exists(pid):
+            return None                 # it is there; we just cannot see what it is
+        return cmd
+    except psutil.NoSuchProcess:
+        return ""                       # a fact: nothing is running under that pid
+    except (psutil.AccessDenied, psutil.Error) as exc:
+        print(f"[scraper] could not query pid {pid}: {type(exc).__name__}")
+        return None                     # not a fact: it exists, we just can't read it
+    except Exception as exc:
+        print(f"[scraper] could not query pid {pid}: {exc}")
+        return None
 
 
 def run_in_progress() -> Optional[bool]:

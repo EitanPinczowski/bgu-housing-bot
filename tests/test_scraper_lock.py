@@ -6,6 +6,8 @@ elapsed time — a slow-but-working run must be left completely alone.
 """
 import time
 
+import pytest
+
 import config
 import scraper
 
@@ -77,6 +79,16 @@ def test_clear_wedged_holder_kills_a_stalled_run(tmp_path, monkeypatch):
 
 
 # --- is a run actually running? -----------------------------------------------------
+def _fake_cmdline(monkeypatch, answer):
+    """Stub the QUESTION ("what is pid N running?"), not whichever backend answers it.
+
+    These tests used to stub `scraper.subprocess.run`, which pinned them to the
+    PowerShell implementation — so they broke the moment psutil became the primary path,
+    even though `run_in_progress`'s logic had not changed at all. `_pid_command_line` is
+    the seam that logic actually depends on; the backends get their own tests below."""
+    monkeypatch.setattr(scraper, "_pid_command_line", lambda pid: answer)
+
+
 def _fake_ps(monkeypatch, stdout, returncode=0):
     class R:
         pass
@@ -94,13 +106,13 @@ def test_run_in_progress_reads_the_heartbeat_pids_own_command_line(tmp_path, mon
     _hb(tmp_path, monkeypatch)
     (tmp_path / "scraper.heartbeat").write_text(f"4242 {time.time():.0f} x",
                                                 encoding="utf-8")
-    _fake_ps(monkeypatch, '"C:\\python.exe" -u main.py --live\n')
+    _fake_cmdline(monkeypatch, '"C:\\python.exe" -u main.py --live')
     assert scraper.run_in_progress() is True
-    # the pid is gone: PowerShell finds no such process and prints nothing
-    _fake_ps(monkeypatch, "")
+    # the pid is gone: the query succeeds and finds no such process
+    _fake_cmdline(monkeypatch, "")
     assert scraper.run_in_progress() is False
     # the pid was recycled by something that is not ours -> not a scrape
-    _fake_ps(monkeypatch, '"C:\\chrome.exe" --profile-directory=Default\n')
+    _fake_cmdline(monkeypatch, '"C:\\chrome.exe" --profile-directory=Default')
     assert scraper.run_in_progress() is False
 
 
@@ -110,13 +122,7 @@ def test_run_in_progress_says_unknown_rather_than_guessing(tmp_path, monkeypatch
     _hb(tmp_path, monkeypatch)
     (tmp_path / "scraper.heartbeat").write_text(f"4242 {time.time():.0f} x",
                                                 encoding="utf-8")
-
-    def boom(*a, **k):
-        raise OSError("powershell missing")
-
-    monkeypatch.setattr(scraper.subprocess, "run", boom)
-    assert scraper.run_in_progress() is None
-    _fake_ps(monkeypatch, "", returncode=1)          # the query itself failed
+    _fake_cmdline(monkeypatch, None)                 # the query itself failed
     assert scraper.run_in_progress() is None
     # no heartbeat at all -> nothing is running (doctor SKIPs before it ever asks)
     monkeypatch.setattr(scraper, "_HEARTBEAT_PATH", tmp_path / "gone.heartbeat")
@@ -129,6 +135,47 @@ def test_a_live_run_is_matched_by_command_line_not_process_name(tmp_path, monkey
     _hb(tmp_path, monkeypatch)
     (tmp_path / "scraper.heartbeat").write_text(f"4242 {time.time():.0f} x",
                                                 encoding="utf-8")
+    _fake_cmdline(monkeypatch, '"C:\\python.exe" -u main.py --live --hot')
+    assert scraper.run_in_progress() is True          # a --hot run counts too
+
+
+def test_psutil_access_denied_is_not_the_same_as_a_dead_process(monkeypatch):
+    """THE contract, and the one psutil could most easily get wrong.
+
+    A pid we lack rights to read is a process that is very much ALIVE. Mapping
+    AccessDenied to "" would make `run_in_progress()` answer False over a live scrape,
+    and the caller spends a health verdict — and now a guard on a destructive write — on
+    that difference."""
+    psutil = pytest.importorskip("psutil")
+
+    class Denied:
+        def __init__(self, pid):
+            pass
+
+        def cmdline(self):
+            raise psutil.AccessDenied(4242)
+
+    monkeypatch.setattr(psutil, "Process", Denied)
+    assert scraper._pid_command_line(4242) is None     # not "", which would mean gone
+
+
+def test_psutil_no_such_process_is_a_fact(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+
+    class Gone:
+        def __init__(self, pid):
+            pass
+
+        def cmdline(self):
+            raise psutil.NoSuchProcess(4242)
+
+    monkeypatch.setattr(psutil, "Process", Gone)
+    assert scraper._pid_command_line(4242) == ""       # a fact, not an unknown
+
+
+def test_the_powershell_fallback_still_asks_the_right_question(monkeypatch):
+    """Kept for machines without psutil. It must still query BY PID and ask for the
+    command line, not the process name."""
     seen = {}
 
     def fake_run(cmd, **kw):
@@ -139,9 +186,12 @@ def test_a_live_run_is_matched_by_command_line_not_process_name(tmp_path, monkey
         return R
 
     monkeypatch.setattr(scraper.subprocess, "run", fake_run)
-    assert scraper.run_in_progress() is True          # a --hot run counts too
+    assert "main.py" in scraper._pid_command_line_ps(4242)
     joined = " ".join(seen["cmd"])
     assert "ProcessId=4242" in joined and "CommandLine" in joined
+    # a failed query is None, never "" — same contract as the psutil path
+    _fake_ps(monkeypatch, "", returncode=1)
+    assert scraper._pid_command_line_ps(4242) is None
 
 
 # --- recovering from a hung run ----------------------------------------------------
@@ -470,3 +520,23 @@ def test_a_healthy_launch_neither_reaps_nor_retries(monkeypatch):
     p, ctx = scraper.open_browser()
     assert ctx == "CONTEXT"
     assert log == ["launch"], log            # no reap, no stop, no second attempt
+
+
+def test_an_unreadable_command_line_is_not_a_dead_process():
+    """Windows returns no cmdline for some LIVE processes without raising — pid 4
+    (System) is the easy one. "" means gone, so answering "" there would let
+    `run_in_progress()` report no scrape over a process it simply could not read.
+
+    Uses the real System pid rather than a stub: the whole point is what the platform
+    actually does, and a mock would just re-assert my assumption about it."""
+    pytest.importorskip("psutil")
+    import psutil
+    if not psutil.pid_exists(4):
+        pytest.skip("no pid 4 on this machine")
+    assert scraper._pid_command_line(4) is None     # not "", which would mean gone
+
+
+def test_a_readable_live_process_still_returns_its_command_line():
+    pytest.importorskip("psutil")
+    import os
+    assert "python" in (scraper._pid_command_line(os.getpid()) or "").lower()
