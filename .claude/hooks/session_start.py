@@ -107,16 +107,37 @@ def _notes_drift():
     return f"current ({noted})"
 
 
+def _write_cache(values: dict) -> None:
+    """Leave the probe results where the statusline can read them.
+
+    The statusline renders constantly, so it must never probe: `osrm.alive()` alone is a
+    3s timeout when the server is down, and `run_in_progress` was 750ms before psutil.
+    A statusline that shells out on every render is worse than no statusline. It reads
+    this file and shows how old it is, so a stale line is visibly stale rather than
+    quietly wrong."""
+    import json
+    try:
+        import config
+        path = config.DATA_DIR / ".claude_state.json"
+        values["generated"] = datetime.now().isoformat(timespec="seconds")
+        path.write_text(json.dumps(values), encoding="utf-8")
+    except Exception:
+        pass                       # a banner must never fail because a cache write did
+
+
 def main() -> int:
-    rows = [
-        _safe("scrape", _scrape),
-        _safe("osrm", _osrm),
-        _safe("listings", _listings),
-        _safe("gemini", _quota),
-        _safe("last run", _last_run),
-        _safe("notes", _notes_drift),
-    ]
-    rows = [r for r in rows if r]
+    probes = {"scrape": _scrape, "osrm": _osrm, "listings": _listings,
+              "gemini": _quota, "last run": _last_run, "notes": _notes_drift}
+    rows, values = [], {}
+    for label, fn in probes.items():
+        try:
+            v = fn()
+            values[label] = v
+            if v is not None:
+                rows.append(f"  {label}: {v}")
+        except Exception as e:
+            rows.append(f"  {label}: (could not check — {type(e).__name__})")
+    _write_cache(values)
     if rows:
         print("bgu_housing_bot — live state at session start:")
         print("\n".join(rows))
