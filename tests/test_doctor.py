@@ -283,3 +283,49 @@ def test_a_budget_under_the_stated_limit_is_not_a_failure(tmp_path, monkeypatch)
     llm.record_quota_refusal("429 ... limit: 500 ... quotaId: GenerateRequestsPerDay")
     _name, status, _detail, _remedy = doctor._check_llm_budget()
     assert status != doctor.FAIL
+
+
+def _backup(tmp_path, name, age_hours):
+    import os
+    import time as _t
+    d = tmp_path / "backups"
+    d.mkdir(exist_ok=True)
+    f = d / name
+    f.write_bytes(b"x")
+    t = _t.time() - age_hours * 3600
+    os.utime(f, (t, t))
+    return f
+
+
+def test_backups_pass_when_recent(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+    _backup(tmp_path, "listings-20260809-213000.sqlite", 3)
+    name, status, detail, _ = doctor._check_backups()
+    assert status == doctor.PASS and "3h old" in detail
+
+
+def test_backups_fail_when_the_schedule_has_stopped(tmp_path, monkeypatch):
+    """The whole point. `_check_db`'s remediation says "restore from data/backups/",
+    which is advice worth exactly as much as the newest file in there — so a stopped
+    backup job has to be able to make this row RED. A check that can only say PASS is
+    not a check."""
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+    _backup(tmp_path, "listings-20260801-213000.sqlite", 72)
+    name, status, detail, remediation = doctor._check_backups()
+    assert status == doctor.FAIL
+    assert "72h old" in detail
+    assert "BGU Backup" in remediation      # names the task to go and look at
+
+
+def test_backups_fail_when_there_are_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+    assert doctor._check_backups()[1] == doctor.FAIL
+
+
+def test_backups_read_the_newest_not_the_last_alphabetically(tmp_path, monkeypatch):
+    """Age comes from mtime, not from the name. A restored or re-copied file sorts by
+    its filename but is not the freshest thing on disk."""
+    monkeypatch.setattr(doctor.config, "DATA_DIR", tmp_path)
+    _backup(tmp_path, "listings-20260809-213000.sqlite", 99)   # newest NAME, stale file
+    _backup(tmp_path, "listings-20260101-213000.sqlite", 2)    # oldest name, fresh file
+    assert doctor._check_backups()[1] == doctor.PASS

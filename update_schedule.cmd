@@ -67,8 +67,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$a = New-ScheduledTaskAction -Execute '%HERE%run_dashboard_publish.cmd' -WorkingDirectory '%HERE%'; $t = @('08:30','09:30','10:30','11:30','12:30','13:30','14:30','15:30','16:30','17:30','18:30','19:30','20:30') | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Dashboard Publish' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Dashboard Publish -> hourly :30, 08:30-20:30 (21:00 Share is the last)'"
 
 echo.
+echo === 5/5  Nightly DB snapshot (the votes and the archive do not come back) ===
+REM backup_db.py said "Schedule it weekly in Task Scheduler" from the day it was
+REM written and never was: on 2026-08-09 nine BGU * tasks existed and none was this,
+REM and all 14 snapshots on disk had been made by hand. Daily, not weekly, so KEEP=14
+REM means a fortnight of history. 21:30 sits after Dashboard Share (21:00) and clear
+REM of every scrape slot.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$a = New-ScheduledTaskAction -Execute '%HERE%run_backup.cmd' -WorkingDirectory '%HERE%'; $t = New-ScheduledTaskTrigger -Daily -At '21:30'; $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName 'BGU Backup' -Action $a -Trigger $t -Settings $s -Force | Out-Null; Write-Host '  [ok] BGU Backup -> 21:30 daily (doctor FAILs if the newest is >48h old)'"
+
+echo.
 echo === done ===
-echo   Check with:   python doctor.py        (wake timers should PASS)
+echo   Check with:   python doctor.py        (wake timers and backups should PASS)
 echo   Measure with: python stats.py         ("time to detect" should fall
 echo                                          from its 8.4h / n=44 baseline)
 echo.
@@ -76,6 +86,7 @@ echo   UNDO:
 echo     schtasks /Delete /TN "BGU Housing Scraper Hot" /F
 echo     schtasks /Delete /TN "BGU Dashboard Share" /F
 echo     schtasks /Delete /TN "BGU Dashboard Publish" /F
+echo     schtasks /Delete /TN "BGU Backup" /F
 echo     ...and restore the 7 old triggers (08 10 12 14 16 18 20) in Task Scheduler.
 echo.
 pause

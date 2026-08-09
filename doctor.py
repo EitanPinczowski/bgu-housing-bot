@@ -89,6 +89,36 @@ def _check_db():
                 "restore from data/backups/ (see backup_db.py)")
 
 
+def _check_backups():
+    """Is there a RECENT snapshot of the one thing that cannot be re-derived?
+
+    The listings come back from Facebook. The group's ⭐/🗑 votes and the post archive do
+    not — and the vote data `MIN_ALERT_SCORE` is waiting on is still n=3 after weeks of
+    running. `_check_db` above already tells you to "restore from data/backups/", which is
+    advice worth exactly as much as the newest file in there.
+
+    It was worth less than it looked: on 2026-08-09 `backup_db.py` had never been
+    scheduled despite its own docstring saying to, so all 14 snapshots were hand-made and
+    the newest was already 40h old — inside this threshold by luck, not by design.
+
+    A BACKUP JOB THAT SILENTLY STOPS IS WORSE THAN NO BACKUP, because the plan for the bad
+    day still says "restore from backups". 48h so a single missed run is not an alarm but
+    a stopped schedule is."""
+    d = config.DATA_DIR / "backups"
+    files = sorted(d.glob("listings-*.sqlite")) if d.exists() else []
+    if not files:
+        return ("backups", FAIL, "no DB snapshots at all",
+                "run `run_backup.cmd`, and schedule it with update_schedule.cmd")
+    newest = max(files, key=lambda f: f.stat().st_mtime)
+    age_h = (time.time() - newest.stat().st_mtime) / 3600
+    detail = f"{len(files)} kept, newest {newest.name} ({age_h:.0f}h old)"
+    if age_h > 48:
+        return ("backups", FAIL, detail,
+                "the backup schedule has stopped — check the `BGU Backup` task "
+                "(schtasks /Query /TN \"BGU Backup\")")
+    return ("backups", PASS, detail, "")
+
+
 def _osrm_ok() -> bool:
     try:
         r = requests.get(f"{config.OSRM_BASE_URL}/route/v1/foot/34.79,31.25;34.8015,31.2622",
@@ -461,7 +491,7 @@ def chains() -> list:
 def checks() -> list:
     out = [_check_config()]
     out += _check_data_files()
-    out += [_check_db(), _check_osrm(), _check_telegram(), _check_gemini(),
+    out += [_check_db(), _check_backups(), _check_osrm(), _check_telegram(), _check_gemini(),
             _check_llm_budget(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
             _check_wake_timers(), _check_hot_scheduled(), _check_geocode_placement(),
