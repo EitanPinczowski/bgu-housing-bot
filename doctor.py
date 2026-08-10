@@ -459,11 +459,44 @@ def _check_sheets():
 
 
 # --- fallback chains: name -> ordered [(backend, status, detail)] ----------------
+# A TINY BOUNDED QUERY, NOT A BARE `out;`. This probe used to send `[out:json];out;`,
+# which has no filter — it asks the server to serialise the ENTIRE dataset. Measured
+# 2026-08-10 against overpass-api.de, which was demonstrably healthy at the time:
+#     [out:json];out;                          -> ReadTimeout after 8.3s
+#     node(31.2620,34.7990,…);out 1;           -> 200 in 815ms
+# So the row reported every mirror down whenever any mirror was up, and `geocode`'s
+# `overpass` link inherited it. A CHECK THAT CAN ONLY FAIL IS AS USELESS AS ONE THAT CAN
+# ONLY PASS, and worse than nothing here: it trains you to ignore the row.
+#
+# The bbox is a few metres of Be'er Sheva, so it exercises the real query path — parse,
+# index lookup, serialise — for about a kilobyte of work.
+_OVERPASS_PROBE = ("[out:json][timeout:10];"
+                   "node(31.2620,34.7990,31.2625,34.7995);out 1;")
+
+
+def _overpass_ok(url: str) -> bool:
+    """Probe one mirror the SAME WAY `geocode.py` queries it.
+
+    The old probe was a GET with no User-Agent. `geocode._overpass_*` does a POST with
+    `config.NOMINATIM_USER_AGENT`, and the difference is not cosmetic: measured
+    2026-08-10 against overpass-api.de, the default `python-requests` agent is refused
+    outright with **406 Not Acceptable in 307ms**. So the row could never pass, on any
+    mirror, however healthy — a health check that does not send what the code sends is
+    testing a request nobody makes."""
+    try:
+        r = requests.post(url, data={"data": _OVERPASS_PROBE},
+                          headers={"User-Agent": config.NOMINATIM_USER_AGENT},
+                          timeout=getattr(config, "OVERPASS_TIMEOUT_SEC", 8))
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def _overpass_live() -> list:
     out = []
     for url in config.OVERPASS_URLS:
         host = url.split("/")[2]
-        out.append((host, PASS if _http_ok(url, timeout=8, params={"data": "[out:json];out;"}) else FAIL, ""))
+        out.append((host, PASS if _overpass_ok(url) else FAIL, ""))
     return out
 
 

@@ -329,3 +329,47 @@ def test_backups_read_the_newest_not_the_last_alphabetically(tmp_path, monkeypat
     _backup(tmp_path, "listings-20260809-213000.sqlite", 99)   # newest NAME, stale file
     _backup(tmp_path, "listings-20260101-213000.sqlite", 2)    # oldest name, fresh file
     assert doctor._check_backups()[1] == doctor.PASS
+
+
+def test_the_overpass_probe_sends_what_geocode_sends(monkeypatch):
+    """A health check that does not send what the CODE sends is testing a request nobody
+    makes. This probe was a GET with no User-Agent while `geocode` POSTs with
+    `config.NOMINATIM_USER_AGENT` — and measured 2026-08-10 against a demonstrably
+    healthy overpass-api.de, the default `python-requests` agent is refused outright with
+    406 Not Acceptable. The row could never pass, on any mirror, at any time."""
+    seen = {}
+
+    class _R:
+        status_code = 200
+
+    def fake_post(url, **kw):
+        seen.update(kw)
+        seen["url"] = url
+        return _R()
+
+    import requests
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert doctor._overpass_ok(doctor.config.OVERPASS_URLS[0]) is True
+    assert seen["headers"]["User-Agent"] == doctor.config.NOMINATIM_USER_AGENT
+    assert "data" in seen["data"]
+
+
+def test_the_overpass_probe_query_is_bounded():
+    """`[out:json];out;` has no filter — it asks the server to serialise the ENTIRE
+    dataset, and timed out after 8.3s against the same mirror that answered a bounded
+    query in 815ms. A check that can only FAIL is as useless as one that can only PASS,
+    and worse here: it trains you to ignore the row."""
+    q = doctor._OVERPASS_PROBE
+    assert "out;" not in q.replace("out 1;", ""), "unbounded `out;` — this cannot succeed"
+    assert "node(" in q and "timeout:" in q          # a real, bounded, cheap query
+
+
+def test_a_dead_mirror_is_still_reported(monkeypatch):
+    """The fix must not make the row unable to fail either."""
+    def boom(*a, **k):
+        raise OSError("connection refused")
+
+    import requests
+    monkeypatch.setattr(requests, "post", boom)
+    rows = doctor._overpass_live()
+    assert rows and all(s == doctor.FAIL for _, s, _ in rows)
