@@ -72,10 +72,24 @@ def _pace():
     _last_call = time.time()
 
 
+# AN EMPTY RESULT AND A FAILED REQUEST LOOK IDENTICAL TO THE CALLER, and for a long
+# seeding run that difference is the whole safety story: "no such address" is data, a
+# timeout is not, and a run that cannot tell them apart will grind through hundreds of
+# silent failures believing it is learning something. `search` still returns [] either
+# way — the docstring below is a deliberate decision and other callers depend on it — so
+# the distinction is published here instead, for a caller that wants to stop.
+consecutive_errors = 0          # reset by any request that reaches the server
+throttled = False               # sticky: 429/403/503 means BACK OFF, not "try again"
+last_error = ""
+
+
 def search(text: str) -> list:
     """Raw results for a query: [(type, text, (lat, lon))]. [] on any failure —
-    a seeding run must not die because one lookup timed out."""
-    global calls
+    a seeding run must not die because one lookup timed out.
+
+    A caller that needs to know the difference reads `consecutive_errors` / `throttled`,
+    which this maintains alongside the return value."""
+    global calls, consecutive_errors, throttled, last_error
     _pace()
     body = json.dumps({"searchText": text}).encode("utf-8")
     req = urllib.request.Request(URL, data=body, headers={
@@ -85,9 +99,21 @@ def search(text: str) -> list:
         calls += 1
         with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as r:
             data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        consecutive_errors += 1
+        last_error = f"HTTP {exc.code}"
+        # 429/403/503 is the server telling us to stop. Retrying is the wrong response
+        # and the reason this endpoint is one the live pipeline may never touch.
+        if exc.code in (401, 403, 429, 503):
+            throttled = True
+        print(f"[govmap] {text!r}: HTTP {exc.code}")
+        return []
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        consecutive_errors += 1
+        last_error = f"{type(exc).__name__}: {exc}"
         print(f"[govmap] {text!r}: {exc}")
         return []
+    consecutive_errors = 0                 # the server answered; earlier blips were noise
     out = []
     for res in data.get("results") or []:
         m = _POINT_RE.match(res.get("shape") or "")

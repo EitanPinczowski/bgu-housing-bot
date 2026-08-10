@@ -78,28 +78,36 @@ def stranded_streets() -> list:
     return out
 
 
-def relevant_streets() -> list:
-    """[(street, length_m, existing_anchor_count)] for streets that matter and are thin.
+def in_zone(name: str) -> bool:
+    """Does any part of this street lie in the GREEN or AMBER zone?
 
-    "Matter" = some part of the street is GREEN or AMBER, i.e. a flat there could
-    actually be a match. Seeding the whole city would be wasted requests."""
-    anchors = geocode._load_anchors()
+    "Matters" = a flat there could actually be a match. Seeding the whole city would be
+    wasted requests.
+
+    Extracted from `relevant_streets` so `missing_gaps` can share it. Those two want
+    DIFFERENT street sets from the same test and conflating them cost a wrong answer:
+    `relevant_streets` is in-zone AND THIN (<2 anchors), because a street with no anchors
+    cannot interpolate at all. Densification wants in-zone REGARDLESS of thinness — the
+    widest gaps are on well-anchored streets, `דרך מצדה` holding 19 anchors across numbers
+    4..258. Reusing `relevant_streets` for "in-zone" found 7 streets where there are 177.
+    """
     la0, lo0, la1, lo1 = geocode._bs_bounds()
+    pts = [p for s in streets.geometry(name) for p in s]
+    for p in pts[::5]:
+        if not (la0 <= p[0] <= la1 and lo0 <= p[1] <= lo1):
+            continue
+        tier = zones.classify_location(p[0], p[1])
+        if tier and str(tier[0]).upper().startswith(("G", "A")):
+            return True
+    return False
+
+
+def relevant_streets() -> list:
+    """[(street, length_m, existing_anchor_count)] for streets that matter and are thin."""
+    anchors = geocode._load_anchors()
     out = []
     for name in sorted({s for s in streets._index().values()}):
-        segs = streets.geometry(name)
-        pts = [p for s in segs for p in s]
-        if not pts:
-            continue
-        hit = False
-        for p in pts[::5]:
-            if not (la0 <= p[0] <= la1 and lo0 <= p[1] <= lo1):
-                continue
-            tier = zones.classify_location(p[0], p[1])
-            if tier and str(tier[0]).upper().startswith(("G", "A")):
-                hit = True
-                break
-        if not hit:
+        if not streets.geometry(name) or not in_zone(name):
             continue
         have = len([k for k in (anchors.get(name) or {}) if str(k).isdigit()])
         if have >= 2:
@@ -258,12 +266,97 @@ def missing_exact() -> list:
     return out
 
 
+def missing_gaps(limit: int = 0) -> list:
+    """[(street, number)] for same-parity house numbers missing INSIDE a street's anchored
+    range, worst-covered streets first.
+
+    WHY SAME PARITY, AND WHY "INSIDE". The hold-out that grades this removes an address's
+    own anchor, so what places it is the span between its NEIGHBOURS — n-2 and n+2, which
+    run up the same side of the street. Measured 2026-08-10, error tracks that span almost
+    exactly:
+
+        span <50 m   n=81   p50  6 m   p90  43 m      <- already meets the targets
+        span 50-150  n=67   p50 14 m   p90  75 m
+        span >=150   n=26   p50 35 m   p90 122 m
+
+    So anchors every 50 m are NOT enough: hold one out and the bracket becomes 100 m. Only
+    near-complete coverage of the odd (or even) numbers puts an address in the top bucket.
+
+    STREETS ARE CHOSEN BY THEIR OWN COVERAGE, NEVER BY WHICH HOLD-OUT ADDRESSES THEY
+    CONTAIN. Seeding the streets the sample happens to test would be fitting the ruler, and
+    the resulting gain would not generalise to the addresses real listings use.
+
+    Pooled spellings are one road (`דרך מצדה`/`מצדה`, `ביאליק חיים נחמן`/`חיים נחמן ביאליק`),
+    so `streets.aliases` collapses them — otherwise the same house number is asked for twice
+    and the request count reads nearly double what it is.
+    """
+    anchors = geocode._load_anchors()
+    seen_pool: set = set()
+    per_street = []
+    for st in sorted(anchors):
+        canon = sorted(streets.aliases(st))[0] if streets.aliases(st) else st
+        if canon in seen_pool:
+            continue
+        if not in_zone(st):
+            continue
+        ns = sorted(int(k) for k in (anchors.get(st) or {}) if str(k).isdigit())
+        if len(ns) < 2:
+            continue
+        seen_pool.add(canon)
+        have = set(ns)
+        miss = [n for n in range(ns[0], ns[-1] + 1)
+                if n % 2 == ns[0] % 2 and n not in have]
+        if miss:
+            per_street.append((len(miss), st, miss))
+    per_street.sort(reverse=True)                 # worst-covered first
+    if not limit:
+        return [(st, str(hn)) for _n, st, miss in per_street for hn in miss]
+    # A CAPPED RUN NEEDS BOTH DEPTH AND REACH, and the two pull against each other.
+    # Measured over the pinned 250 for a 400-request budget:
+    #
+    #     streets   per street   sample addresses touched
+    #        20         20              31
+    #        40         10              65        <- chosen
+    #       161          2             173
+    #
+    # Worst-covered-first alone put all 400 on 6 streets (`דרך מצדה` wants 119 by itself),
+    # touching almost nothing. Pure round-robin reached 161 streets but added 2 anchors
+    # each, which cannot tighten a street holding 19 anchors across 128 numbers. Round
+    # robin over the worst-covered ~limit/DEPTH streets gets enough of both to be a test.
+    depth = 10
+    chosen = per_street[:max(1, limit // depth)]
+    out = []
+    queues = [(st, list(miss)) for _n, st, miss in chosen]
+    while queues and len(out) < limit:
+        for st, miss in queues:
+            if not miss:
+                continue
+            out.append((st, str(miss.pop(0))))
+            if len(out) >= limit:
+                break
+        queues = [(st, miss) for st, miss in queues if miss]
+    return out
+
+
 def seed_exact(pairs: list, existing: dict) -> int:
     """Ask govmap for each address directly. Returns how many were accepted."""
     added = 0
     for i, (st, hn) in enumerate(pairs, 1):
         if govmap.calls >= MAX_REQUESTS:
             print(f"\nrequest cap {MAX_REQUESTS} reached — re-run to continue")
+            break
+        # STOP, DO NOT PUSH THROUGH. govmap is undocumented and the live pipeline is
+        # forbidden to touch it; a 429/403 is the server saying back off, and retrying is
+        # how a one-off seeding run becomes a blocked one. An empty result is data and
+        # does not count — `govmap.search` resets the counter whenever the server answers,
+        # so only a real run of failures trips this.
+        if govmap.throttled:
+            print(f"\nSTOPPING at {i - 1}/{len(pairs)}: govmap is throttling us "
+                  f"({govmap.last_error}). Anchors so far are already saved.")
+            break
+        if govmap.consecutive_errors >= 3:
+            print(f"\nSTOPPING at {i - 1}/{len(pairs)}: 3 requests in a row failed "
+                  f"({govmap.last_error}). Anchors so far are already saved.")
             break
         got = None
         for kind, text, pt in govmap.search(f"{st} {hn} באר שבע"):
@@ -335,6 +428,27 @@ def main() -> int:
     only = None
     if "--street" in sys.argv:
         only = sys.argv[sys.argv.index("--street") + 1]
+
+    if "--gaps" in sys.argv:
+        limit = 0
+        if "--limit" in sys.argv:
+            limit = int(sys.argv[sys.argv.index("--limit") + 1])
+        pairs = missing_gaps(limit)
+        print(f"{len(pairs)} same-parity house numbers missing inside anchored ranges"
+              + (f" (capped at {limit})" if limit else ""))
+        print(f"asking govmap for each one directly: {len(pairs)} requests")
+        if dry:
+            print("\n--dry-run: nothing sent.")
+            for st, hn in pairs[:25]:
+                print(f"   {st} {hn}")
+            return 0
+        try:
+            existing = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+        n = seed_exact(pairs, existing)
+        print(f"\n{n}/{len(pairs)} became exact anchors -> {OUT_PATH}")
+        return 0
 
     if "--exact" in sys.argv:
         pairs = missing_exact()
