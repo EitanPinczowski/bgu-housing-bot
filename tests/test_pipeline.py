@@ -750,7 +750,35 @@ def test_a_flat_that_is_still_too_expensive_stays_dropped():
     assert _px_counts(9000, junk, mates=2) == (9000, False)  # 4500/room — the drop stands
 
 
-def test_the_text_rule_still_wins_when_the_text_does_say_it():
-    """N-1 bedrooms from `דירת N חדרים` is the established convention and must not be
-    replaced by the resident count when the text is readable."""
-    assert _px_counts(2400, 'להשכרה דירת 3 חדרים, 2400 ש"ח', mates=4) == (1200, True)
+def test_the_stated_resident_count_beats_the_room_count_proxy():
+    """REVERSES `test_the_text_rule_still_wins_when_the_text_does_say_it` (2026-08-07,
+    d509a23) — read that first if this looks like a regression.
+
+    That test asserted `rooms - 1` must win whenever the text is readable, calling it
+    "the established convention". It was a guard protecting the then-primary rule while
+    the image-post fallback was added beside it, not a measurement that the proxy is
+    better. Measured 2026-08-10 over the pinned 100, the proxy is WRONG in 5 of the 6
+    whole-flat totals:
+
+        [18] "דירת 4 חדרים ל2 שותפים ... 2,800"  rooms-1=3 -> 933   ad says 2 -> 1400
+        [23] 3300  mates 4  rooms-1=3 -> 1100    correct 825
+        [46] 3000  mates 3  rooms-1=2 -> 1500    correct 1000
+        [50] 2600  mates 3  rooms-1=2 -> 1300    correct 867
+
+    `total_roommates_in_apt` is defined in the prompt as exactly "the number of residents
+    when the flat is full" — the divisor this rule wants. `rooms - 1` is a proxy for the
+    same quantity from Israeli usage. With the real thing in hand the proxy is strictly
+    worse, and the flat survives either way (this rule only fires above the cap), so what
+    the old order actually cost was a price wrong by up to 50% feeding the fit score and
+    the alert."""
+    # the old case, now answered from the resident count the ad supplies
+    assert _px_counts(2400, 'להשכרה דירת 3 חדרים, 2400 ש"ח', mates=4) == (600, True)
+    # …and the proxy is still there when the model read no resident count
+    assert _px_counts(2400, 'להשכרה דירת 3 חדרים, 2400 ש"ח') == (1200, True)
+
+
+def test_a_bad_room_proxy_falls_through_instead_of_aborting():
+    """`rooms - 1` of 1 used to fail the `< 2` check and abandon the division entirely,
+    even with a usable resident count already extracted. Measured: [60] had mates=2 and
+    `דירת 2 חדרים`, so it dropped a flat that divides to 1,100."""
+    assert _px_counts(2200, 'להשכרה דירת 2 חדרים, 2200 ש"ח', mates=2) == (1100, True)

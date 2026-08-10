@@ -235,34 +235,54 @@ def _recover_price_per_room(e, raw_text):
     deliberately narrow — all four must hold:
       1. the price is ALREADY above the hard cap (the listing is about to be dropped,
          so a wrong division can only change a certain 'no' into a 'look at this'),
-      2. the text describes a whole flat of N >= 2 rooms,
+      2. a resident count is available (see the divisor note below),
       3. no per-person marker anywhere in the text,
       4. the derived per-room figure actually lands under the cap.
-    Anything else is left exactly as the LLM read it."""
+    Anything else is left exactly as the LLM read it.
+
+    THIS IS WHERE THE DIVISION LIVES, AND IT BELONGS HERE RATHER THAN IN THE PROMPT.
+    Teaching `_SYSTEM_HE` to divide was tried on 2026-08-10 and reverted: telling the
+    model "divide, but return null when the resident count is unknown" made it stop
+    ASSERTING resident counts at all — 20 of 100 posts lost `available_rooms_count`,
+    which feeds the >=2-rooms-free gate, and 10 correct divisions became null. The model
+    resolved the tension by going quiet. Arithmetic is cheap, exact and auditable in
+    Python; extraction is what the model is for."""
     price = e.price_per_room_ils
     if price is None or price <= config.MAX_PRICE_PER_ROOM_ILS:
         return e
     if raw_text and _PER_PERSON_RE.search(raw_text):
         return e
-    m = _WHOLE_APT_RE.search(raw_text or "")
-    share = None
-    if m:
-        try:
-            rooms = int(float(m.group(1)))
-        except ValueError:
-            rooms = 0
-        if 2 <= rooms <= 10:               # rooms-1 must be >= 1: never divide by zero
-            share = rooms - 1
-    if share is None:
-        # THE TEXT CANNOT ALWAYS ANSWER, AND ON THE WORST CASES IT NEVER DOES. This
-        # required `דירת N חדרים` in raw_text, so it missed every IMAGE post — where the
-        # ad is a picture, `raw_text` is the anti-scrape junk, and the LLM read the flat
-        # from the image instead. Measured 2026-08-07: **125 archived posts were dropped
-        # for price alone where price/residents lands under the cap**, and most carry no
-        # readable text at all. Same structural trap as the pre-LLM text gates.
-        # So fall back to what the MODEL extracted, which came from the image when the
-        # text was blank: the number of residents is exactly the divisor this rule wants.
-        share = e.total_roommates_in_apt or e.available_rooms_count
+    # WHAT THE AD SAYS BEATS WHAT THE ROOM COUNT IMPLIES. `total_roommates_in_apt` is
+    # literally "the number of residents when the flat is full" — the divisor this rule
+    # wants — while `rooms - 1` is a proxy from Israeli usage (`דירת 3 חדרים` = 2 bedrooms
+    # + a salon). The proxy used to win, and it was wrong in 5 of the 6 whole-flat totals
+    # measured over the pinned 100 on 2026-08-10:
+    #     [18] "דירת 4 חדרים ל2 שותפים ... 2,800"  rooms-1=3 -> 933, the ad says 2 -> 1400
+    #     [23] 3300, mates 4, rooms-1=3 -> 1100, correct 825
+    #     [46] 3000, mates 3, rooms-1=2 -> 1500, correct 1000
+    #     [50] 2600, mates 3, rooms-1=2 -> 1300, correct 867
+    # Only [54] agreed. The listing survived either way — this rule only fires above the
+    # cap — but it survived carrying a price that was wrong by up to 50%, which then feeds
+    # the fit score and the alert.
+    #
+    # The text proxy is still the fallback, and still matters: it answers when the model
+    # read nothing, and `_WHOLE_APT_RE` needs `דירת N חדרים` in raw_text, which every
+    # IMAGE post lacks (the ad is a picture and raw_text is anti-scrape junk).
+    share = e.total_roommates_in_apt
+    if not share or share < 2:
+        m = _WHOLE_APT_RE.search(raw_text or "")
+        if m:
+            try:
+                rooms = int(float(m.group(1)))
+            except ValueError:
+                rooms = 0
+            if 2 <= rooms <= 10:           # rooms-1 must be >= 1: never divide by zero
+                share = rooms - 1
+    if not share or share < 2:
+        # Last resort, and the reason a bad `rooms - 1` must FALL THROUGH rather than
+        # abort: [60] had mates=2 but `rooms - 1 = 1`, so the old order computed a share
+        # of 1, failed the `< 2` test, and dropped a flat that divides to 1,100.
+        share = e.available_rooms_count
     if not share or share < 2:
         return e
     derived = round(price / share)
