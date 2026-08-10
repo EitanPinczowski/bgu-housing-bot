@@ -119,10 +119,16 @@ def main() -> int:
 
     if "BGU_SKIP_GUARD=1" in cmd:
         return ALLOW
-    cmd = executable_part(cmd)
+
+    # ONE COMMAND PER SEGMENT. `a && b | tail` chains two commands; the pipe belongs to
+    # `b`. Matching the whole string let the pytest rule claim a pipe several `&&` away —
+    # `pytest … && … && python hook.py | tail` was blocked for a pipe on the hook. Split
+    # first, then judge each piece on its own. Heredoc bodies are removed BEFORE the
+    # split, or their `;` and newlines would shred the message into fake segments.
+    segments = re.split(r"&&|\|\||;|\n", executable_part(cmd))
 
     for label, pattern, checks in RULES:
-        if not re.search(pattern, cmd):
+        if not any(re.search(pattern, seg) for seg in segments):
             continue
         for precondition, reason in checks.items():
             try:

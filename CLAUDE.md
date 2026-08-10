@@ -4,21 +4,46 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-06)
+## OPEN RIGHT NOW — read this first (2026-08-10)
 
-**Nothing is blocking. Two things are OWED, both cheap:**
+~~**Nothing is blocking. Two things are OWED, both cheap:**~~ — **Nothing is blocking and
+nothing is owed** (2026-08-10). The items below are closed; they are kept struck through
+rather than deleted because each was closed in a way that contradicts how it was framed,
+and because a claim nobody can find again is a claim nobody can check.
 
-1. **The prompt's PRICE DIVISION RULE is the real open problem.** The n=100 A/B (run
+1. ~~**The prompt's PRICE DIVISION RULE is the real open problem.** The n=100 A/B (run
    2026-08-07, `data/model_ab/`) showed **neither model reliably divides a total rent by
    the number of residents** — the rule `_SYSTEM_HE` states. 3.5 usually answers null;
    3.1 sometimes answers the whole flat's rent as the per-room price. Both lose flats,
    3.1's more quietly. Tightening that one prompt line is worth more than any model
-   swap, and it is testable with `model_ab.py` against a fixed sample.
+   swap, and it is testable with `model_ab.py` against a fixed sample.~~
+   **CLOSED 2026-08-10, AND THE FRAMING WAS WRONG: TIGHTENING THE PROMPT LINE MADE IT
+   WORSE.** Teaching `_SYSTEM_HE` to divide was tried and reverted the same morning —
+   "divide, but return null when the resident count is unknown" made the model stop
+   ASSERTING resident counts at all: **20 of 100 posts lost `available_rooms_count`**,
+   which feeds the ≥2-rooms-free gate, and 10 CORRECT divisions became null. The model
+   resolved the tension by going quiet. The real fix was arithmetic, not language — see
+   item 3. Recorded in the `dead-ends` skill.
    **Never run the harness while a scrape is running** — pacing is per PROCESS, the RPM
-   limit is per project, so two writers issue ~27/min against a limit of 15.
+   limit is per project, so two writers issue ~27/min against a limit of 15. `guard.py`
+   now enforces this.
 2. ~~`prune_orphan_listings` is BROKEN~~ — **FIXED 2026-08-06**, see the note under
    `storage.py` in the `storage-notes` skill. It would have deleted 21 rows, 11 of them
    real; it now removes 2.
+3. **The division was never missing — it was dividing by the wrong number** (2026-08-10,
+   `pipeline._recover_price_per_room`). `rooms - 1` from the text won over
+   `total_roommates_in_apt`, and the proxy is wrong in **5 of the 6** whole-flat totals
+   over the pinned 100: `דירת 4 חדרים ל2 שותפים ... 2,800` derived 933 where the ad says
+   2 residents and the answer is 1400. A bad proxy also used to ABORT the division instead
+   of falling through, dropping a flat that divides to 1,100. Over all 8,920 archived
+   posts with a price the change is strictly additive: **4 rescued, 0 prices changed, 0
+   lost**. It reverses a test that called the proxy "the established convention".
+4. **A MODEL-VS-MODEL A/B CANNOT SEE AN ERROR BOTH MODELS MAKE.** The n=100 comparison
+   found 2 whole-flat totals because it only looked at DISAGREEMENTS. Checking each model
+   against the post text instead found **6 for 3.1 and 1 for 3.5** — a truer size for the
+   problem, and the strongest evidence yet for keeping 3.5 at the front of the ladder.
+   `.claude/tools/prompt_ab.py` does that check; it compares two PROMPTS on one model,
+   which `model_ab.py` cannot.
 
 > **Live state is measured, not written here.** Listing counts, quota used, whether OSRM
 > is up and whether a scrape is running are printed at session start by
@@ -26,13 +51,29 @@ check they're within a hand-drawn walkable zone, and alert on Telegram.
 > maintained — this section is for open DECISIONS. That hook also warns when this
 > section's date falls behind the newest commit, which is how the drift was noticed.
 
-Done today: the 58 merged posts were re-parsed (`--llm --only-merged --min-score 1
---apply`: 47 changed, 20 dropped, 3 rescued, 9 duplicates merged) and
-`phone:522629429` is gone for good. The suite is GREEN (554 passing, `ruff` clean) and
-`doctor.py` is all-green.
+Done 2026-08-10: the price divisor fix above; `street_geom` merged (a street whose
+POLYLINE we hold is a location even with no house number — `רחוב רמב״ם` was the last of
+322 listings naming a resolvable street with no dot); a full `replay.py --apply`
+(**70 rescued to MATCH, 4 dropped, 102 duplicates merged**, sheet rebuilt); and the
+Claude tooling described under "Where the rest lives". The suite is GREEN (616 passing,
+`ruff` clean) and `doctor.py` is all-green.
+- **MOST OF A REPLAY'S DIFF IS NOT YOUR CHANGE.** That apply moved 255 posts, of which
+  the divisor fix accounted for 4. The rest was weeks of code improvements that had never
+  been replayed into the stored verdicts. Read the `changed:` count as accumulated drift,
+  not as the effect of what you just did.
 - Docker was broken on 08-05 and is **fixed** — see the orphaned-socket note under
-  "Verify the base", and the `osrm-docker` skill. OSRM is up. Listings are at **374**.
+  "Verify the base", and the `osrm-docker` skill.
 - `pytest -q | tail` discards pytest's exit code. Read the count, or drop the pipe.
+  `guard.py` now blocks ANY pipe from pytest — and the same trap exists on `replay.py`,
+  where `| tail` cost two full 26-minute previews by truncating the `changed:` summary
+  the whole preview is run for. The lesson is wider than the one command it is enforced on.
+- **THE LADDER IS NOT LEAVING 3.1's QUOTA UNUSED** (checked 2026-08-10 after the usage
+  dashboard showed 3.1 at 221 against ~500). It climbed correctly on 08-09 — 3.5 to its
+  480 cap, then 3.1 for 221 more, **zero Ollama fallbacks** — and stopped because demand
+  stopped at 701 calls, inside the ~700–870/day the budget note below documents. The one
+  "spent on every model" event (08-08 08:00) belongs to the PREVIOUS window: an 08:00 run
+  draws on the window that opened at 10:00 the day before. Unverifiable directly, because
+  `llm_budget.json` keeps only the current window — worth retaining a few.
 - **THE HARD PART OF AN `--apply` IS FINDING A GAP.** A run starts on the hour all day,
   and on 08-05 the 18:00 full run held the lock for 90+ minutes at ~2 min/post because it
   had fallen through to the local model. Waiting politely for a free lock failed twice.
