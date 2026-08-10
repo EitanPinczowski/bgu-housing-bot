@@ -135,6 +135,29 @@ How a Hebrew address becomes a coordinate, and every rule learned by getting it 
     a precise source. `_CONFIDENCE["static"]` was `exact` whatever the key was, so 19
     listings whose post said only `שכונה ד` drew as solid precise dots on one point — the
     biggest pile on the map. Siblings already did this right (`static_street`, `landmark`).
+  - **A STREET WE HOLD THE POLYLINE FOR IS A LOCATION, even with no house number**
+    (`street_point` / `_bare_street_point`, graded `street_geom` → `street`, never
+    precise). `רחוב רמב״ם` returned `(None, None)` while `streets.canonical` answered it
+    `exact` — the externals never matched the gershayim spelling, and they were never
+    needed. The last of 322 listings naming a resolvable street with no location, which
+    under the 2026-08-03 drop rule can be deleted outright. Measured over every stored
+    address: **5 gain a point, 0 change, 0 lose one**.
+    - It is the degenerate `place_house`: the midpoint of the street's extent through the
+      same `_point_on_axis`, a target strictly BETWEEN the first and last vertex, so it
+      can never be the clamped endpoint. **A number is never answered here** — that is
+      how a red-end address read as green.
+    - **The 200 m off-street guard does real work**: one index name can cover two roads
+      that are not one road, and `לימונית`'s midpoint sits **4.9 km** from any לימונית
+      vertex, in the desert between two neighbourhoods. Median 11 m over 1,172 streets,
+      33 refused.
+    - **A CACHED MISS IS ABOUT THE GEOCODERS, NOT ABOUT US.** The miss is written the
+      moment Overpass and Nominatim fail, so `_cache_lookup`'s miss branch has to consult
+      the tier too — wired only at the end, the fix works once and then stops forever.
+      The tier still records the miss (`_remember_miss`) so a street we answer locally
+      does not re-query every dead mirror on every run.
+    - **The proximity guard is load-bearing.** `_named_street` reads the RAW text and an
+      institution's own words look like a street — `אוניברסיטת בן גוריון` yields the
+      boulevard — so without it a place nobody rents gets a confident street-level dot.
   - **Interpolation is 2D and parity-aware, and keeps the setback** (2026-08-01).
     Position along the street still follows the polyline, but the anchors' offset from
     the centreline is interpolated alongside it and added back (`_axis_offset`), and

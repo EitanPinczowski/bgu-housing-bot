@@ -1046,3 +1046,106 @@ def test_the_bearing_lookback_stops_at_a_separator():
     assert geocode._near_governs(n("דירה ליד הבלוק"), n("הבלוק")) is True
     assert geocode._near_governs(n("ליד הבלוק, מגדלי דוד"), n("מגדלי דוד")) is False
     assert geocode._near_governs(n("ליד הבלוק, מגדלי דוד"), n("הבלוק")) is True
+# --- the street's own polyline: a street we hold geometry for is a location -------
+def _offline(monkeypatch, tmp_path):
+    """Every network tier off and a private cache, so what's left is exactly what the
+    LOCAL tiers can do. The street tier deliberately runs last, after the geocoders have
+    had their chance, so a test that left them on would be measuring the network."""
+    monkeypatch.setattr(geocode, "_cache", {})
+    monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geo.json")
+    monkeypatch.setattr(geocode.config, "USE_GOOGLE_GEOCODE", False)
+    monkeypatch.setattr(geocode.config, "USE_OVERPASS_FALLBACK", False)
+    monkeypatch.setattr(geocode.config, "USE_NOMINATIM_FALLBACK", False)
+
+
+def test_a_bare_known_street_places_at_street_confidence(monkeypatch, tmp_path):
+    """A street whose POLYLINE we hold is never really unknown, but with no house number
+    nothing local used to answer it and the externals could not match the gershayim
+    spelling: `רחוב רמב״ם` came back (None, None) while `streets.canonical` answered
+    ('רמב"ם', 'exact'). Measured 2026-08-03, that was the last of 322 listings naming a
+    resolvable street with no location — and under the drop rule of the same day an
+    unlocated listing can be deleted outright.
+
+    Street level, never precise: a street is a line, so the answer says "somewhere on
+    רמב״ם" and the boundary/edge caution in `pipeline._classify` still applies."""
+    _offline(monkeypatch, tmp_path)
+    import streets
+    for spelling in ('רחוב רמב״ם', 'רחוב רמב"ם', 'רמב״ם'):
+        pt, src = geocode.geocode_detailed(spelling)
+        assert pt is not None, spelling
+        assert src == "street_geom", (spelling, src)
+        assert geocode.confidence(src) == "street", spelling
+        assert geocode.has_location(src), spelling
+        assert not geocode.is_precise_source(src), spelling
+        # the 200 m off-street guard: the point is ON the street it claims
+        assert geocode._off_street_m('רמב"ם', pt[0], pt[1]) <= geocode.MAX_ANCHOR_OFFSET_M
+        assert geocode._in_beer_sheva(*pt), spelling
+    # and the no-network viewers draw the same dot, or the pipeline would place a
+    # listing the dashboard renders nothing for
+    assert geocode.geocode_cached('רחוב רמב״ם') is not None
+    assert streets.known('רמב"ם')
+
+
+def test_the_street_point_is_inside_the_polyline_never_its_end(monkeypatch, tmp_path):
+    """"Never clamp past the end of a street's polyline" — `_point_on_axis` answers the
+    last vertex for any target beyond it, which is how seven אלכסנדר ינאי numbers all got
+    one identical point graded `high`. The midpoint of the street's own extent is
+    strictly between its first and last vertex, so it cannot be that clamped endpoint."""
+    _offline(monkeypatch, tmp_path)
+    pts, idx = geocode._street_axis('רמב"ם')
+    pt = geocode.street_point('רמב"ם')
+    assert pt is not None
+    assert pts[0][idx] < pt[idx] < pts[-1][idx]
+
+
+def test_a_street_midpoint_never_answers_a_house_number(monkeypatch, tmp_path):
+    """"אברהם אבינו 38" can't be answered by the street's midpoint — that is how a
+    red-end address read as green, and the whole reason house-number interpolation
+    exists. The new tier refuses a number outright rather than competing with it."""
+    _offline(monkeypatch, tmp_path)
+    assert geocode._bare_street_point('רמב"ם 5') is None
+    assert geocode.geocode_detailed('רמב"ם 5')[1] != "street_geom"
+    assert geocode._bare_street_point("אברהם אבינו 38") is None
+
+
+def test_a_name_covering_two_far_apart_roads_gets_no_point(monkeypatch, tmp_path):
+    """The 200 m off-street guard, doing real work. A name in the index can cover two
+    roads that are not one road: the axis midpoint of `לימונית` lands 4.9 km from any
+    לימונית vertex, in the desert between two neighbourhoods. Measured over all 1,172
+    named streets with geometry the midpoint is a median 11 m from the nearest vertex and
+    33 fail this check — the multi-kilometre error class the guard was written for."""
+    _offline(monkeypatch, tmp_path)
+    assert geocode.street_point("לימונית") is None
+    assert geocode.geocode_detailed("לימונית") == (None, None)
+
+
+def test_a_cached_miss_does_not_hide_a_street_we_hold(monkeypatch, tmp_path):
+    """A negative cache entry is about the GEOCODERS, not about us. The miss is written
+    the moment Overpass and Nominatim fail, so from the second lookup onward the street
+    tier would never be reached — the fix would work once and then stop, which is the
+    hardest kind of regression to see."""
+    from datetime import datetime
+    _offline(monkeypatch, tmp_path)
+    fresh = {"m": datetime.now().isoformat(timespec="seconds"),
+             "v": geocode.GEOCODE_LOGIC_VERSION}
+    monkeypatch.setattr(geocode, "_cache", {'רחוב רמב"ם': dict(fresh),
+                                            "כתובת שאינה קיימת": dict(fresh)})
+    assert geocode._cache_lookup('רחוב רמב"ם')[0] == "miss"      # the miss is really there
+    assert geocode.geocode_detailed('רחוב רמב״ם')[1] == "street_geom"
+    # …and a string that names no street stays missed
+    assert geocode.geocode_detailed("כתובת שאינה קיימת") == (None, None)
+
+
+def test_an_institution_never_gets_a_street_point(monkeypatch, tmp_path):
+    """NOBODY LIVES ON THE CAMPUS (2026-08-01). `_named_street` reads the RAW text and an
+    institution's own words look like a street to the index — `אוניברסיטת בן גוריון`
+    yields the boulevard `שדרות בן גוריון` — so without the proximity guard this tier
+    would hand a place nobody rents a confident street-level dot."""
+    _offline(monkeypatch, tmp_path)
+    import geocode as g
+    assert g._named_street("אוניברסיטת בן גוריון") is not None   # the trap is real
+    for addr in ("אוניברסיטת בן גוריון", "ליד האוניברסיטה", "מול שער האוניברסיטה",
+                 "קמפוס", "סורוקה"):
+        assert geocode.geocode_detailed(addr) == (None, None), addr
+    # a street that merely mentions the campus keeps its placement
+    assert geocode.has_location(geocode.geocode_detailed("רינגלבלום ליד האוניברסיטה")[1])

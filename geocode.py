@@ -246,6 +246,11 @@ _CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
                # NB `הבלוק` used to be graded here on the ASSUMPTION that it was a whole
                # quarter. Surveyed, it is 123 m across and now grades `static`.
                "static_area": "area",
+               # the middle of a street we hold the POLYLINE for, for an address that
+               # names that street and no house number. A street is a line, so this is
+               # street-level by construction — the same grade `static_street` and the
+               # external tiers get, and deliberately never precise.
+               "street_geom": "street",
                "overpass": "street", "nominatim": "street"}
 
 
@@ -580,6 +585,12 @@ def geocode_cached(location_text: Optional[str]):
         return _not_on_campus(tuple(entry["c"]))
     if isinstance(entry, list) and len(entry) == 2:      # legacy bare [lat, lon]
         return _not_on_campus(tuple(entry))
+    # The street's own polyline — local, so it belongs on the no-network path too. Without
+    # it the pipeline would place a bare street name and the dashboard, which renders every
+    # dot through this function, would draw nothing for the same listing.
+    bare = _bare_street_point(location_text)
+    if bare:
+        return _not_on_campus(bare[0])
     return skipped_street                     # street-level, better than no dot at all
 
 
@@ -630,6 +641,29 @@ def _reject_no_housing(location_text, coords, source):
     return coords, source
 
 
+def _named_street(location_text: Optional[str], norm: Optional[str] = None) -> Optional[str]:
+    """The real OSM name of a street this address actually NAMES, or None.
+
+    ONE PREDICATE, TWO CALLERS, DELIBERATELY: the rule that decides whether a named street
+    may THROW AWAY a neighbourhood centroid has to be the same rule that decides whether
+    we may place a listing on that street's own geometry. So the test itself lives in
+    `_names_a_street` and this only reports WHICH street passed it.
+
+    That mattered on the rebase. This function was first written against the older,
+    stricter rule (`how != "fuzzy"`), and `_names_a_street` has since relaxed it: a fuzzy
+    match is allowed when it is a close one, because requiring non-fuzzy lost
+    `יוסף בן מתתיהו` — verbatim but one letter from OSM's spelling, while its corrected
+    twin resolves exact and is not verbatim. Re-stating the condition here would have
+    silently reverted that fix for every caller of this path."""
+    norm = _normalize(_fold_quotes(location_text)) if norm is None else norm
+    for c in _candidate_tokens(location_text or ""):
+        if _names_a_street(c, norm):
+            real, _how = streets.canonical(c)
+            if real:
+                return real
+    return None
+
+
 def _resolve_detailed(location_text: Optional[str]):
     if not location_text:
         return None, None
@@ -664,12 +698,7 @@ def _resolve_detailed(location_text: Optional[str]):
     # (`is_bare_neighborhood` even returns True for it) and the שכונה centroid won. That
     # put 13 listings 364-1,070 m from the street their own post names — `שלמה המלך,
     # שכונה ג` was the worst at 1,070 m.
-    # EXACT/WORD MATCHES ONLY — never a fuzzy one. `גר בשכונה ג ליד האוני` has `האוני`
-    # fuzzy-matching the street `הגאונים`, which would make "near the university" look
-    # like a street address and skip the one key that could place it. A gate that decides
-    # whether to THROW AWAY a working placement has to be certain.
-    names_street = any(_names_a_street(c, norm)
-                       for c in _candidate_tokens(location_text or ""))
+    names_street = _named_street(location_text, norm) is not None
     best_pos, best_coords, best_key = None, None, None
     near_pos, near_coords, near_key = None, None, None   # keys the flat is only NEAR
     # Last-resort coords from a key we deliberately stepped over, WITH the grade that key
@@ -771,7 +800,14 @@ def _resolve_detailed(location_text: Optional[str]):
     if kind == "hit":
         return coords, source
     if kind == "miss":
-        return None, None                                   # recent negative — don't re-query
+        # A CACHED MISS IS ABOUT THE GEOCODERS, NOT ABOUT US. The entry records that
+        # Overpass and Nominatim had no answer for this string; it says nothing about the
+        # polyline sitting in area_features.json. Returning None here is what kept
+        # `רחוב רמב"ם` unplaced even with the street tier below in the file — the miss is
+        # cached the moment the externals fail, so from the second lookup onward the tier
+        # was never reached. Anything that can answer WITHOUT a network call has to be
+        # consulted on this path too.
+        return _bare_street_point(location_text) or (None, None)
 
     # 2b) "NEAR X" IS NOT AN ADDRESS, so no external geocoder may answer it.
     #
@@ -831,6 +867,18 @@ def _resolve_detailed(location_text: Optional[str]):
     # used to be placed still gets placed.
     if skipped_street_coords is not None:
         return skipped_street_coords, skipped_grade or "static_street"
+    # 4) THE STREET'S OWN POLYLINE. We hold the geometry of all 1,174 named streets in the
+    # box, so an address naming one of them is never really unknown — `רחוב רמב"ם` was the
+    # last of 322 listings that named a resolvable street and still had no location, and
+    # under the 2026-08-03 drop rule an unlocated listing can be deleted outright. The
+    # externals could not match the gershayim spelling; they did not need to.
+    # Cannot collide with the fallback above: `skipped_street_coords` is only ever
+    # recorded for an address that carries a house number, and this tier refuses one.
+    bare = _bare_street_point(location_text)
+    if bare:
+        if authoritative:
+            _remember_miss(norm)   # the geocoders really did fail — don't re-ask every run
+        return bare
     # Last resort: the post never gave a street, only a bearing off a landmark
     # ("ליד האוניברסיטה וסורוקה", "קרוב לאוניברסיטת בן גוריון"). Those are
     # campus-adjacent — i.e. in the zone — but were coming back UNKNOWN and dropped.
@@ -842,10 +890,20 @@ def _resolve_detailed(location_text: Optional[str]):
     global misses
     misses += 1                   # a real location string we couldn't map (for run metrics)
     if authoritative:             # a real not-found (a geocoder answered) — remember it
-        cache[norm] = {"m": datetime.now().isoformat(timespec="seconds"),
-                       "v": GEOCODE_LOGIC_VERSION}
-        _save_cache()
+        _remember_miss(norm)
     return None, None
+
+
+def _remember_miss(norm: str) -> None:
+    """Record that the external geocoders had no answer for this string, so it isn't
+    re-queried on every run (a miss costs ~1s per Overpass mirror).
+
+    A negative entry, NOT a verdict on the address: `_cache_lookup`'s miss branch answers
+    from the street geometry anyway, which is why the street tier can record one and still
+    return a point."""
+    _load_cache()[norm] = {"m": datetime.now().isoformat(timespec="seconds"),
+                           "v": GEOCODE_LOGIC_VERSION}
+    _save_cache()
 
 
 # --- Google Maps geocoding (optional; see config.USE_GOOGLE_GEOCODE) -----------
@@ -1534,6 +1592,59 @@ def interpolate_house(street: Optional[str], number: Optional[str]):
     d_hi = _axis_offset(pts, idx, hi_c)
     return (base[0] + d_lo[0] + f * (d_hi[0] - d_lo[0]),
             base[1] + d_lo[1] + f * (d_hi[1] - d_lo[1]))
+
+
+def street_point(street: Optional[str]):
+    """(lat, lon) in the MIDDLE of a street we hold the polyline for, or None.
+
+    The degenerate case of `place_house`: with no house number there is no position along
+    the street to solve for, so the honest answer is the centre of the line and a
+    street-level grade to say so. Uses the same `_point_on_axis` machinery, at the
+    midpoint of the street's own extent along its dominant axis — a target strictly
+    BETWEEN the first and last vertex, so it can never be the clamped endpoint that
+    answered seven אלכסנדר ינאי numbers with one point.
+
+    Refused when the result lands more than MAX_ANCHOR_OFFSET_M from the street's
+    geometry. That is not a formality: a name in the index can cover two roads that are
+    not one road — the axis midpoint of `לימונית` sits 4.9 km from any לימונית vertex,
+    because the halves are in different neighbourhoods and the midpoint is in the desert
+    between them. Measured over all 1,172 named streets with geometry, the midpoint is a
+    median 11 m from the nearest vertex and 33 fail this check — the same multi-kilometre
+    error class the 200 m guard was written for, so they get no point at all."""
+    pts, idx = _street_axis(street)
+    if len(pts) < 2:
+        return None
+    mid = (pts[0][idx] + pts[-1][idx]) / 2.0            # _street_axis sorts along the axis
+    pt = _point_on_axis(pts, idx, mid)
+    off = _off_street_m(street, pt[0], pt[1])
+    if off is None or off > MAX_ANCHOR_OFFSET_M:
+        return None
+    return pt
+
+
+def _bare_street_point(location_text: Optional[str]):
+    """((lat, lon), "street_geom") for an address that NAMES a street we hold the geometry
+    for and gives no house number, else None.
+
+    A NUMBER IS NEVER ANSWERED HERE. "אברהם אבינו 38" can't be the street's midpoint —
+    that is how a red-end address read as green, and it is the whole reason house-number
+    interpolation exists. A number that `place_house` cannot place keeps falling through
+    to the tiers that might really know.
+
+    The proximity guard is load-bearing, not belt-and-braces: `_named_street` reads the
+    RAW text, and an institution's own words look like a street to the index —
+    `אוניברסיטת בן גוריון` yields the boulevard `שדרות בן גוריון`. Without this, a place
+    nobody lives would get a confident street-level dot, undoing the 2026-08-01 decision
+    that "near the university" is not a location."""
+    if not location_text or _house_number(location_text):
+        return None
+    if _is_bare_proximity(location_text):
+        return None
+    street = _named_street(location_text)
+    if not street:
+        return None
+    pt = street_point(street)
+    return (pt, "street_geom") if pt else None
 
 
 MAX_OVERPASS_CANDIDATES = 3        # bound the paced queries per address
