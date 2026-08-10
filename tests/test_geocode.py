@@ -293,7 +293,15 @@ def test_a_street_type_word_that_is_part_of_the_name_is_kept(monkeypatch):
 def test_our_own_placement_is_held_to_the_off_street_rule(monkeypatch):
     """The 250 m gate used to apply only to Overpass/Nominatim, so a fall-through to a
     similarly-named street looked fully confident. Rejecting sends the listing on to
-    the next tier (and ultimately to NEEDS_DATA), where a human sees it."""
+    the next tier, where either something better answers or a human sees it.
+
+    THE ASSERTION MOVED, THE RULE DID NOT. This used to assert `got is None`, which was
+    the same thing while nothing could answer below the rejection. Two changes made that
+    consequence obsolete rather than the rule: the `anchor_neighbour` tier now offers a
+    surveyed point on the claimed street, and seeding gave `אלכסנדר ינאי` anchors
+    [8, 14, 17, 19, 21, 23, 24, 28, 30, 32] — including 32 itself. What must hold is that
+    the REFUSED coordinate is not what comes back; being replaced by better evidence on
+    the right street is the tier chain working, not a regression."""
     seen = []
     monkeypatch.setattr(geocode, "_plausible_external",
                         lambda text, pt, src: seen.append((text, src)) or False)
@@ -303,7 +311,20 @@ def test_our_own_placement_is_held_to_the_off_street_rule(monkeypatch):
     monkeypatch.setattr(geocode, "_cache", {})
     got, src = geocode.geocode_detailed("אלכסנדר ינאי 32")
     assert seen and seen[0][1] == "interpolated"      # the internal hit WAS checked
-    assert got is None                                # and refused, not returned
+    assert got != (31.0, 34.0)                        # and refused, not returned
+    assert src != "interpolated"
+
+
+def test_a_far_away_anchor_is_not_next_door(monkeypatch):
+    """`_nearest_anchor_point` must not resurrect the `אלכסנדר ינאי` disaster, where
+    anchors 8 and 14 sat past the end of the street's own polyline and numbers 17-32 all
+    resolved to one clamped point. Bounded by house NUMBER, not only by metres: at the
+    city's median spacing a metres-only bound admitted an anchor eighteen numbers away."""
+    monkeypatch.setattr(geocode, "_load_anchors",
+                        lambda: {"אלכסנדר ינאי": {"8": [31.2647, 34.7942],
+                                                  "14": [31.2648, 34.7943]}})
+    assert geocode._nearest_anchor_point("אלכסנדר ינאי 32") is None      # 18 numbers away
+    assert geocode._nearest_anchor_point("אלכסנדר ינאי 16") is not None  # 2 -> next door
 
 
 def test_dead_mirror_is_skipped_after_first_failure(monkeypatch, tmp_path):

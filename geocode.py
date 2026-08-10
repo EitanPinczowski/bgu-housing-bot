@@ -251,6 +251,10 @@ _CONFIDENCE = {"manual": "exact", "static": "exact", "google": "exact",
                # street-level by construction — the same grade `static_street` and the
                # external tiers get, and deliberately never precise.
                "street_geom": "street",
+               # a NEIGHBOURING house's surveyed point, used only when nothing else could
+               # place a numbered address. Real evidence, on the right street, but it is
+               # not this house — grading it `high` would claim a precision we do not have.
+               "anchor_neighbour": "street",
                "overpass": "street", "nominatim": "street"}
 
 
@@ -807,7 +811,15 @@ def _resolve_detailed(location_text: Optional[str]):
         # cached the moment the externals fail, so from the second lookup onward the tier
         # was never reached. Anything that can answer WITHOUT a network call has to be
         # consulted on this path too.
-        return _bare_street_point(location_text) or (None, None)
+        #
+        # `_nearest_anchor_point` is here for the SAME reason, and was caught by the same
+        # trap: `שדרות יצחק רגר 134` placed correctly in isolation and came back unplaced
+        # in the hold-out, because that harness resolves an address twice — the first pass
+        # cached the miss and the second returned from here, above the tier. A local
+        # answer must never be gated on whether a geocoder once failed.
+        return (_bare_street_point(location_text)
+                or _nearest_anchor_point(location_text)
+                or (None, None))
 
     # 2b) "NEAR X" IS NOT AN ADDRESS, so no external geocoder may answer it.
     #
@@ -879,6 +891,18 @@ def _resolve_detailed(location_text: Optional[str]):
         if authoritative:
             _remember_miss(norm)   # the geocoders really did fail — don't re-ask every run
         return bare
+    # 5) THE NEAREST NUMBERED ANCHOR ON THE SAME STREET. Runs AFTER the externals, never
+    # before — that ordering is the whole point. Placing house 3 at anchor 4 up front
+    # pre-empts `place_house`'s extrapolation tier, which is better tuned than this and
+    # was measured beating it 12 cases to 4. Down here it only catches what nothing else
+    # could answer, which after `_contradicts_anchors` includes the externals we now
+    # refuse: `שדרות בנ״צ כרמל 3` was left unplaced by that refusal, and anchor 4 is 125 m
+    # from the truth against nominatim's 2,090 m.
+    near = _nearest_anchor_point(location_text)
+    if near:
+        if authoritative:
+            _remember_miss(norm)
+        return near
     # Last resort: the post never gave a street, only a bearing off a landmark
     # ("ליד האוניברסיטה וסורוקה", "קרוב לאוניברסיטת בן גוריון"). Those are
     # campus-adjacent — i.e. in the zone — but were coming back UNKNOWN and dropped.
@@ -1752,7 +1776,111 @@ def _plausible_external(location_text: str, coords, source: str) -> bool:
         print(f"[geocode] rejected {source} for {location_text!r}: {off:.0f} m from the "
               f"street it names")
         return False
+    bad = _contradicts_anchors(location_text, coords)
+    if bad:
+        print(f"[geocode] rejected {source} for {location_text!r}: {bad}")
+        return False
     return True
+
+
+# How far an external answer may sit from the nearest NUMBERED anchor on the same street,
+# per house number of difference, before we call it a contradiction. The city's own median
+# is ~11 m per number (`_median_metres_per_number`); 4x that plus a floor is loose enough
+# for irregular numbering and still catches a kilometre-scale mistake.
+ANCHOR_CONSISTENCY_SLACK = 4.0
+ANCHOR_CONSISTENCY_FLOOR_M = 250.0
+
+
+# How far apart two house numbers can be and still be "next door". Two, because odd and
+# even run up opposite sides of the street: 3 and 5 are neighbours, 3 and 4 face each
+# other. Anything beyond that is a different part of the road, and the `אלכסנדר ינאי`
+# disaster (numbers 17-32 all answered by one clamped point) is what a loose bound buys.
+NEIGHBOUR_MAX_NUMBERS = 2
+
+
+def _anchors_on_claimed_street(location_text: str):
+    """(house_number, [(number, coords), …]) for the street this address NAMES, or None.
+
+    Shared by the consistency check and the last-resort placement so they can never
+    disagree about which street and which anchors are in play."""
+    n = _house_number(location_text)
+    if not n:
+        return None
+    try:
+        want = int(n)
+    except (TypeError, ValueError):
+        return None
+    street = _named_street(location_text)
+    if not street:
+        return None
+    known = _load_anchors().get(street) or {}
+    numbered = sorted((int(k), v) for k, v in known.items() if str(k).isdigit())
+    return (want, numbered) if numbered else None
+
+
+def _nearest_anchor_point(location_text: str):
+    """((lat, lon), "anchor_neighbour") — a NEIGHBOURING house's surveyed position.
+
+    The honest last resort for a numbered address nothing else could place. It is a real
+    surveyed point on the right street, which is far better than nothing, and it is NOT
+    this house — so it is graded `street`, never `high`. Claiming precision here would be
+    the exact lie `_CONFIDENCE` exists to prevent.
+
+    BOUNDED BY HOUSE NUMBER, NOT ONLY BY DISTANCE. A metres-only bound let this answer
+    `אלכסנדר ינאי 32` from anchor 14 — eighteen numbers away — because the city's median
+    spacing put that inside MAX_EXTRAPOLATE_M. That street is the reason the projection
+    guard exists at all: its anchors 8 and 14 sit past the end of its own polyline, and
+    every number from 17 to 32 once resolved to one identical clamped point, graded `high`
+    and drawn as a confident dot. Eighteen numbers is not next door.
+
+    Both bounds apply: at most NEIGHBOUR_MAX_NUMBERS away in numbering, and no further
+    than MAX_EXTRAPOLATE_M on the ground at the city's median spacing.
+    """
+    got = _anchors_on_claimed_street(location_text)
+    if not got:
+        return None
+    want, numbered = got
+    near_n, near_c = min(numbered, key=lambda a: abs(a[0] - want))
+    delta = abs(near_n - want)
+    if delta > NEIGHBOUR_MAX_NUMBERS:
+        return None
+    if delta * _median_metres_per_number() > MAX_EXTRAPOLATE_M:
+        return None
+    return (near_c[0], near_c[1]), "anchor_neighbour"
+
+
+def _contradicts_anchors(location_text: str, coords) -> Optional[str]:
+    """Why this external answer disagrees with the street's own house numbers, or None.
+
+    BEING ON THE RIGHT STREET IS NOT ENOUGH. `שדרות בנ״צ כרמל 3` came back from nominatim
+    2,090 m from the truth and 124 m off the street — inside the 250 m off-street
+    threshold above, so that guard passed it — while our own anchors put houses 4 and 5
+    just over 100 m from the truth. A point for number 3 that sits two kilometres from
+    number 4 is not a placement, whatever street it is near.
+
+    This is the third independent reason the address was mishandled, and the only one
+    that was OUR bug: `interpolate_house` refused correctly (3 is outside the anchored
+    range) and `place_house`'s extrapolation refused correctly (3 lies past the end of
+    OSM's polyline for the street, where `_point_on_axis` would clamp and answer several
+    numbers with one identical point). Both refusals were right. Accepting what filled
+    the gap was not.
+
+    Only fires when the street HAS numbered anchors, so it can never reject an answer for
+    a street we know nothing about — those still fall through to the existing tiers.
+    """
+    got = _anchors_on_claimed_street(location_text)
+    if not got:
+        return None
+    want, numbered = got
+    near_n, near_c = min(numbered, key=lambda a: abs(a[0] - want))
+    d = _haversine_m(near_c[0], near_c[1], coords[0], coords[1])
+    allowed = max(ANCHOR_CONSISTENCY_FLOOR_M,
+                  ANCHOR_CONSISTENCY_SLACK * _median_metres_per_number()
+                  * max(1, abs(near_n - want)))
+    if d <= allowed:
+        return None
+    return (f"{d:.0f} m from anchor {near_n} on the same street "
+            f"(allowed {allowed:.0f} m for {abs(near_n - want)} house number(s))")
 
 
 def _overpass_pick(elements: list, name: str, housenumber: Optional[str] = None):
