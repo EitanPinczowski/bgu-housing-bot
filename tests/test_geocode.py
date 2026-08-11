@@ -857,7 +857,14 @@ def test_one_road_split_by_a_road_type_word_is_pooled():
     # the same house numbers under both spellings. Not the same POINTS: where both
     # spellings already carried a number, each keeps its own survey rather than one
     # arbitrarily overwriting the other.
-    assert set(anchors["דרך מצדה"]) == set(anchors["מצדה"]) and len(anchors["מצדה"]) > 20
+    #
+    # The COUNT is a "there are plenty" sanity check, not the invariant — the invariant is
+    # that both spellings carry the SAME numbers. It was `> 20` until 2026-08-11, when
+    # `seed_anchors.seed_conflict` dropped three govmap seeds on this road (10 and 12
+    # sitting 167 m and 198 m from surveyed 11, 48 at 130 m from 47 — implausible for
+    # adjacent numbers even across a divided boulevard) and took מצדה to 19. Loosened
+    # rather than re-pinned to 19, so honest seed filtering does not fail this test again.
+    assert set(anchors["דרך מצדה"]) == set(anchors["מצדה"]) and len(anchors["מצדה"]) > 15
     assert (geocode.interpolate_house("דרך מצדה", "69")
             == geocode.interpolate_house("מצדה", "69") is not None)
 

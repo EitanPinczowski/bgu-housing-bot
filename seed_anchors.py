@@ -191,7 +191,112 @@ def _accept(street: str, text: str, pt, found: dict | None = None) -> tuple:
     # flat — and as an anchor it drags its interpolated neighbours in after it.
     if zones.no_housing_here(pt[0], pt[1]):
         return None
+    if seed_conflict(street, number, pt):
+        return None
     return number, pt
+
+
+# BEING NEAR THE STREET IS NOT ENOUGH, AND THE COST OF LEARNING THAT TWICE WAS A WHOLE
+# SEEDING RUN. `_accept` above checks geometry — is this point near the road? — so govmap
+# answering `שדרות יצחק רגר 163` with a point 409 m along רגר passes: it IS on רגר. It is
+# simply not where 163 is. Measured 2026-08-11: 6 of the 18 addresses that got WORSE after
+# 1,050 seeded anchors sat next to a seed like that, and each did double damage — the bad
+# anchor made `geocode._contradicts_anchors` reject the CORRECT interpolation, then became
+# the fallback answer itself (`גוש עציון 34`: 0 m -> 278 m, answered by `anchor_neighbour`
+# at exactly the bad anchor).
+#
+# That query-time guard can only ever reject answers. This is the same arithmetic moved to
+# the only place it can refuse the CAUSE.
+#
+# Graded against the OSM survey, never against other seeds: a bad seed must not become the
+# evidence that admits the next one.
+SEED_CONSISTENCY_FLOOR_M = 100.0
+
+_osm_anchors_cache: dict | None = None
+
+
+def _osm_anchors() -> dict:
+    """The surveyed anchors alone — `_load_anchors()` merges govmap in, which would let a
+    seed vouch for itself."""
+    global _osm_anchors_cache
+    if _osm_anchors_cache is None:
+        try:
+            _osm_anchors_cache = json.loads(
+                geocode._ANCHORS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            _osm_anchors_cache = {}
+    return _osm_anchors_cache
+
+
+def seed_conflict(street: str, number: str, pt,
+                  floor: float = SEED_CONSISTENCY_FLOOR_M) -> str | None:
+    """Why this seed disagrees with the street's surveyed numbering, or None.
+
+    Same shape as `geocode._contradicts_anchors` — nearest surveyed number, distance
+    allowed to grow with how far away that number is — with one deliberate difference:
+    a much lower floor. The query-time floor of 250 m protects answers on streets we know
+    little about, where rejecting would leave nothing. Here we only judge a seed when the
+    street HAS survey anchors, and dropping one costs nothing but a request. On a city
+    whose houses run ~11 m apart, 250 m is 22 houses of slack.
+
+    Returns None when the street has no surveyed numbers, so a street OSM has never
+    numbered is seeded exactly as before.
+    """
+    if not str(number).isdigit():
+        return None
+    want = int(number)
+    numbered = [(int(n), p) for n, p in _osm_anchors().get(street, {}).items()
+                if str(n).isdigit() and int(n) != want]
+    if not numbered:
+        return None
+    near_n, near_c = min(numbered, key=lambda a: abs(a[0] - want))
+    d = geocode._haversine_m(near_c[0], near_c[1], pt[0], pt[1])
+    allowed = max(floor, geocode.ANCHOR_CONSISTENCY_SLACK
+                  * geocode._median_metres_per_number() * max(1, abs(near_n - want)))
+    if d <= allowed:
+        return None
+    return (f"{d:.0f} m from surveyed anchor {near_n} "
+            f"(allowed {allowed:.0f} m for {abs(near_n - want)} house number(s))")
+
+
+def audit_seeds(apply: bool = False, floor: float = SEED_CONSISTENCY_FLOOR_M) -> int:
+    """Re-judge every anchor already in govmap_anchors.json against the survey.
+
+    The seeds were written before `seed_conflict` existed, so the file holds anchors that
+    would not be accepted today. Re-checking them costs no requests at all — the points
+    are already on disk.
+    """
+    try:
+        seeds = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        print(f"no {OUT_PATH.name} to audit")
+        return 1
+
+    kept, dropped = {}, []
+    for street, nums in seeds.items():
+        for num, pt in nums.items():
+            why = seed_conflict(street, num, pt, floor)
+            if why:
+                dropped.append((street, num, why))
+            else:
+                kept.setdefault(street, {})[num] = pt
+
+    total = sum(len(v) for v in seeds.values())
+    print(f"{total} seeded anchors, {len(dropped)} contradict the survey "
+          f"(floor {floor:.0f} m) -> {total - len(dropped)} kept")
+    print(f"{len(seeds)} streets -> {len(kept)}\n")
+    for street, num, why in sorted(dropped, key=lambda d: -float(d[2].split()[0]))[:20]:
+        print(f"  drop {street} {num:>4}  {why}")
+    if len(dropped) > 20:
+        print(f"  ... and {len(dropped) - 20} more")
+
+    if not apply:
+        print("\n--audit without --apply: nothing written")
+        return 0
+    OUT_PATH.write_text(json.dumps(kept, ensure_ascii=False, sort_keys=True, indent=1),
+                        encoding="utf-8")
+    print(f"\nwrote {OUT_PATH}")
+    return 0
 
 
 # Two roads sharing a name sit kilometres apart (the ההגנה case: anchors 10 m from the
@@ -449,6 +554,12 @@ def main() -> int:
         n = seed_exact(pairs, existing)
         print(f"\n{n}/{len(pairs)} became exact anchors -> {OUT_PATH}")
         return 0
+
+    if "--audit" in sys.argv:
+        floor = SEED_CONSISTENCY_FLOOR_M
+        if "--floor" in sys.argv:
+            floor = float(sys.argv[sys.argv.index("--floor") + 1])
+        return audit_seeds(apply="--apply" in sys.argv, floor=floor)
 
     if "--exact" in sys.argv:
         pairs = missing_exact()
