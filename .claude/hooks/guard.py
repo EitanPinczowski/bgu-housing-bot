@@ -65,6 +65,29 @@ RULES = [
      r"docker\s+(rmi|image\s+rm)\b|docker\s+(system|volume|image)\s+prune\b"
      r"|docker\s+rm\b[^&|;]*osrm_bgu",
      {"never": "this can destroy `osrm_bgu` — a multi-GB rebuild from the Israel PBF"}),
+
+    # THE LESSON IS WIDER THAN THE ONE COMMAND IT WAS ENFORCED ON, and CLAUDE.md already
+    # said so. The pytest rule above was written after `pytest -q | tail` hid a failure;
+    # the identical mistake then cost two full 26-minute `replay.py` previews and a
+    # 10-minute geo_accuracy re-run on 2026-08-10, because these scripts print their
+    # SUMMARY FIRST — `replayed / now: / changed:` and the p50/p90/max table — and cap the
+    # detail that follows. `| tail` keeps the detail and throws away the answer. Worse
+    # when backgrounded: the pipe truncates the output FILE too, so the summary never
+    # reaches disk and the whole run has to be repeated.
+    #
+    # Listed explicitly rather than matched on `*.py`, and required to be INVOKED rather
+    # than merely named: `cat replay.py | head -20` and `grep -n x stats.py | head` are
+    # both fine and both were blocked by the first version of this rule. That is the same
+    # over-broad mistake as the earlier `pytest\b` matching `pytest-xdist` — the fifth
+    # false positive this guard has produced, every one from a pattern that matched a
+    # WORD instead of a command.
+    ("summary discarded by the pipe",
+     r"(?:python[\d.]*\s+(?:-\w+\s+)*|\./)"
+     r"(replay|geo_accuracy|stats|doctor|seed_anchors|model_ab|batch_ab"
+     r"|unique_report|audit_geocode|group_report)\.py\b[^|]*\|\s*(tail|head)\b",
+     {"never": "these print their SUMMARY FIRST and cap the detail after it, so `| tail` "
+               "keeps the noise and drops the answer — and when backgrounded it truncates "
+               "the output file too. Redirect to a file and read it, or drop the pipe"}),
 ]
 
 
