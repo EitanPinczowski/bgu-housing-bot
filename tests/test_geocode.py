@@ -869,6 +869,38 @@ def test_one_road_split_by_a_road_type_word_is_pooled():
             == geocode.interpolate_house("מצדה", "69") is not None)
 
 
+def test_the_house_next_door_beats_interpolating_across_the_street(monkeypatch):
+    """`שמעון בר גיורא` carries its odd numbers ~200 m from its even ones. Number 26 has no
+    even anchor above 24, so the same-parity bracket fails and `_anchors_for` falls back to
+    ALL anchors — which bracketed it between odd 25 and 27 on the far arm, 200 m out. That
+    turned a RED flat GREEN, the one error class this project treats as worse than not
+    placing at all, while even 24 sat two numbers away and 6 m from the truth."""
+    import geocode
+    known = {"18": [31.2600, 34.7920], "20": [31.2601, 34.7920],
+             "22": [31.2602, 34.7912], "24": [31.2603, 34.7910],
+             "25": [31.2604, 34.7928], "27": [31.2605, 34.7928]}
+    got = geocode._same_parity_neighbour(known, "26")
+    assert got == (31.2603, 34.7910)               # even 24, not the odd pair
+
+
+def test_a_number_its_own_side_can_bracket_is_left_to_interpolation(monkeypatch):
+    """The guard is narrow ON PURPOSE: it must not pre-empt a correct interpolation. 22 has
+    even anchors on both sides, so the right side of the street can answer without help."""
+    import geocode
+    known = {"18": [31.2600, 34.7920], "20": [31.2601, 34.7920],
+             "24": [31.2603, 34.7910], "25": [31.2604, 34.7928]}
+    assert geocode._same_parity_neighbour(known, "22") is None
+
+
+def test_a_neighbour_further_than_next_door_is_not_evidence():
+    """Bounded by NEIGHBOUR_MAX_NUMBERS for the reason that constant already gives: beyond
+    next door it is a different part of the road, and the אלכסנדר ינאי disaster (17..32 all
+    answered by one clamped point) is what a loose bound buys."""
+    import geocode
+    known = {"10": [31.26, 34.79], "11": [31.26, 34.795]}
+    assert geocode._same_parity_neighbour(known, "20") is None
+
+
 def test_a_railway_station_is_not_a_street():
     """`תחנת רכבת צפון - אוניברסיטה` sat in the street index, and because a unique word
     run wins in `_words_index`, `האוניברסיטה` canonicalised straight to it — so

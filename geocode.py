@@ -1496,6 +1496,47 @@ def _anchors_for(known: dict, n: int) -> list:
     return every
 
 
+def _same_parity_neighbour(known: dict, number: Optional[str]):
+    """(lat, lon) of a same-parity anchor one or two numbers away — but ONLY when the
+    same-parity anchors cannot bracket `number` themselves.
+
+    That condition is the whole point, and it is narrow deliberately. It fires exactly when
+    `_anchors_for` would give up on the correct side of the street and fall back to ALL
+    anchors, which is where the damage is: on `שמעון בר גיורא` the odd numbers sit ~200 m
+    from the even ones, number **26** has no even anchor above 24, and mixing bracketed it
+    between odd 25 and 27 on the far arm — 200 m out, turning a RED flat GREEN. Even 24 was
+    two numbers away and 6 m from the truth.
+
+    Extrapolation cannot be left to catch this either: `place_house` projects from
+    `anchors[0]`/`anchors[-1]` across BOTH parities, so with odds running to 39 it would
+    project number 26 from anchor 1.
+
+    Graded `anchor_neighbour` -> "street", not "high": this is the house next door, not the
+    house asked for, and the confidence should say so. Bounded by `NEIGHBOUR_MAX_NUMBERS`
+    (2) for the reason that constant already gives — beyond next-door it is a different
+    part of the road.
+
+    An earlier attempt tried to DETECT the split-parity streets instead, by comparing the
+    two sides' centroids. It is recorded in `dead-ends`: measured outright it flagged 75 of
+    347 streets, measured perpendicular to the axis it flagged 39 and missed the one street
+    it was written for. This needs no such notion — it asks only whether the right side of
+    the street can answer without help.
+    """
+    try:
+        n = int(str(number or "").strip())
+    except (TypeError, ValueError):
+        return None
+    same = sorted(int(k) for k in known
+                  if str(k).isdigit() and int(k) % 2 == n % 2)
+    if not same or same[0] <= n <= same[-1]:
+        return None                     # nothing to offer, or interpolation can do it right
+    best = min(same, key=lambda a: abs(a - n))
+    if abs(best - n) > NEIGHBOUR_MAX_NUMBERS:
+        return None
+    pt = known[str(best)]
+    return (pt[0], pt[1])
+
+
 def place_house(street: Optional[str], number: Optional[str]):
     """((lat, lon), source) for a house number on a street, or (None, None).
 
@@ -1519,6 +1560,9 @@ def place_house(street: Optional[str], number: Optional[str]):
     hit = known.get(str(number or "").strip())
     if hit:
         return (hit[0], hit[1]), "osm_addr"
+    near = _same_parity_neighbour(known, number)
+    if near:
+        return near, "anchor_neighbour"
     pt = interpolate_house(street, number)
     if pt:
         return snap_to_building(pt), "interpolated"

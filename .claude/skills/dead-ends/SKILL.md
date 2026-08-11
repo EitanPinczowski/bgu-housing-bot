@@ -123,11 +123,23 @@ addresses down to extrapolation, `_nearest_anchor_point` and the external tiers.
 **Reverted.** Changing placement on 39 streets to fix 2 addresses of 250, on a metric
 redesigned twice in one sitting, is not a trade worth shipping.
 
-**If it is picked up again, the promising direction is the narrow one:** when the
-same-parity anchors do not bracket `n` but a same-parity anchor sits within
-`NEIGHBOUR_MAX_NUMBERS`, prefer THAT over any mixed-parity interpolation. For 26 that is
-anchor 24 at 6 m. It needs no threshold and no notion of "two roads" — `_nearest_anchor_point`
-already implements the lookup, it is simply below the interpolation that beats it.
+**The narrow direction was then taken, and it worked** (`geocode._same_parity_neighbour`,
+same day). When the same-parity anchors cannot bracket `n` but one sits within
+`NEIGHBOUR_MAX_NUMBERS`, that anchor answers — graded `anchor_neighbour` → "street",
+because it is the house next door and the confidence should say so. It needs no threshold
+and no notion of "two roads": it asks only whether the right side of the street can answer
+without help. Measured over the pinned 250:
+
+    p50 12m -> 10m     p90 101m -> 66m     max 436m     wrong tier or unplaced 29 -> 27
+
+Both RED → GREEN errors gone. 32 addresses better, 14 worse — the 14 are cases where
+mixing parities happened to be fine (`חיים ברלב 4`: 0 m → 50 m), which is the accepted
+cost of never bracketing across two arms of a road.
+
+**It had to go above `place_house`, not inside `interpolate_house`.** Making interpolation
+decline just hands the number to the extrapolation branch below it, which projects from
+`anchors[0]`/`anchors[-1]` across BOTH parities — with odds running to 39 it would have
+projected number 26 from anchor 1.
 
 ## Deliberate no-changes
 

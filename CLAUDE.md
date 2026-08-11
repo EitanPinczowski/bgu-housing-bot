@@ -15,11 +15,19 @@ against the pinned `data/truth_merged_20260810.json`:
 
 | | pre-seeding | now | target |
 |---|---|---|---|
-| p50 | 17 m | **12 m** | ≤ 10 — close |
-| p90 | 79 m | **101 m** | ≤ 50 — **not reachable free** |
-| max | 436 m | **436 m** | ≤ 500 — met |
+| p50 | 17 m | **10 m** | ≤ 10 — **met** |
+| p90 | 79 m | **66 m** | ≤ 50 — **not reachable free** |
+| max | 436 m | **436 m** | ≤ 500 — **met** |
 | never placed | 30 | **26** | — |
-| **wrong zone tier + unplaced** | **31** | **29** | the number that matters |
+| **wrong zone tier + unplaced** | **31** | **27** | the number that matters |
+
+Two of the three targets are met. The last ~30 m of p90 is the method's floor, not a bug.
+`_same_parity_neighbour` is what closed most of the gap: **the house next door beats
+arithmetic that has to cross the street.** When a street's same-parity anchors cannot
+bracket a number but one sits within two of it, that anchor answers instead of an
+interpolation bracketing across two arms of a road — p50 12→10, p90 101→66, and both
+RED → GREEN errors gone. It sits ABOVE `place_house`, because making `interpolate_house`
+decline only hands the number to an extrapolation that mixes parities too.
 
 - **p90 ≤ 50 IS BELOW THE FLOOR OF THE METHOD, so stop buying anchors for it.** Two
   independent measurements agree: addresses whose neighbours bracket them within 50 m —
