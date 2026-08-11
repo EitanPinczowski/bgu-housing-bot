@@ -81,13 +81,20 @@ RULES = [
     # over-broad mistake as the earlier `pytest\b` matching `pytest-xdist` — the fifth
     # false positive this guard has produced, every one from a pattern that matched a
     # WORD instead of a command.
+    # `tail` ONLY, NOT `head`. The pytest rule above blocks every pipe because what it
+    # protects is the EXIT CODE, which any pipe destroys. Here what is protected is the
+    # SUMMARY, and these scripts print it FIRST — so `| head` keeps the answer and is
+    # fine, while `| tail` keeps the detail and drops it. Copying `tail|head` across from
+    # the pytest rule blocked `seed_anchors.py --dry-run | head -3` within a minute of
+    # shipping: the sixth false positive from generalising a pattern without checking
+    # both directions.
     ("summary discarded by the pipe",
      r"(?:python[\d.]*\s+(?:-\w+\s+)*|\./)"
      r"(replay|geo_accuracy|stats|doctor|seed_anchors|model_ab|batch_ab"
-     r"|unique_report|audit_geocode|group_report)\.py\b[^|]*\|\s*(tail|head)\b",
+     r"|unique_report|audit_geocode|group_report)\.py\b[^|]*\|\s*tail\b",
      {"never": "these print their SUMMARY FIRST and cap the detail after it, so `| tail` "
                "keeps the noise and drops the answer — and when backgrounded it truncates "
-               "the output file too. Redirect to a file and read it, or drop the pipe"}),
+               "the output file too. Redirect to a file and read it, or use `| head`"}),
 ]
 
 
