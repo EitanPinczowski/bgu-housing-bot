@@ -31,6 +31,7 @@ street rather than one per house number.
 from __future__ import annotations
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -385,8 +386,7 @@ def audit_seeds(apply: bool = False, floor: float = SEED_CONSISTENCY_FLOOR_M) ->
     if not apply:
         print("\n--audit without --apply: nothing written")
         return 0
-    OUT_PATH.write_text(json.dumps(kept, ensure_ascii=False, sort_keys=True, indent=1),
-                        encoding="utf-8")
+    save_anchors(kept)
     print(f"\nwrote {OUT_PATH}")
     return 0
 
@@ -539,6 +539,34 @@ OUTWARD_STOP_AFTER_MISSES = 3
 OUTWARD_MAX_UP = 10
 
 
+def save_anchors(existing: dict) -> None:
+    """Write `govmap_anchors.json` atomically, retrying while it is locked.
+
+    The seeders save after EVERY accepted anchor, so an abort loses nothing — which also
+    means hundreds of writes to a file inside a OneDrive-synced folder. On 2026-08-11 a
+    run died with `PermissionError: [Errno 13]` partway through because the sync client
+    held the file, losing the rest of an 800-request budget.
+
+    Two changes, and the atomicity matters more than the retry: writing straight to the
+    real path means a lock (or a crash) mid-`write_text` can leave a TRUNCATED anchor file
+    where a valid one used to be. Writing a temp file and `os.replace`-ing it means the
+    anchors are either the old set or the new one, never half of either.
+    """
+    blob = json.dumps(existing, ensure_ascii=False, sort_keys=True, indent=1)
+    tmp = OUT_PATH.with_name(OUT_PATH.name + ".tmp")
+    last = None
+    for attempt in range(6):
+        try:
+            tmp.write_text(blob, encoding="utf-8")
+            os.replace(tmp, OUT_PATH)
+            return
+        except PermissionError as e:                # the sync client has it open
+            last = e
+            time.sleep(0.4 * (attempt + 1))
+    print(f"  [warn] could not write {OUT_PATH.name} ({last}); anchors are in "
+          f"{tmp.name} — the run continues rather than throwing them away")
+
+
 def outward_runs(limit: int = 0) -> list:
     """[(street, [numbers])] to probe BELOW a street's lowest anchor and ABOVE its highest.
 
@@ -600,7 +628,13 @@ def seed_outward(runs: list, existing: dict) -> int:
             for kind, text, pt in govmap.search(f"{st} {hn} באר שבע"):
                 if kind != "address":
                     continue
-                got = _accept(st, str(hn), pt, existing.get(st) or {})
+                # `text`, NOT the number we asked for. `_accept` parses the street and
+                # number out of govmap's OWN answer, because govmap renames as it answers
+                # and the point of the check is that what came back is the address we
+                # meant. Passing `str(hn)` makes `_ADDR_RE` fail to match every time, so
+                # every result is rejected and the run reads as "this street has no
+                # numbers past its end" — 710 requests returned 0 anchors that way.
+                got = _accept(st, text, pt, existing.get(st) or {})
                 if got:
                     break
             if not got:
@@ -611,8 +645,7 @@ def seed_outward(runs: list, existing: dict) -> int:
             misses = 0
             existing.setdefault(st, {})[got[0]] = [round(got[1][0], 6), round(got[1][1], 6)]
             added += 1
-            OUT_PATH.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True,
-                                           indent=1), encoding="utf-8")
+            save_anchors(existing)
         print(f"  {st:26} {numbers[0]}..{numbers[-1]}  +{added} total "
               f"({govmap.calls} requests)")
     return added
@@ -649,8 +682,7 @@ def seed_exact(pairs: list, existing: dict) -> int:
         if got:
             existing.setdefault(st, {})[got[0]] = [round(got[1][0], 6), round(got[1][1], 6)]
             added += 1
-            OUT_PATH.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True,
-                                           indent=1), encoding="utf-8")
+            save_anchors(existing)
         print(f"  [{i}/{len(pairs)}] {st} {hn:<5} {'exact' if got else '—'}")
     return added
 
@@ -820,8 +852,7 @@ def main() -> int:
             # MERGE, don't replace: a stranded street is revisited for the numbers it
             # still cannot place, and its earlier anchors are just as good as the new ones
             existing.setdefault(name, {}).update(got)
-            OUT_PATH.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True,
-                                           indent=1), encoding="utf-8")
+            save_anchors(existing)
         print(f"  [{i}/{len(todo)}] {name:26} +{len(got):2} anchors "
               f"({govmap.calls} requests, {time.time() - t0:.0f}s)")
 

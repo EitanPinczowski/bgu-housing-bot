@@ -4,7 +4,50 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-10)
+## OPEN RIGHT NOW — read this first (2026-08-11)
+
+**The geocoding accuracy targets are answered, and one of the three is not reachable
+from free sources. Nothing is blocking.**
+
+Targets were p50 ≤ 10 m, p90 ≤ 50 m, max ≤ 500 m on `geo_accuracy`'s hold-out. After a day
+of govmap seeding (~1,500 requests) and two new seed filters, measured deterministically
+against the pinned `data/truth_merged_20260810.json`:
+
+| | pre-seeding | now | target |
+|---|---|---|---|
+| p50 | 17 m | **12 m** | ≤ 10 — close |
+| p90 | 79 m | **101 m** | ≤ 50 — **not reachable free** |
+| max | 436 m | **436 m** | ≤ 500 — met |
+| never placed | 30 | **26** | — |
+| **wrong zone tier + unplaced** | **31** | **29** | the number that matters |
+
+- **p90 ≤ 50 IS BELOW THE FLOOR OF THE METHOD, so stop buying anchors for it.** Two
+  independent measurements agree: addresses whose neighbours bracket them within 50 m —
+  the best case — measure p90 **43–46 m**, and govmap's own error against surveyed ground
+  truth is p90 **36 m** (n=7, small). The hold-out removes an address's own anchor, so a
+  dense street brackets it between ADJACENT seeds and the answer inherits THEIR error.
+  That is why seeding moved p50 down and p90 **up**. Only a rooftop-accurate source
+  (`_google_geocode`, already written, `config.USE_GOOGLE_GEOCODE=False`) clears 50 m.
+- **JUDGE AN ANCHOR SET BY THE ZONE VERDICT, NOT BY PERCENTILES** (`.claude/tools/geo_tiers.py`).
+  Seeding trades p50 against p90 and the percentiles cannot say whether that is good. The
+  tier can: **31 → 29** wrong-or-unplaced of 250. The 2 regressions are both
+  `שמעון בר גיורא` and both **RED → GREEN**, the one error class this project treats as
+  worse than not placing at all — cause and the narrow fix are in `dead-ends`.
+- **THE HARNESS WAS MEASURING A COIN FLIP.** The same anchors run twice moved 4 addresses
+  (one by 122 m, one from placed to UNPLACED) because a different Overpass mirror
+  answered. `max` and `coverage` — two of the gate's three criteria — were being read off
+  that. A 715 m max was reported as a seeding regression on 08-11 and was nothing of the
+  kind. **Always measure with `geo_dump --local-only`**, which silences the external tiers
+  and is verified deterministic (identical anchors, two runs, 0 addresses changed).
+- **A GOVMAP ANSWER CAN BE ON THE RIGHT STREET AND IN THE WRONG PLACE.** `_accept` only
+  checked geometry, so `שדרות יצחק רגר 163` was accepted 409 m along רגר. Two filters now:
+  `seed_conflict` (against the survey) and `order_outliers` (against the street's own
+  monotonic order — needed because **74% of seeds sit on streets with no surveyed number
+  at all**, where the survey can judge nothing). 194 anchors dropped across both.
+- **`--outward` costs ~3× what its stopping rule implies.** govmap HARVESTS: ask for a
+  number that does not exist and it answers with a neighbouring real address, so
+  `OUTWARD_STOP_AFTER_MISSES` almost never fires and a run walks its full 10 numbers.
+  700 requests → 665 accepts → **206 distinct new anchors**.
 
 ~~**Nothing is blocking. Two things are OWED, both cheap:**~~ — **Nothing is blocking and
 nothing is owed** (2026-08-10). The items below are closed; they are kept struck through

@@ -12,11 +12,32 @@ Numbers are monkeypatched rather than read from the real survey, so these stay t
 """
 from __future__ import annotations
 
+import pytest
+
 import geocode
 import seed_anchors
 
 STREET = "רחוב הבדיקה"
 BASE = (31.2500, 34.7900)
+
+
+@pytest.fixture(autouse=True)
+def _pin_median_gap(monkeypatch):
+    """Pin the city's median metres-per-house-number, for two reasons.
+
+    DETERMINISM: `seed_conflict`'s allowance is a multiple of it, so without pinning these
+    tests move whenever the anchor data is rebuilt.
+
+    AND, MORE IMPORTANTLY, TO STOP THIS FILE POISONING THE REST OF THE SUITE.
+    `_median_metres_per_number` caches into the module global `geocode._median_gap` on
+    first call. Several tests here fake `_street_axis`, so if that first call happened
+    while a fake was installed, the garbage value was cached for the WHOLE session and
+    surfaced as failures in unrelated tests — `test_a_landmark_mentioned_in_passing_never_
+    hijacks_a_real_address` among them. It moved with `pytest-randomly`'s ordering and
+    passed whenever run alone. Setting the global makes the getter return before it can
+    compute anything from a fake.
+    """
+    monkeypatch.setattr(geocode, "_median_gap", 11.2)
 
 
 def _survey(monkeypatch, **nums):
@@ -106,6 +127,31 @@ def test_pooled_spellings_are_probed_once(monkeypatch):
                         lambda s: {"דרך מצדה", "מצדה"})
     monkeypatch.setattr(seed_anchors, "in_zone", lambda s: True)
     assert len({st for st, _nums in seed_anchors.outward_runs()}) == 1
+
+
+def test_seed_outward_accepts_a_real_answer(monkeypatch, tmp_path):
+    """`_accept` is handed govmap's OWN answer text, never the number we asked for.
+
+    It parses the street and number out of that text, because govmap renames as it answers
+    and the whole point is to check that what came back is the address we meant. Passing
+    the bare number made `_ADDR_RE` fail on every result, so every answer was rejected and
+    the run read as "no street has numbers past its end" — 710 requests, 0 anchors, on
+    2026-08-11. Nothing about that failure looked like a bug from the outside.
+    """
+    monkeypatch.setattr(seed_anchors, "OUT_PATH", tmp_path / "seeds.json")
+    monkeypatch.setattr(seed_anchors.streets, "canonical", lambda s: (STREET, ""))
+    monkeypatch.setattr(geocode, "_off_street_m", lambda *a, **k: 0.0)
+    monkeypatch.setattr(seed_anchors.zones, "no_housing_here", lambda *a, **k: False)
+    monkeypatch.setattr(seed_anchors, "seed_conflict", lambda *a, **k: None)
+    monkeypatch.setattr(seed_anchors.govmap, "calls", 0)
+    monkeypatch.setattr(seed_anchors.govmap, "throttled", False)
+    monkeypatch.setattr(seed_anchors.govmap, "consecutive_errors", 0)
+    monkeypatch.setattr(seed_anchors.govmap, "search",
+                        lambda q: [("address", f"{STREET} 20 באר שבע", (31.25, 34.79))])
+
+    existing: dict = {}
+    assert seed_anchors.seed_outward([(STREET, [20])], existing) == 1
+    assert existing[STREET]["20"] == [31.25, 34.79]
 
 
 def _axis(monkeypatch, idx=1):

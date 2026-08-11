@@ -49,6 +49,34 @@ def _no_test_may_launch_docker_desktop(monkeypatch):
         lambda: (False, "blocked by the test suite — see conftest"))
 
 
+@pytest.fixture(autouse=True)
+def _no_test_may_poison_the_median_gap():
+    """Confine `geocode._median_gap` to the test that computed it.
+
+    It is a module-level cache with no invalidation: the first call to
+    `_median_metres_per_number()` measures every anchored street and keeps the answer for
+    the life of the process. Tests fake `_street_axis` and `_load_anchors` in six places
+    across two files, so whichever test happens to trigger that first call under a fake
+    caches a garbage value FOR EVERY TEST AFTER IT.
+
+    With `pytest-randomly` reshuffling the order each run, the symptom is a failure in an
+    unrelated file that passes when run alone — on 2026-08-11,
+    `test_a_landmark_mentioned_in_passing_never_hijacks_a_real_address` failed that way,
+    and the test that poisoned it was in `test_seed_anchors.py`.
+
+    Resetting rather than pinning: a pinned constant would silently drift from the real
+    data, and the value is only ever a fallback for a street with a single anchor.
+
+    Autouse, and here rather than beside the tests that fake the axis, for the same reason
+    as the two fixtures above — the module that needs the guard is not the module that
+    trips it.
+    """
+    import geocode
+    geocode._median_gap = None
+    yield
+    geocode._median_gap = None
+
+
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
     """Point storage at a fresh empty SQLite file for the duration of one test.
