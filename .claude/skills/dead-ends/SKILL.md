@@ -94,6 +94,41 @@ full runs completed in the 7 days to 08-05, with 17 slots LOST to a held lock �
 lock repairs landed *after* almost all of that data. A slot that never runs cannot be
 fixed by moving the slots around. Re-measure over clean days first.
 
+## Refusing the mixed-parity fallback in `_anchors_for` (tried and reverted 2026-08-11)
+
+**The bug is real. Both attempts to detect it were wrong, and the cure was broader than
+the disease.**
+
+`_anchors_for` prefers same-parity anchors and falls back to ALL anchors when they do not
+bracket the number. On `שמעון בר גיורא` the odd numbers sit ~200 m from the even ones, and
+number **26** has no even anchor above 24 — so it fell back, was bracketed between odd
+**25 and 27** on the far arm, and landed 200 m out. That turned a **RED flat GREEN**, which
+is the one error class this project treats as worse than not placing at all. Even **24**
+was two numbers away and **6 m** from the truth.
+
+Two detectors were written and both failed, in ways worth not repeating:
+
+1. **Centroid distance between the parities** flagged **75 of 347 streets**, including
+   `ארלוזורוב` (56 anchors), which is one ordinary road. A long street commonly carries
+   odds 1..99 and evens 2..40, so the centroids sit hundreds of metres apart ALONG the
+   road while being metres apart across it.
+2. **Perpendicular separation only** (using `_street_axis`'s along-coordinate to pick the
+   across-coordinate) cut it to 39 of 347 — and **did not flag `שמעון בר גיורא` at all**,
+   the street it was written for, because that street's two arms diverge ALONG the axis
+   rather than across it.
+
+It also took the test suite from **64 s to 169 s**: declining to interpolate pushes
+addresses down to extrapolation, `_nearest_anchor_point` and the external tiers.
+
+**Reverted.** Changing placement on 39 streets to fix 2 addresses of 250, on a metric
+redesigned twice in one sitting, is not a trade worth shipping.
+
+**If it is picked up again, the promising direction is the narrow one:** when the
+same-parity anchors do not bracket `n` but a same-parity anchor sits within
+`NEIGHBOUR_MAX_NUMBERS`, prefer THAT over any mixed-parity interpolation. For 26 that is
+anchor 24 at 6 m. It needs no threshold and no notion of "two roads" — `_nearest_anchor_point`
+already implements the lookup, it is simply below the interpolation that beats it.
+
 ## Deliberate no-changes
 
 Not dead ends — decisions to leave something alone, recorded so they are not reopened on

@@ -100,11 +100,16 @@ def main() -> int:
             geocode._cache = {}                    # never answer from a cached hit
             got, source = geocode.geocode_detailed(f"{street} {number}")
             if not got:
-                rows.append((f"{street} {number}", "", "UNPLACED", ""))
+                rows.append((f"{street} {number}", "", "UNPLACED", "",
+                             f"{tlat:.6f}", f"{tlon:.6f}", "", ""))
                 continue
             err = geocode._haversine_m(tlat, tlon, got[0], got[1])
+            # The COORDINATES, not just the error: metres are a proxy, and the thing they
+            # are a proxy FOR is the zone tier. Only the points can answer whether an
+            # anchor set puts a flat on the wrong side of the AMBER boundary.
             rows.append((f"{street} {number}", f"{err:.1f}",
-                         geocode.confidence(source), source))
+                         geocode.confidence(source), source,
+                         f"{tlat:.6f}", f"{tlon:.6f}", f"{got[0]:.6f}", f"{got[1]:.6f}"))
     finally:
         geocode._anchors = original
         geocode._cache = real_cache                # the REAL one back, not a blank
@@ -112,7 +117,8 @@ def main() -> int:
 
     with open(args.out, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["address", "error_m", "tier", "source"])
+        w.writerow(["address", "error_m", "tier", "source",
+                    "truth_lat", "truth_lon", "got_lat", "got_lon"])
         w.writerows(rows)
     placed = [r for r in rows if r[2] != "UNPLACED"]
     print(f"wrote {len(rows)} rows ({len(rows) - len(placed)} unplaced) -> {args.out}")

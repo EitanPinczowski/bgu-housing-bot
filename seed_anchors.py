@@ -535,6 +535,89 @@ def missing_gaps(limit: int = 0) -> list:
     return out
 
 
+OUTWARD_STOP_AFTER_MISSES = 3
+OUTWARD_MAX_UP = 10
+
+
+def outward_runs(limit: int = 0) -> list:
+    """[(street, [numbers])] to probe BELOW a street's lowest anchor and ABOVE its highest.
+
+    `missing_gaps` only fills numbers INSIDE the anchored range, and `interpolate_house`
+    refuses to place anything outside it — so an address past either end cannot be placed
+    at all, whatever the density in between. Measured: 52 of the 76 hold-out addresses
+    with no bracket are range-bound this way, 35 below the minimum and 17 above the
+    maximum. `פולה בן-גוריון 18` where the anchors start at 35; `אברהם שופט 148` where
+    they end at 146.
+
+    Emitted as RUNS rather than a flat pair list because the caller stops a run after
+    `OUTWARD_STOP_AFTER_MISSES` consecutive no-answers: a street that really ends at 40
+    should cost three requests past it, not ten. Same parity as the end it walks from, and
+    downward runs stop at 1.
+    """
+    anchors = geocode._load_anchors()
+    seen_pool: set = set()
+    runs = []
+    for st in sorted(anchors):
+        canon = sorted(streets.aliases(st))[0] if streets.aliases(st) else st
+        if canon in seen_pool or not in_zone(st):
+            continue
+        ns = sorted(int(k) for k in (anchors.get(st) or {}) if str(k).isdigit())
+        if not ns:
+            continue
+        seen_pool.add(canon)
+        low, high = ns[0], ns[-1]
+        down = [n for n in range(low - 2, 0, -2)][:OUTWARD_MAX_UP]
+        up = list(range(high + 2, high + 2 + 2 * OUTWARD_MAX_UP, 2))
+        if down:
+            runs.append((st, down))
+        if up:
+            runs.append((st, up))
+    # Longest reach first, so a capped run spends itself on the streets with most to gain.
+    runs.sort(key=lambda r: -len(r[1]))
+    if limit:
+        runs = runs[:limit]
+    return runs
+
+
+def seed_outward(runs: list, existing: dict) -> int:
+    """Walk each run outward, abandoning it after a few consecutive no-answers."""
+    added = 0
+    for st, numbers in runs:
+        misses = 0
+        for hn in numbers:
+            if govmap.calls >= MAX_REQUESTS:
+                print(f"\nrequest cap {MAX_REQUESTS} reached — re-run to continue")
+                return added
+            if govmap.throttled:
+                print(f"\nSTOPPING: govmap is throttling us ({govmap.last_error}). "
+                      f"Anchors so far are already saved.")
+                return added
+            if govmap.consecutive_errors >= 3:
+                print(f"\nSTOPPING: 3 requests in a row failed ({govmap.last_error}). "
+                      f"Anchors so far are already saved.")
+                return added
+            got = None
+            for kind, text, pt in govmap.search(f"{st} {hn} באר שבע"):
+                if kind != "address":
+                    continue
+                got = _accept(st, str(hn), pt, existing.get(st) or {})
+                if got:
+                    break
+            if not got:
+                misses += 1
+                if misses >= OUTWARD_STOP_AFTER_MISSES:
+                    break                          # the street really does end here
+                continue
+            misses = 0
+            existing.setdefault(st, {})[got[0]] = [round(got[1][0], 6), round(got[1][1], 6)]
+            added += 1
+            OUT_PATH.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True,
+                                           indent=1), encoding="utf-8")
+        print(f"  {st:26} {numbers[0]}..{numbers[-1]}  +{added} total "
+              f"({govmap.calls} requests)")
+    return added
+
+
 def seed_exact(pairs: list, existing: dict) -> int:
     """Ask govmap for each address directly. Returns how many were accepted."""
     added = 0
@@ -645,6 +728,30 @@ def main() -> int:
             existing = {}
         n = seed_exact(pairs, existing)
         print(f"\n{n}/{len(pairs)} became exact anchors -> {OUT_PATH}")
+        return 0
+
+    if "--max" in sys.argv:
+        global MAX_REQUESTS
+        MAX_REQUESTS = int(sys.argv[sys.argv.index("--max") + 1])
+
+    if "--outward" in sys.argv:
+        runs = outward_runs()
+        print(f"{len(runs)} outward runs over {len({r[0] for r in runs})} streets, "
+              f"up to {sum(len(r[1]) for r in runs)} requests "
+              f"(fewer in practice — a run stops after "
+              f"{OUTWARD_STOP_AFTER_MISSES} consecutive misses); cap {MAX_REQUESTS}")
+        if dry:
+            print("\n--dry-run: nothing sent. Longest reach first:")
+            for st, nums in runs[:15]:
+                print(f"   {st:26} {nums[0]}..{nums[-1]}")
+            return 0
+        try:
+            existing = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+        n = seed_outward(runs, existing)
+        print(f"\n{n} anchors added past the ends of streets -> {OUT_PATH}")
+        print(f"{govmap.calls} requests this run")
         return 0
 
     if "--audit" in sys.argv:

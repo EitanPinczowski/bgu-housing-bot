@@ -68,6 +68,46 @@ def test_a_non_numeric_number_is_left_alone(monkeypatch):
     assert seed_anchors.seed_conflict(STREET, "12א", _north_of(BASE, 400)) is None
 
 
+def _one_street(monkeypatch, name: str, numbers: list):
+    monkeypatch.setattr(geocode, "_load_anchors",
+                        lambda: {name: {str(n): [31.25, 34.79] for n in numbers}})
+    monkeypatch.setattr(seed_anchors.streets, "aliases", lambda s: set())
+    monkeypatch.setattr(seed_anchors, "in_zone", lambda s: True)
+
+
+def test_outward_probes_below_the_lowest_and_above_the_highest(monkeypatch):
+    """`interpolate_house` refuses anything outside the anchored range, so an address past
+    either end cannot be placed at all however dense the middle is."""
+    _one_street(monkeypatch, "רחוב הבדיקה", [35, 37, 39])
+    got = {tuple(nums[:3]) for _st, nums in seed_anchors.outward_runs()}
+    assert (33, 31, 29) in got                     # downward, same parity, toward 1
+    assert (41, 43, 45) in got                     # upward, same parity
+
+
+def test_a_downward_run_stops_at_one(monkeypatch):
+    """House numbers start at 1; walking past it wastes requests on nothing."""
+    _one_street(monkeypatch, "רחוב הבדיקה", [5, 7])
+    down = [nums for _st, nums in seed_anchors.outward_runs() if nums[0] < 5][0]
+    assert down == [3, 1]
+
+
+def test_a_street_with_no_numbered_anchor_has_no_outward_run(monkeypatch):
+    """Nothing to walk outward FROM — there is no range to be outside of."""
+    _one_street(monkeypatch, "רחוב הבדיקה", [])
+    assert seed_anchors.outward_runs() == []
+
+
+def test_pooled_spellings_are_probed_once(monkeypatch):
+    """`דרך מצדה` and `מצדה` are one road; probing both doubles the request count for
+    nothing, which is how the earlier gap estimate read nearly twice its real size."""
+    monkeypatch.setattr(geocode, "_load_anchors", lambda: {
+        "דרך מצדה": {"10": [31.25, 34.79]}, "מצדה": {"10": [31.25, 34.79]}})
+    monkeypatch.setattr(seed_anchors.streets, "aliases",
+                        lambda s: {"דרך מצדה", "מצדה"})
+    monkeypatch.setattr(seed_anchors, "in_zone", lambda s: True)
+    assert len({st for st, _nums in seed_anchors.outward_runs()}) == 1
+
+
 def _axis(monkeypatch, idx=1):
     """A straight east-west street, so the axis coordinate is longitude."""
     monkeypatch.setattr(geocode, "_street_axis",
