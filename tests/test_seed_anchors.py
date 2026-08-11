@@ -68,6 +68,66 @@ def test_a_non_numeric_number_is_left_alone(monkeypatch):
     assert seed_anchors.seed_conflict(STREET, "12א", _north_of(BASE, 400)) is None
 
 
+def _axis(monkeypatch, idx=1):
+    """A straight east-west street, so the axis coordinate is longitude."""
+    monkeypatch.setattr(geocode, "_street_axis",
+                        lambda street: ([(31.25, 34.79), (31.25, 34.80)], idx))
+
+
+def _row(numbers_to_lon: dict) -> dict:
+    return {str(n): [31.25, lon] for n, lon in numbers_to_lon.items()}
+
+
+def test_longest_monotonic_keeps_the_run_and_names_the_stray():
+    assert seed_anchors._longest_monotonic([1.0, 2.0, 3.0, 4.0]) == {0, 1, 2, 3}
+    keep = seed_anchors._longest_monotonic([1.0, 2.0, 99.0, 3.0, 4.0])
+    assert 2 not in keep and len(keep) == 4
+
+
+def test_a_street_numbered_backwards_is_not_all_outliers():
+    """Numbers may run either way along the axis — which end OSM's geometry starts at is
+    an accident. Only DISAGREEMENT with the street's own direction is evidence."""
+    assert len(seed_anchors._longest_monotonic([4.0, 3.0, 2.0, 1.0])) == 4
+
+
+def test_an_anchor_out_of_order_along_the_street_is_flagged(monkeypatch):
+    """The `הכנסת 18` shape: 16 sits where it should and the bracket around 18 does not."""
+    _axis(monkeypatch)
+    anchors = _row({2: 34.790, 4: 34.791, 6: 34.792, 8: 34.850, 10: 34.794})
+    assert set(seed_anchors.order_outliers("רחוב הבדיקה", anchors)) == {"8"}
+
+
+def test_too_few_anchors_to_establish_an_order_flags_nothing(monkeypatch):
+    """With three anchors, 'two agree and one does not' is not evidence of anything."""
+    _axis(monkeypatch)
+    assert seed_anchors.order_outliers("רחוב הבדיקה",
+                                       _row({2: 34.790, 4: 34.900, 6: 34.792})) == {}
+
+
+def test_without_a_consensus_nothing_is_dropped(monkeypatch):
+    """A street whose numbering genuinely jumps around must not be gutted — if the
+    surviving run is not a real majority, the test itself is what is unreliable."""
+    _axis(monkeypatch)
+    scattered = _row({2: 34.795, 4: 34.791, 6: 34.799, 8: 34.792, 10: 34.797, 12: 34.790})
+    assert seed_anchors.order_outliers("רחוב הבדיקה", scattered) == {}
+
+
+def test_a_street_with_no_geometry_is_never_judged(monkeypatch):
+    """No polyline, no axis, no opinion — rather than an opinion from nothing."""
+    monkeypatch.setattr(geocode, "_street_axis", lambda street: ([], 0))
+    assert seed_anchors.order_outliers("רחוב הבדיקה",
+                                       _row({2: 34.79, 4: 34.90, 6: 34.79, 8: 34.79})) == {}
+
+
+def test_odd_and_even_are_judged_separately(monkeypatch):
+    """They run up opposite sides, so mixing them adds noise the consensus has to fight.
+    Four clean evens and four clean odds interleave into one badly-behaved sequence."""
+    _axis(monkeypatch)
+    both = _row({1: 34.7901, 2: 34.7900, 3: 34.7911, 4: 34.7910,
+                 5: 34.7921, 6: 34.7920, 7: 34.7931, 8: 34.7930})
+    assert seed_anchors.order_outliers("רחוב הבדיקה", both) == {}
+
+
 def test_seeds_are_graded_against_the_survey_not_against_other_seeds(monkeypatch):
     """`_osm_anchors` reads house_anchors.json alone, NOT `geocode._load_anchors()`, which
     merges govmap in. Otherwise one bad seed becomes the evidence admitting the next."""

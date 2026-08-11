@@ -259,6 +259,82 @@ def seed_conflict(street: str, number: str, pt,
             f"(allowed {allowed:.0f} m for {abs(near_n - want)} house number(s))")
 
 
+# THE SURVEY CANNOT JUDGE WHAT IT HAS NEVER SEEN, AND THAT IS WHERE THE SEEDS ARE.
+# `seed_conflict` grades a seed against `house_anchors.json`, which sounded complete until
+# it was counted: 1,768 of 2,385 seeds — 74% — sit on 144 streets with NO surveyed number
+# at all, so nothing judged them. `הכנסת` has 0 survey anchors and 14 seeds; `השלום` has 1
+# and 61. That is exactly where the damage stayed after the first filter ran: interpolating
+# `הכנסת 18` takes the tightest bracket it can (17 and 19, both seeds, both ~110 m from
+# truth) and answers 133 m out, while seed 16 sits 11 m from truth and is never consulted.
+#
+# One authority exists on every street, surveyed or not: its own shape. `_street_axis`
+# already says so — "House numbers increase monotonically along a street, so that
+# coordinate is a natural, robust parametrization". An anchor whose position along that
+# axis disagrees with its number is the outlier, and no survey is needed to see it.
+MIN_ANCHORS_TO_JUDGE_ORDER = 4
+ORDER_CONSENSUS = 0.6
+
+
+def _longest_monotonic(values: list) -> set:
+    """Indices of the longest run that increases (or decreases) with the list order.
+
+    O(n^2) on purpose: a street holds tens of anchors, not thousands, and the quadratic
+    version is one obvious loop instead of a patience-sort with reconstruction.
+    """
+    best: set = set()
+    for sign in (1, -1):
+        n = len(values)
+        prev = [-1] * n
+        length = [1] * n
+        for i in range(n):
+            for j in range(i):
+                if sign * (values[i] - values[j]) >= 0 and length[j] + 1 > length[i]:
+                    length[i], prev[i] = length[j] + 1, j
+        if not length:
+            continue
+        # TIES DECIDE WHICH ANCHOR IS THE STRAY, so they are not arbitrary. For
+        # [790, 791, 792, 850, 794] two runs reach length 4 — one ending on the 850 jump,
+        # one on 794 — and taking the FIRST kept the jump and dropped the anchor that
+        # continues the street. Prefer the chain reaching furthest along the numbering.
+        end = max(range(n), key=lambda i: (length[i], i))
+        chain, i = set(), end
+        while i != -1:
+            chain.add(i)
+            i = prev[i]
+        if len(chain) > len(best):
+            best = chain
+    return best
+
+
+def order_outliers(street: str, anchors: dict) -> dict:
+    """{number: why} for anchors that sit out of order along the street.
+
+    Judged per parity — odd and even run up opposite sides, and mixing them adds noise the
+    consensus then has to fight. Silent unless there are enough anchors to establish an
+    order (`MIN_ANCHORS_TO_JUDGE_ORDER`) and the surviving run is a real majority
+    (`ORDER_CONSENSUS`): with three anchors, "two agree and one does not" is not evidence
+    of anything, and a street whose numbering genuinely jumps must not be gutted.
+    """
+    pts, idx = geocode._street_axis(street)
+    if len(pts) < 2:
+        return {}                                   # no geometry -> nothing to judge with
+    out: dict = {}
+    numbered = sorted((int(n), n, p) for n, p in anchors.items() if str(n).isdigit())
+    for parity in (0, 1):
+        group = [a for a in numbered if a[0] % 2 == parity]
+        if len(group) < MIN_ANCHORS_TO_JUDGE_ORDER:
+            continue
+        keep = _longest_monotonic([a[2][idx] for a in group])
+        if len(keep) < ORDER_CONSENSUS * len(group):
+            continue                                # no consensus -> do not trust the test
+        for i, (num, raw, _pt) in enumerate(group):
+            if i not in keep:
+                out[raw] = (f"out of order along the street: {len(keep)} of {len(group)} "
+                            f"{'even' if parity == 0 else 'odd'} anchors run monotonically "
+                            f"and {num} does not")
+    return out
+
+
 def audit_seeds(apply: bool = False, floor: float = SEED_CONSISTENCY_FLOOR_M) -> int:
     """Re-judge every anchor already in govmap_anchors.json against the survey.
 
@@ -280,12 +356,28 @@ def audit_seeds(apply: bool = False, floor: float = SEED_CONSISTENCY_FLOOR_M) ->
                 dropped.append((street, num, why))
             else:
                 kept.setdefault(street, {})[num] = pt
+    by_survey = len(dropped)
+
+    # Second pass, on what survived. The ORDER is established from the survey and the
+    # surviving seeds TOGETHER — a surveyed number is the strongest evidence of where the
+    # numbering runs — but only a seed may be dropped. OSM is the base authority; if a
+    # survey point is the one out of line, that is a survey to fix, not to silently discard.
+    for street in list(kept):
+        together = dict(_osm_anchors().get(street, {}))
+        together.update(kept[street])
+        for num, why in order_outliers(street, together).items():
+            if num in kept[street]:
+                dropped.append((street, num, why))
+                del kept[street][num]
+        if not kept[street]:
+            del kept[street]
 
     total = sum(len(v) for v in seeds.values())
-    print(f"{total} seeded anchors, {len(dropped)} contradict the survey "
-          f"(floor {floor:.0f} m) -> {total - len(dropped)} kept")
+    print(f"{total} seeded anchors -> {total - len(dropped)} kept")
+    print(f"  {by_survey} contradict the survey (floor {floor:.0f} m)")
+    print(f"  {len(dropped) - by_survey} sit out of order along their own street")
     print(f"{len(seeds)} streets -> {len(kept)}\n")
-    for street, num, why in sorted(dropped, key=lambda d: -float(d[2].split()[0]))[:20]:
+    for street, num, why in dropped[:20]:
         print(f"  drop {street} {num:>4}  {why}")
     if len(dropped) > 20:
         print(f"  ... and {len(dropped) - 20} more")
