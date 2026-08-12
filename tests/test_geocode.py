@@ -1141,10 +1141,18 @@ def test_near_a_landmark_is_not_at_the_landmark():
 
 
 def test_the_proximity_word_must_govern_the_landmark():
-    """Position, not mere presence: `רגר 5, ליד הבלוק` is a real address that happens to
-    mention a bearing, and must keep its house number."""
+    """Position, not mere presence: `רגר 153, ליד הבלוק` is a real address that happens to
+    mention a bearing, and must keep its house number.
+
+    The number used to be 5, and that made this the one test in the suite that genuinely
+    could not run offline: we hold no local record of `רגר 5`, so it only ever placed
+    because live Overpass answered. `static` — the landmark `הבלוק` — is the CORRECT
+    offline verdict for a number we cannot place, which means the assertion was testing the
+    mirror rather than the ranking rule. 153 is a real number we hold (`osm_addr`), so the
+    rule is now checked against our own data. The behaviour under test is unchanged: a
+    numbered address that mentions a bearing must not degrade to the bearing."""
     import geocode
-    _pt, src = geocode.geocode_detailed("רגר 5, ליד הבלוק")
+    _pt, src = geocode.geocode_detailed("רגר 153, ליד הבלוק")
     assert src not in ("static", "static_area"), src
     assert geocode.has_location(src)
 

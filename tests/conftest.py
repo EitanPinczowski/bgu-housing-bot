@@ -77,6 +77,79 @@ def _no_test_may_poison_the_median_gap():
     geocode._median_gap = None
 
 
+@pytest.fixture(autouse=True)
+def _no_test_may_reach_the_network(monkeypatch, request):
+    """NO TEST MAY CALL OUT. "Offline always" was already the house rule; nothing enforced
+    it, and two tests in `test_geocode.py` were quietly geocoding against live Overpass and
+    Nominatim.
+
+    That is not a slow test, it is a WRONG one. The mirrors disagree with each other — the
+    project already learned this when the accuracy harness turned out to be measuring a
+    coin flip — so an assertion resting on their answer passes or fails according to which
+    mirror replied. Measured 2026-08-12 over `pytest-randomly` seeds 1-7: 3 of 7 failed,
+    and the same seed could differ between runs.
+
+    A blocked call surfaces as an ordinary exception, and `geocode`'s network tiers already
+    swallow those (`except Exception: continue`) and fall through to the local tiers. So
+    the effect is exactly `geo_dump --local-only`, which CLAUDE.md names as THE way to
+    measure here and which is verified deterministic. A test that genuinely needs a
+    response still stubs `requests` itself; monkeypatch applies its patch after this one
+    and undoes it first, so the stub simply wins.
+
+    Autouse and in conftest for the reason the two fixtures above give: the module that
+    needs the guard is not always the module that trips it."""
+    import requests
+    def _blocked(*a, **k):
+        raise RuntimeError(
+            f"offline suite: {request.node.nodeid} tried to reach {(list(a) + [''])[0]} — "
+            f"stub `requests` in the test (see _overpass_on in tests/test_geocode.py)")
+    for verb in ("get", "post", "put", "delete", "head", "patch", "request"):
+        monkeypatch.setattr(requests, verb, _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _no_test_may_touch_the_real_geocode_cache(tmp_path, monkeypatch):
+    """NO TEST MAY READ OR WRITE data/geocode_cache.json — same rule, and the same reasons,
+    as the budget file above.
+
+    WRITING it is the operational hazard: `geocode_detailed` caches every answer it gets,
+    so an unstubbed test writes whatever a mirror happened to say into the file the live
+    pipeline and every map dot then read. `_save_cache` only refuses to SHRINK the cache,
+    so additions land silently in a full production file.
+
+    READING it is what made the flake permanent rather than intermittent. On 2026-08-12 the
+    suite cached `אברהם אבינו, שכונה ד` from overpass and the bare `אברהם אבינו` from
+    nominatim — 711 m apart, against a test asserting they agree within 300 m. Once both
+    entries existed, a test that had been failing on ~40% of orderings failed on every run,
+    and deleting the file was the only way back to green.
+
+    `_cache` is reset alongside the path because it is module-level and loaded once per
+    process: repointing the path alone would leave whatever the first test loaded in memory
+    for every test after it."""
+    import geocode
+    monkeypatch.setattr(geocode, "_CACHE_PATH", tmp_path / "geocode_cache.json")
+    monkeypatch.setattr(geocode, "_cache", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_test_may_leave_a_mirror_marked_dead():
+    """Confine `geocode._dead_mirrors` to the test that filled it.
+
+    It is a per-process circuit breaker with no invalidation: once a mirror raises, it is
+    never called again for the life of the interpreter. `test_transient_overpass_failure_is
+    _not_cached` asserts an exact call count (`2 * len(config.OVERPASS_URLS)`), so any
+    earlier test that killed one mirror made that count come out 7 instead of 8 — a failure
+    in a test that passes when run alone.
+
+    Same shape as the `_median_gap` fixture above, and the reason it is a fixture rather
+    than a fix in `geocode`: the breaker is correct in production, where a process is one
+    scrape. It is only wrong across tests, which pretend to be many processes."""
+    import geocode
+    geocode._dead_mirrors.clear()
+    yield
+    geocode._dead_mirrors.clear()
+
+
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
     """Point storage at a fresh empty SQLite file for the duration of one test.
