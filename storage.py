@@ -162,6 +162,38 @@ def _content_hash_key(e: ListingExtract) -> str:
 # geresh / gershayim / straight+curly quotes — stripped so "רד״ק"/"רד'ק" normalize
 _ADDR_STRIP = str.maketrans("", "", "״׳'`\"‘’“”")
 
+# `פינת X` — "at the corner with X". The clause names a CROSS street, not the address.
+# Bounded to the next separator rather than the end of the string, so the rest of the
+# address survives: `רחוב הבשור 19 (פינת סוסו הכהן), צמודה לבנג'י` keeps its tail.
+_CORNER_RE = re.compile(r"\s*\(?\s*\bפינ(?:ת|ה)\b[^,/|()]*\)?")
+
+
+def _strip_corner(address: Optional[str]) -> Optional[str]:
+    """Drop a `פינת <street>` clause. A corner is a BEARING, not an address component.
+
+    `X 93 פינת Y` means "X 93, at the corner with Y" — the flat is at 93 on X, and Y is
+    a cross street mentioned to help you find it. The same shape as `ליד X`, which this
+    codebase already refuses to treat as an address.
+
+    IT IS THE DEDUP KEY THAT NEEDED THIS, NOT THE GEOCODER. `geocode_detailed` already
+    resolves `שדרות רגר 93 פינת שלמה המלך` to the same point as `רגר 93`; it was
+    `_norm_addr` that took the LAST street named and hung the house number on it, so the
+    key asserted a flat at number 93 on the cross street. Measured 2026-08-12 on the live
+    DB: `שלמה המלך|93` for a flat on רגר, `סוסו הכהן|45` for one on הורקנוס,
+    `סוסו הכהן|19` for one on הבשור — and the two רגר 93 reads, keyed under two different
+    streets, stayed two rows for one flat. That directly contradicted `_norm_addr`'s own
+    purpose, which is that dedup agree with the map about what counts as the same place.
+
+    The streets are far enough apart for it to matter if placement ever followed the key:
+    רגר 93 vs שלמה המלך 93 are 179 m apart, השלום 92 vs בן גוריון 92 are 724 m.
+
+    Not applied to `_norm_addr_raw`: that is the frozen pre-2026-08-02 form, kept purely
+    so keys already in `seen` still match, and rewriting history there would re-alert
+    every stored flat."""
+    if not address:
+        return address
+    return re.sub(r"\s+", " ", _CORNER_RE.sub(" ", address)).strip().strip(",").strip()
+
 
 def _norm_addr_raw(address: Optional[str]) -> Optional[str]:
     """The pre-2026-08-02 normalisation: whitespace collapsed, quote marks dropped.
@@ -175,8 +207,12 @@ def _norm_addr_raw(address: Optional[str]) -> Optional[str]:
     return norm or None
 
 
-def _norm_addr(address: Optional[str]) -> Optional[str]:
+def _norm_addr(address: Optional[str], strip_corner: bool = True) -> Optional[str]:
     """Identity of a NUMBERED street address: `canonical street|number`, else None.
+
+    `strip_corner=False` reproduces the pre-2026-08-12 answer, where a `פינת <street>`
+    clause could win the street. `dedup_keys` emits that form too, so the rows already
+    keyed under a cross street are still recognised — see `_strip_corner`.
 
     THE ADDRESS PART OF A DEDUP KEY MUST BE THE STREET AND THE NUMBER, NOT THE POST'S
     WORDING. Scrubbing whitespace is not enough — landlords describe one flat many
@@ -204,7 +240,12 @@ def _norm_addr(address: Optional[str]) -> Optional[str]:
     raw = _norm_addr_raw(address)
     if not raw:
         return None
-    m = re.search(r"\b(\d{1,4})\b", address)
+    # The corner clause goes before ANY street/number reasoning: it is the cross street
+    # winning `_candidate_tokens` that produced the wrong key, and the number that
+    # follows one (`הורקנוס פינת סוסו הכהן 0`) belongs to the cross street too.
+    # `raw` above deliberately keeps the ORIGINAL wording — it is the legacy fallback.
+    address = _strip_corner(address) if strip_corner else address
+    m = re.search(r"\b(\d{1,4})\b", address or "")
     if not m:
         return raw
     # lazy: keeps storage's import graph free of the geocoding stack, and only the
@@ -311,6 +352,15 @@ def dedup_keys(e: ListingExtract) -> list:
     raw = _norm_addr_raw(e.street_address_or_neighborhood)
     if raw:
         for legacy in (f"{phone}|{raw}" if phone else None, "addr:" + raw):
+            if legacy and legacy not in keys:
+                keys.append(legacy)
+    # THE CROSS-STREET FORM, for the same reason as the block above. Until 2026-08-12 a
+    # `פינת <street>` clause could win the street, so rows are stored under keys like
+    # `phone:508220245|שלמה המלך|93` for a flat on רגר. Without this the corner fix would
+    # rename those flats and every one of them would re-alert as new.
+    corner = _norm_addr(e.street_address_or_neighborhood, strip_corner=False)
+    if corner:
+        for legacy in (f"{phone}|{corner}" if phone else None, "addr:" + corner):
             if legacy and legacy not in keys:
                 keys.append(legacy)
     return keys
