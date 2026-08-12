@@ -86,7 +86,10 @@ def test_static_prefers_first_mentioned_location():
     # a multi-cue address must resolve to the EARLIEST-mentioned static key, so a
     # trailing slang POI ("…כיכר האבות, הבלוק") can't hijack the real anchor.
     coords, src = geocode.geocode_detailed("רחוב אברהם אבינו, על כיכר האבות, הבלוק")
-    assert src == "static"
+    # `static_street`, not `static`, since 2026-08-12: this address carries no house
+    # number and `כיכר האבות` is not a SURVEYED landmark, so it is a street-level answer.
+    # The placement below is what this test is actually for and is unchanged.
+    assert src == "static_street"
     assert coords == geocode.STATIC_TABLE["כיכר האבות"]     # not הבלוק (which comes later)
 
 
@@ -479,10 +482,16 @@ def test_house_numbers_are_not_swallowed_by_a_static_street_entry():
 
 def test_a_bare_street_still_uses_the_static_point():
     """Only NUMBERED addresses bypass the entry — don't over-correct and lose the
-    placement for a street named with no number."""
+    placement for a street named with no number.
+
+    The POINT is the subject here and is unchanged. What changed on 2026-08-12 is the
+    GRADE: a street with no house number is `static_street`, not `static`, because we
+    know the line and not the building. Keeping the placement while lowering the claim is
+    exactly the intent of both rules at once."""
     import geocode
     coords, src = geocode.geocode_detailed("וינגייט")
-    assert coords and src == "static"
+    assert coords, "the placement must survive the downgrade"
+    assert src == "static_street" and geocode.confidence(src) == "street"
 
 
 def test_a_bare_neighborhood_still_resolves():
@@ -1359,3 +1368,54 @@ def test_an_institution_never_gets_a_street_point(monkeypatch, tmp_path):
         assert geocode.geocode_detailed(addr) == (None, None), addr
     # a street that merely mentions the campus keeps its placement
     assert geocode.has_location(geocode.geocode_detailed("רינגלבלום ליד האוניברסיטה")[1])
+
+
+# --- a building with no house number is not an exact location ------------------------
+#
+# User's rule, 2026-08-12: "any building without a number should not appear as exact,
+# with the exception of a landmark." `_static_source` grades the KEY, so a street sitting
+# in STATIC_TABLE graded `static` exactly like a hand-pinned place — `רינגלבלום` with no
+# number came back `exact`, putting 14 listings on one point each claiming a specific
+# building. 38 of the 66 `static` listings were in that state.
+#
+# NOT cosmetic: `static` is in `_PRECISE_SOURCES`, so it also bought `edge_grace`
+# (AMBER->GREEN within 40 m) and skipped the boundary-street caution in
+# `pipeline._classify`. Those streets are exactly the ones that need it — measured from
+# the green-zone edge, `וינגייט` sits 10 m out, `רינגלבלום` 89 m, `כיכר האבות` 150 m.
+
+def test_a_bare_street_in_the_static_table_is_not_exact():
+    """The reported case. A street is a LINE: without a number we know the street, not
+    the building, and the grade has to say so."""
+    for addr in ("רינגלבלום", "וינגייט", "רחוב וינגייט, שכונה ג", "כיכר האבות, שכונה ד"):
+        _pt, src = geocode.geocode_detailed(addr)
+        assert src == "static_street", f"{addr} graded {src}"
+        assert geocode.confidence(src) == "street", addr
+        assert not geocode.is_precise_source(src), \
+            f"{addr} would still buy edge_grace and skip the boundary-street caution"
+
+
+def test_a_surveyed_landmark_with_no_number_stays_exact():
+    """THE EXCEPTION, and it is a real one: a surveyed landmark is a place with a drawn
+    outline, not a line. `הבלוק` is 123 m across and `_landmark_grade` has already sized
+    it — nobody needs a house number to say where `מגדלי דוד` is."""
+    for addr in ("הבלוק", "מגדלי דוד", "מרכז הנגב", "רבי טרפון, הבלוק"):
+        _pt, src = geocode.geocode_detailed(addr)
+        assert src == "static", f"{addr} graded {src}"
+        assert geocode.confidence(src) == "exact", addr
+        assert geocode.is_precise_source(src), addr
+
+
+def test_a_house_number_is_unaffected_by_the_rule():
+    """The rule is about the MISSING number, so an address that has one keeps whatever it
+    earned — including a landmark key that carries one."""
+    _pt, src = geocode.geocode_detailed("מגדלי דוד 3")
+    assert src == "static" and geocode.confidence(src) == "exact"
+    _pt, src = geocode.geocode_detailed("רגר 93")
+    assert geocode.is_precise_source(src), src
+
+
+def test_a_bare_neighbourhood_is_still_an_area_not_a_street():
+    """The downgrade must not promote anything: `שכונה ד` was already `area` and stays
+    there. Only `static` -> `static_street` is in scope."""
+    _pt, src = geocode.geocode_detailed("שכונה ד")
+    assert src == "static_area" and geocode.confidence(src) == "area"

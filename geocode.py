@@ -854,6 +854,20 @@ def _resolve_detailed(location_text: Optional[str]):
     if best_coords is not None:
         # a whole-neighbourhood key is an AREA centroid, not a place — see _static_source
         src = "static_area" if near_only else _static_source(best_key)
+        # A BUILDING WITH NO HOUSE NUMBER IS NOT AN EXACT LOCATION — UNLESS IT IS A
+        # LANDMARK (user's rule, 2026-08-12). `_static_source` grades the KEY, and a
+        # street sitting in STATIC_TABLE grades `static` exactly like a pinned place does,
+        # so `רינגלבלום` with no number came back `exact`: 14 listings on one point, each
+        # claiming a specific building. The exception is real and narrow — a SURVEYED
+        # landmark is a place with a drawn outline, so `הבלוק` on its own genuinely is
+        # exact, and `_landmark_grade` has already sized it.
+        #
+        # This is not cosmetic. `static` is in `_PRECISE_SOURCES`, so it also bought
+        # `edge_grace` (AMBER->GREEN within 40 m) and skipped the boundary-street caution
+        # in `pipeline._classify` — the very checks that exist for street-level points.
+        # Downgrading routes these through the same caution as `overpass`/`nominatim`.
+        if src == "static" and not numbered and best_key not in landmarks():
+            src = "static_street"
         # A DRAWN OUTLINE'S CENTRE BEATS A DROPPED PIN. `הבלוק` moved 67 m and `אביסרור`
         # 89 m onto their surveyed centroids.
         best_coords = landmark_point(best_key) or best_coords

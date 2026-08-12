@@ -109,6 +109,28 @@ How a Hebrew address becomes a coordinate, and every rule learned by getting it 
   `אביסרור` (31.254823, 34.798264), `מרכז הנגב` (31.259132, 34.795781). **`מרכז הנגב` is
   NOT `מרכז אורן`** — measured **1,186 m** apart, and the street index matched the bare
   word `מרכז` to the street `מרכז אורן` until that was refused.
+- **A BUILDING WITH NO HOUSE NUMBER IS NOT EXACT — UNLESS IT IS A LANDMARK** (user's rule,
+  2026-08-12). `_static_source` grades the KEY, so a street sitting in `STATIC_TABLE`
+  graded `static` exactly like a hand-pinned place: `רינגלבלום` with no number came back
+  **`exact`**, putting 14 listings on one point each claiming a specific building.
+  **38 of the 66 `static` listings** were in that state — `רינגלבלום`, `וינגייט`,
+  `כיכר האבות`, `ביאליק`. They now grade `static_street`.
+  - **The exception is narrow and real:** a SURVEYED landmark has a drawn outline, so
+    `הבלוק` (123 m) on its own genuinely is exact and `_landmark_grade` has already sized
+    it. Membership of `landmarks()` is the test — not "looks like a place".
+  - **THIS IS NOT COSMETIC, and that is the reason to be careful with it.** `static` is in
+    `_PRECISE_SOURCES`, so it also bought `edge_grace` (AMBER→GREEN within 40 m) and
+    SKIPPED the boundary-street caution in `pipeline._classify` — the checks that exist
+    precisely for street-level points. The affected streets are the ones that need them
+    most: measured from the green-zone edge, `וינגייט` sits **10 m** out, `רינגלבלום`
+    89 m, `כיכר האבות` 150 m. A bare `וינגייט` cannot tell green from red at 10 m.
+  - **Predicted effect on stored verdicts: 36 of the 66 become `edge_uncertain` →
+    NEEDS_DATA**, about 21 of them GREEN/MATCH today. Nothing is dropped — they move to
+    the review queue with "קרוב לגבול האזור — המיקום לא מדויק מספיק". A code change alone
+    does NOT move them; that needs `replay.py --apply`.
+  - Two older tests asserted `src == "static"` for a bare street. Both were really about
+    PLACEMENT — which key wins, and that a point survives at all — so both keep those
+    assertions and only the grade moved.
 - **THE TWO LOOKUP LOOPS HAD DRIFTED, AND ONLY THE MAP WAS WRONG** (2026-08-12).
   `geocode_cached` (local-only, and the function EVERY map dot goes through —
   `dashboard.py:85`) is supposed to mirror `_resolve_detailed`. It did not: the
