@@ -546,11 +546,20 @@ def geocode_cached(location_text: Optional[str]):
     norm = _normalize(location_text)
 
     # Mirror geocode_detailed's precedence, minus the network tiers — including the
-    # rules that keep it ACCURATE: a neighborhood centroid and a static street entry
-    # both step aside for an address that carries a house number.
+    # rules that keep it ACCURATE: a neighborhood centroid, a static street entry AND A
+    # SURVEYED LANDMARK all step aside for an address that carries a house number.
+    #
+    # THIS DOCSTRING'S CLAIM OF PARITY IS WHAT HID A REAL DIVERGENCE FOR MONTHS. The
+    # `or k in landmarks()` clause below was added to the twin loop in `_resolve_detailed`
+    # and never to this one, so the pipeline placed `רגר 137, הבלוק` at house 137 while
+    # THE MAP drew it on the הבלוק pin — 624 m away, under a confidence badge reading
+    # `exact`, because `dashboard.py` grades the STORED source but fetches the coordinate
+    # from here. Measured 2026-08-12: 15 listings, p90 222 m, max 626 m, all on one pin.
+    # When you change precedence in either loop, change both and extend the agreement
+    # test — `tests/test_geocode.py::test_the_two_lookup_loops_agree_*`.
     precise = is_precise_address(location_text) and not is_bare_neighborhood(location_text)
     numbered = bool(_house_number(location_text))
-    best_pos, best_coords, skipped_street = None, None, None
+    best_pos, best_coords, best_key, skipped_street = None, None, None, None
     # A SURVEYED LANDMARK IS A KEY IN ITS OWN RIGHT. Without this line `landmarks.json`
     # could only re-grade and re-centre a name STATIC_TABLE already knew, so importing a
     # KMZ for a new place (`מגדל הספורט`, 90 m) placed nothing at all — the loop never
@@ -570,15 +579,24 @@ def geocode_cached(location_text: Optional[str]):
             continue
         if precise and (k.startswith("שכונה") or k.startswith("שכונת")):
             continue
-        if numbered and (streets.known(k) or _static_source(key) == "static_area") \
+        # `or k in landmarks()` mirrors `_resolve_detailed`, which explains it: a house
+        # number is ~13 m and the tightest landmark here is 115 m, so the number wins over
+        # ANY of them. It must test membership and not the `static_area` GRADE, because
+        # once `הבלוק` was surveyed it began grading `static` (123 m) and would fall out.
+        if numbered and (streets.known(k) or _static_source(key) == "static_area"
+                         or k in landmarks()) \
                 and k in norm:
             skipped_street = skipped_street or coords
             continue
         pos = norm.find(k)
         if pos != -1 and (best_pos is None or pos < best_pos):
-            best_pos, best_coords = pos, coords
+            best_pos, best_coords, best_key = pos, coords, key
     if best_coords is not None:
-        return best_coords
+        # A DRAWN OUTLINE'S CENTRE BEATS A DROPPED PIN — the twin does this at the
+        # equivalent return. Without it the map used the hand-placed STATIC_TABLE pin even
+        # when the landmark was the right answer: `הבלוק` 67.1 m off its surveyed
+        # centroid, `מגדלי דוד` 7.7 m, `מרכז הנגב` 5.2 m.
+        return landmark_point(best_key) or best_coords
 
     hn = _house_number(location_text)
     if hn:                                    # local interpolation, no network

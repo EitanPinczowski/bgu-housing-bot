@@ -387,6 +387,66 @@ def is_duplicate(e: ListingExtract) -> bool:
     return False
 
 
+_address_posts: Optional[dict] = None
+
+
+def _build_address_post_counts() -> dict:
+    """{normalised numbered address: distinct posts advertising it} from the POST ARCHIVE.
+
+    Same shape and the same reasoning as `_build_broker_counts` below — the archive, not
+    the listings table, because listings only holds what survived the gates."""
+    counts: dict = {}
+    seen_pairs = set()
+    with _conn() as c:
+        rows = c.execute("SELECT sig, source_url, parsed_json FROM posts "
+                         "WHERE parsed_json IS NOT NULL").fetchall()
+    for sig, url, pj in rows:
+        try:
+            d = json.loads(pj)
+        except Exception:
+            continue
+        norm = _norm_addr(d.get("street_address_or_neighborhood"))
+        if not norm:
+            continue
+        pair = (norm, url or sig)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        counts[norm] = counts.get(norm, 0) + 1
+    return counts
+
+
+def address_post_count(address: Optional[str]) -> int:
+    """How many DISTINCT posts advertise this numbered address.
+
+    ONE ADDRESS IS NOT ONE FLAT, and at a tower it is not even one landlord.
+    `אלכסנדר ינאי 17` holds 10 listings from 10 different posts across 6 groups — studios,
+    a 3-room, one on the 12th floor — in a building the posts call a מגדל with two lifts.
+    Collapsing those would destroy 9 real listings, so `merge_duplicate_listings` leaves a
+    multi-unit address alone.
+
+    Counted per POST, not per listing: a flat reposted five times is one flat, and it is
+    the number of separate ADVERTS that says a building holds many units."""
+    global _address_posts
+    norm = _norm_addr(address)
+    if not norm:
+        return 0
+    if _address_posts is None:
+        _address_posts = _build_address_post_counts()
+    return _address_posts.get(norm, 0)
+
+
+def is_multi_unit(address: Optional[str]) -> bool:
+    """Is this address a building with many separately-advertised units?"""
+    return address_post_count(address) >= config.MULTI_UNIT_MIN_POSTS
+
+
+def invalidate_address_posts() -> None:
+    """Drop the cached per-address tallies — the twin of `invalidate_broker_counts`."""
+    global _address_posts
+    _address_posts = None
+
+
 _broker_counts: Optional[dict] = None
 
 
@@ -1163,14 +1223,26 @@ def merge_duplicate_listings() -> int:
                     r[0].startswith("phone:"), r[6] or 0)
 
         removed = 0
+        skipped_multi = []
         for grp in list(groups.values()):
             if len(grp) < 2:
+                continue
+            # A MULTI-UNIT BUILDING IS NOT A DUPLICATE. Checked once per group, before any
+            # landlord clustering, because at a tower even a shared phone means one agent
+            # letting several different flats.
+            if is_multi_unit(grp[0][1]):
+                skipped_multi.append((grp[0][1], len(grp), address_post_count(grp[0][1])))
                 continue
             for sub in _by_landlord(grp):
                 if len(sub) < 2:
                     continue
                 removed += _collapse(c, sub, richness)
         removed += _absorb_vague(c, rows)
+        # Reported, never silent: a filter you cannot audit hides a real gap the day it
+        # goes wrong, and this one can only ever REDUCE what the merge does.
+        for addr, n_rows, n_posts in skipped_multi:
+            print(f"[storage] multi-unit, not merged: {addr!r} — {n_rows} rows, "
+                  f"{n_posts} distinct posts (>= {config.MULTI_UNIT_MIN_POSTS})")
         return removed
 
 
@@ -1251,10 +1323,37 @@ def _by_landlord(grp: list) -> list:
             clusters.remove(cl)
         clusters.append([merged_nums, merged_rows])
     if len(clusters) == 1:
-        clusters[0][1] += orphans
+        # A CONTACTLESS ROW JOINS THE ONE LANDLORD ONLY IF IT DOES NOT CONTRADICT THEM.
+        # Absorbing every orphan was the remaining way to delete a real flat: at
+        # `הורקנוס 45` one landlord's 3.5-room furnished flat at 1300/room and a
+        # phone-less 3-room-with-balcony at 1250/room are plainly two different flats in
+        # one building, and `_collapse` ranks the phone-keyed row richer and would have
+        # dropped the other — a MATCH at score 88 (measured 2026-08-12).
+        #
+        # PRICE ONLY, deliberately. It is the one core fact a landlord states outright,
+        # so two different numbers mean two different flats. Room counts are NOT usable
+        # here: the model omits `available_rooms_count` on ~20% of posts (see the prompt
+        # note in CLAUDE.md), so a null-vs-2 gap is an extraction miss, not evidence —
+        # and gating on it would refuse `השלום 67` and `רגר 162`, which are real
+        # duplicates that differ only in what the thinner read managed to extract.
+        keep, contradicts = [], []
+        for o in orphans:
+            (contradicts if _price_conflict(o, clusters[0][1]) else keep).append(o)
+        clusters[0][1] += keep
+        clusters += [[set(), [o]] for o in contradicts]
     else:
         clusters += [[set(), [o]] for o in orphans]
     return [rows for _nums, rows in clusters]
+
+
+def _price_conflict(row, cluster_rows) -> bool:
+    """Does this row state a per-room price that the cluster already contradicts?
+    Nulls never conflict — a thinner read of the same flat is the case we DO want to
+    collapse. Row layout is `merge_duplicate_listings`'s SELECT: index 2 is the price."""
+    price = row[2]
+    if price is None:
+        return False
+    return any(o[2] is not None and o[2] != price for o in cluster_rows)
 
 
 def _collapse(c, grp: list, richness) -> int:

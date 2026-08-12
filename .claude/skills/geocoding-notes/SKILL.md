@@ -109,6 +109,34 @@ How a Hebrew address becomes a coordinate, and every rule learned by getting it 
   `אביסרור` (31.254823, 34.798264), `מרכז הנגב` (31.259132, 34.795781). **`מרכז הנגב` is
   NOT `מרכז אורן`** — measured **1,186 m** apart, and the street index matched the bare
   word `מרכז` to the street `מרכז אורן` until that was refused.
+- **THE TWO LOOKUP LOOPS HAD DRIFTED, AND ONLY THE MAP WAS WRONG** (2026-08-12).
+  `geocode_cached` (local-only, and the function EVERY map dot goes through —
+  `dashboard.py:85`) is supposed to mirror `_resolve_detailed`. It did not: the
+  `or k in landmarks()` clause that makes a landmark step aside for a house number was
+  added to the detailed loop and **never to the cached twin**. So the pipeline placed
+  `רגר 137, הבלוק` at house 137 and stored `osm_addr`, while the map drew it on the
+  `הבלוק` pin **624 m away** — under a confidence badge reading `exact`, because
+  `dashboard.py` grades the STORED source but fetches the coordinate from the cached loop.
+  **15 listings on one pin; p90 222 m, max 626 m.** The 26-listing/18-address pile on
+  `הבלוק` was the single worst artefact on the map.
+  - **A CENSUS FOUND EXACTLY ONE REAL PILE.** 74 of 212 points held more than one
+    listing, which looks alarming until each class is checked: ~10 were adjacent numbers
+    inside the documented p90 66 m interpolation floor (`רגר 111`+`114`), 3 were an
+    unanchored street falling to `overpass` and correctly graded `street` (`בן מתתיהו`
+    12/32/34), 15 were honest area centroids, 12 were multi-unit towers. Only `הבלוק` was
+    a defect. **Do not "fix" the others** — after the repair, map-vs-pipeline is
+    **median/p90/max 0.0 m** over all 318 numbered listings.
+  - **The docstring claiming parity is what hid it for months.** When you change
+    precedence in either loop, change both, and extend
+    `tests/test_geocode.py::test_the_two_lookup_loops_agree_on_every_address_shape` —
+    a corpus-based drift guard that only became possible once the suite went offline.
+  - `geocode_cached` also never applied `landmark_point`, so even a correct landmark
+    answer used the hand-dropped pin: **`הבלוק` 67.1 m** off its surveyed centroid,
+    `מגדלי דוד` 7.7 m, `מרכז הנגב` 5.2 m.
+  - **STILL DIVERGENT, DELIBERATELY:** `geocode_cached` has no `_near_governs` concept, so
+    for a post naming two landmarks with a bearing word — `ליד הבלוק, מגדלי דוד` — the two
+    loops would pick different keys. It fires on **nothing in the current data**; recorded
+    so the next person measures it rather than assuming parity is now complete.
 - **A USER PIN IS A SUBSTRING RULE, NOT AN ENTRY, AND IT BEATS A REAL ADDRESS.** Both
   lookup loops match pin keys with `norm.find(k)` — any location text CONTAINING the key —
   and return before `_not_on_campus`, above the house-number interpolation. Simulated

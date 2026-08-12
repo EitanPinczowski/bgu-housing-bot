@@ -150,6 +150,26 @@ def _no_test_may_leave_a_mirror_marked_dead():
     geocode._dead_mirrors.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_test_may_keep_a_stale_archive_tally():
+    """Reset `storage._broker_counts` and `storage._address_posts` around every test.
+
+    Both are per-process caches built from the POST ARCHIVE on first use, and both are
+    keyed on nothing that changes when `config.DB_PATH` is repointed — so the first test
+    to ask a question about brokers or multi-unit addresses freezes ITS `temp_db`'s answer
+    for every test afterwards, including tests using a different database.
+
+    Same shape as the `_median_gap` and `_dead_mirrors` fixtures above; added when
+    `_address_posts` introduced a second instance of the pattern rather than waiting for
+    it to produce the usual symptom, a failure in an unrelated file that passes alone."""
+    import storage
+    storage._broker_counts = None
+    storage._address_posts = None
+    yield
+    storage._broker_counts = None
+    storage._address_posts = None
+
+
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
     """Point storage at a fresh empty SQLite file for the duration of one test.

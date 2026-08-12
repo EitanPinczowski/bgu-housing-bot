@@ -61,6 +61,14 @@ PHOTO_BONUS = 6
 # and take a fit penalty; they are NOT dropped, since some list good flats.
 BROKER_MIN_LISTINGS = 4
 BROKER_PENALTY = 12
+# A numbered address advertised by this many DISTINCT posts is a multi-unit building, not
+# a flat that keeps being reposted — `אלכסנדר ינאי 17` is a tower whose 10 listings come
+# from 10 different posts in 6 groups. `merge_duplicate_listings` never collapses rows at
+# such an address. 15, NOT 4 like the broker rule: measured 2026-08-12 over the archive,
+# real duplicates sit at 2-6 distinct posts (`השלום 67` 2, `רגר 93` 4, `רגר 162` 6) while
+# the towers sit at 30-61 (`סמטת קדש 22` 30, `אלכסנדר ינאי 17` 35, `אלכסנדר ינאי 32` 54,
+# `אברהם אבינו 10` 61). A threshold of 4 would have blocked every true duplicate.
+MULTI_UNIT_MIN_POSTS = 15
 # Penalty when the post is explicitly looking for FEMALE roommates ("מחפשות שותפה",
 # "שותפות", "בנות בלבד") — not relevant to this search. Deterministic text match
 # (see pipeline._seeks_female_roommates); does NOT fire on the neutral שותף/שותפים.

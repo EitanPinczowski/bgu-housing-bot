@@ -1182,6 +1182,80 @@ def test_the_bearing_lookback_stops_at_a_separator():
     assert geocode._near_governs(n("דירה ליד הבלוק"), n("הבלוק")) is True
     assert geocode._near_governs(n("ליד הבלוק, מגדלי דוד"), n("מגדלי דוד")) is False
     assert geocode._near_governs(n("ליד הבלוק, מגדלי דוד"), n("הבלוק")) is True
+# --- THE TWO LOOKUP LOOPS MUST AGREE ------------------------------------------------
+#
+# `geocode.py` resolves a name twice: `geocode_cached` (local only, and the function EVERY
+# map dot goes through — `dashboard.py:85`) and `_resolve_detailed` behind `geocode_detailed`
+# (the pipeline). `geocoding-notes` already warns "THERE ARE TWO of these loops; patching
+# only one placed nothing" — and on 2026-08-12 they had silently diverged for months:
+# `or k in landmarks()` was added to the detailed loop and never to the cached one.
+#
+# The cost was invisible because nothing compared them. The pipeline placed
+# `רגר 137, הבלוק` at house 137 and stored `osm_addr`; the map drew it on the הבלוק pin
+# 624 m away, under a confidence badge reading "exact" because `dashboard.py` grades the
+# STORED source but fetches the coordinate from the cached loop. 15 listings, one pin,
+# p90 222 m, max 626 m.
+#
+# So this is a DRIFT GUARD, not a placement test: it asserts nothing about where these
+# addresses should land, only that the two answers cannot part company again. It runs
+# offline because of the autouse network fixture in conftest — `geocode_detailed` falls
+# through to the local tiers, so both paths are deterministic.
+
+_LOOPS_CORPUS = (
+    # a landmark key beside a real house number — the class that was broken
+    "רגר 137, הבלוק", "מצדה 6, הבלוק", "אלכסנדר ינאי 32, הבלוק", "ברגר 113, הבלוק",
+    "רגר 93, הבלוק", "שלמה המלך 13, הבלוק", "רבי עקיבא 7, הבלוק", "יצחק אבינו 13, הבלוק",
+    # an AREA key beside a house number — already covered by the `static_area` clause
+    "אברהם אבינו 10, שכונה ד", "אלכסנדר ינאי 32, שכונה ד",
+    # the landmark alone, and an UNNUMBERED street beside one: both must still answer the
+    # landmark. `הבלוק` is 123 m across, TIGHTER than a street centroid, so this is
+    # deliberate (see the comment above the `static_area` rule in `_resolve_detailed`) —
+    # pinned here so a later "cleanup" of the landmark rules cannot quietly reverse it.
+    "הבלוק", "מגדלי דוד", "מרכז הנגב", "רבי טרפון, הבלוק",
+    # plain addresses, a bearing, and a corner — nothing landmark-ish should move
+    "רגר 93", "רגר 5, ליד האוניברסיטה", "שדרות רגר 93 פינת שלמה המלך, הבלוק",
+    "ו' הישנה, בן מתיתיהו 13", "שכונה ד",
+)
+
+
+def test_the_two_lookup_loops_agree_on_every_address_shape():
+    """Same coordinate from both paths, or no answer from both."""
+    for addr in _LOOPS_CORPUS:
+        cached = geocode.geocode_cached(addr)
+        detailed, src = geocode.geocode_detailed(addr)
+        if cached is None and detailed is None:
+            continue
+        assert cached is not None and detailed is not None, \
+            f"{addr}: cached={cached} detailed={detailed} ({src}) — one placed it, one did not"
+        assert abs(cached[0] - detailed[0]) < 1e-6 and abs(cached[1] - detailed[1]) < 1e-6, \
+            (f"{addr}: the map would draw {cached} while the pipeline stored {detailed} "
+             f"({src}) — the two loops have drifted apart again")
+
+
+def test_a_house_number_beats_a_landmark_on_the_map_path():
+    """The specific regression, asserted on `geocode_cached` alone so it still fails if
+    someone 'fixes' the agreement test by weakening the detailed path instead.
+
+    Compared against `landmark_point`, NOT `STATIC_TABLE["הבלוק"]`: the map path now
+    prefers the surveyed centroid, so a hijacked address comes back on the centroid and a
+    test written against the old dropped pin would pass while the bug was live. Checked by
+    removing the fix — this must fail with it gone."""
+    lm = geocode.landmark_point("הבלוק")
+    pin = tuple(geocode.STATIC_TABLE["הבלוק"])
+    for addr in ("רגר 137, הבלוק", "מצדה 6, הבלוק", "ברגר 113, הבלוק"):
+        pt = geocode.geocode_cached(addr)
+        assert pt is not None, addr
+        assert pt != lm and pt != pin, f"{addr} is still drawn on the הבלוק landmark"
+
+
+def test_the_map_path_prefers_a_surveyed_centroid_over_a_dropped_pin():
+    """`geocode_cached` returned the hand-placed STATIC_TABLE pin even when the landmark
+    was the right answer — 67.1 m from `הבלוק`'s surveyed centroid. The detailed loop had
+    applied `landmark_point` for months; this one had not."""
+    assert geocode.geocode_cached("הבלוק") == geocode.landmark_point("הבלוק")
+    assert geocode.geocode_cached("הבלוק") != tuple(geocode.STATIC_TABLE["הבלוק"])
+
+
 # --- the street's own polyline: a street we hold geometry for is a location -------
 def _offline(monkeypatch, tmp_path):
     """Every network tier off and a private cache, so what's left is exactly what the

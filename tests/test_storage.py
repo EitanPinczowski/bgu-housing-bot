@@ -728,3 +728,78 @@ def test_an_empty_archive_never_wipes_listings(temp_db):
     storage.save_listing(_listing("phone:1|אלון 5", "אלון 5", "055-1"))
     storage.save_listing(_listing("phone:2|אלון 5", "אלון 5", "055-2"))
     assert storage.prune_orphan_listings() == 0     # nothing to compare against
+
+
+# --- ONE ADDRESS IS NOT ONE FLAT, and a tower is not a duplicate ---------------------
+#
+# Measured 2026-08-12. `merge_duplicate_listings` had two ways left to delete a real
+# listing, and the duplicate scan found both:
+#   1. `הורקנוס 45` — one landlord's 3.5-room furnished flat at 1300/room, and a
+#      phone-less 3-room-with-balcony at 1250. `_by_landlord` absorbed the contactless
+#      row into the single phone cluster and `_collapse` ranks the phone-keyed row
+#      richer, so it would have dropped a MATCH scoring 88.
+#   2. `אלכסנדר ינאי 17` — 10 listings from 10 DIFFERENT posts across 6 groups, in a
+#      building the posts call a מגדל with two lifts. Merging would destroy 9 real ads.
+
+def _grp_row(key, addr, price, contact):
+    """A `merge_duplicate_listings` row tuple: (key, address, price, avail, mates,
+    contact, score)."""
+    return (key, addr, price, 2, 3, contact, 60)
+
+
+def test_a_contactless_row_that_contradicts_the_price_is_not_absorbed():
+    """The `הורקנוס 45` case. A row with no phone joins the one landlord present only if
+    it does not contradict them — two different per-room prices are two different flats."""
+    grp = [_grp_row("phone:1|הורקנוס|45", "הורקנוס 45", 1300, "050-3011408"),
+           _grp_row("hash:aaa", "הורקנוס 45 פינת סוסו הכהן", 1250, None)]
+    subs = storage._by_landlord(grp)
+    assert len(subs) == 2, "the contradicting row must stand alone, not be merged away"
+
+
+def test_a_contactless_row_with_no_price_is_still_absorbed():
+    """The `השלום 67` / `רגר 162` case, which are REAL duplicates: the thinner read simply
+    failed to extract a price. A null must never count as a contradiction, or the merge
+    stops doing the one job it exists for."""
+    grp = [_grp_row("phone:1|השלום|67", "דרך השלום 67", 1400, "052-5791151"),
+           _grp_row("hash:bbb", "השלום 67", None, None)]
+    assert len(storage._by_landlord(grp)) == 1
+
+
+def test_the_same_price_still_collapses():
+    """`רגר 93`: same landlord, same price, two wordings — the duplicate to remove."""
+    grp = [_grp_row("phone:1|שלמה המלך|93", "שדרות רגר 93 פינת שלמה המלך", 1225, "050-8220245"),
+           _grp_row("phone:1|שדרות יצחק רגר|93", "רגר 93, הבלוק", 1225, "050-8220245")]
+    assert len(storage._by_landlord(grp)) == 1
+
+
+def test_address_post_count_counts_distinct_posts_not_listings(temp_db):
+    """Per POST, not per listing: a flat reposted five times is one flat, and it is the
+    number of separate ADVERTS that tells you a building holds many units."""
+    for i in range(3):
+        storage.record_post(f"s{i}", "טקסט", "", [], "g", f"http://p/{i}",
+                            _ex("אלכסנדר ינאי 17", None),
+                            PipelineResult(status=Status.DROP, dedup_key=f"k{i}"))
+    # the same post seen twice must not count twice
+    storage.record_post("s0", "טקסט", "", [], "g", "http://p/0",
+                        _ex("אלכסנדר ינאי 17", None),
+                        PipelineResult(status=Status.DROP, dedup_key="k0"))
+    storage.invalidate_address_posts()
+    assert storage.address_post_count("אלכסנדר ינאי 17") == 3
+    assert storage.address_post_count("רחוב אלכסנדר ינאי 17") == 3   # same normalised addr
+    assert storage.address_post_count("קדש 5") == 0
+    assert storage.address_post_count("שכונה ב") == 0                # no house number
+
+
+def test_a_multi_unit_address_is_never_merged(temp_db, monkeypatch):
+    """The tower rule. THE THRESHOLD IS 15, NOT 4 like the broker rule beside it:
+    measured over the archive, real duplicates sit at 2-6 distinct posts (`השלום 67` 2,
+    `רגר 93` 4, `רגר 162` 6) while towers sit at 30-61. A threshold of 4 would have
+    blocked every true duplicate this function exists to remove."""
+    monkeypatch.setattr(config, "MULTI_UNIT_MIN_POSTS", 3)
+    for i in range(3):
+        storage.record_post(f"t{i}", "טקסט", "", [], "g", f"http://t/{i}",
+                            _ex("אלכסנדר ינאי 17", None),
+                            PipelineResult(status=Status.DROP, dedup_key=f"m{i}"))
+    storage.invalidate_address_posts()
+    assert storage.is_multi_unit("אלכסנדר ינאי 17") is True
+    assert storage.is_multi_unit("רגר 93") is False

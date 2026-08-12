@@ -42,6 +42,34 @@ What is stored, how a flat is identified, and the ways that has gone wrong.
   - **`replay.py` deletes by the NEW extract's keys**, so a post that flips to `NOT_AD`
     leaves the listing its old parse created — that is how `phone:522629429` survived its
     own re-parse and had to be removed by hand.
+  - **A TOWER IS NOT A DUPLICATE** (2026-08-12). `אלכסנדר ינאי 17` holds **10 listings
+    from 10 DIFFERENT posts across 6 groups** — studios, a 3-room, one on the 12th floor,
+    in a building the posts call a מגדל with two lifts. Merging them would destroy 9 real
+    ads. `merge_duplicate_listings` now skips any address with
+    `>= config.MULTI_UNIT_MIN_POSTS` distinct posts (`storage.is_multi_unit`), and PRINTS
+    what it skipped. 16 addresses qualify today.
+    - **THE THRESHOLD IS 15, NOT 4 LIKE THE BROKER RULE, and picking 4 by analogy would
+      have broken both directions.** Measured over the archive: real duplicates sit at
+      **2-6** distinct posts (`השלום 67` 2, `רגר 93` 4, `רגר 162` 6) while towers sit at
+      **30-61** (`סמטת קדש 22` 30, `אלכסנדר ינאי 17` 35, `אלכסנדר ינאי 32` 54,
+      `אברהם אבינו 10` 61). A threshold of 4 would have blocked every true duplicate the
+      function exists to remove — and still not caught `הורקנוס 45` (3 posts), the case
+      that actually deletes a real flat. **Post count separates towers; it cannot see the
+      hazard below.**
+  - **A CONTACTLESS ROW JOINS THE ONE LANDLORD ONLY IF IT DOES NOT CONTRADICT THEM.**
+    `_by_landlord` absorbed every orphan into a lone cluster, and at `הורקנוס 45` that
+    put one landlord's 3.5-room furnished flat at **1300**/room together with a phone-less
+    3-room-with-balcony at **1250** — two flats in one building, five days apart.
+    `_collapse` ranks the phone-keyed row richer and would have deleted a MATCH at
+    score 88. `_price_conflict` now refuses that.
+    - **PRICE ONLY.** It is the one core fact a landlord states outright. Room counts are
+      unusable here — the model omits `available_rooms_count` on ~20% of posts, so a
+      null-vs-2 gap is an extraction miss, not evidence, and gating on it would refuse
+      `השלום 67` and `רגר 162`, which ARE duplicates that differ only in what the thinner
+      read managed to extract.
+    - With both guards, a blanket `merge_duplicate_listings()` on the live DB predicts
+      **one** removal — the `רגר 93` duplicate — instead of silently taking a real flat
+      with it. That is what makes the tool safe to run again.
 - `sheets.py` — optional Google Sheets sink (append, batch reconcile, sort, rebuild).
   - **`_write_rows` GROWS THE GRID FIRST.** Writing past the worksheet's row count fails
     with `Range (Sheet1!A393:T393) exceeds grid limits. Max rows: 392` — 4 times before
