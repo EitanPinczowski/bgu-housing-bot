@@ -1419,3 +1419,20 @@ def test_a_bare_neighbourhood_is_still_an_area_not_a_street():
     there. Only `static` -> `static_street` is in scope."""
     _pt, src = geocode.geocode_detailed("שכונה ד")
     assert src == "static_area" and geocode.confidence(src) == "area"
+
+
+def test_warm_cache_archive_covers_more_than_the_listings_table(temp_db, monkeypatch):
+    """`warm_cache --archive` exists because a replay geocodes the ARCHIVE, not the
+    listings table — warming only the latter leaves the replay to do the rest at network
+    speed. Measured 2026-08-12: 396 listing addresses against 2,686 in the archive."""
+    import storage
+    import warm_cache
+    from models import ListingExtract, PipelineResult, Status
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 93")
+    storage.record_post("s1", "t", "", [], "g", "u", e,
+                        PipelineResult(status=Status.DROP, dedup_key="k1"))
+    with storage._conn() as c:                      # a listing at a DIFFERENT address
+        c.execute("INSERT INTO listings(dedup_key,address) VALUES(?,?)", ("k2", "וינגייט 4"))
+    assert warm_cache.addresses() == ["וינגייט 4"]
+    both = warm_cache.addresses(archive=True)
+    assert "וינגייט 4" in both and "רגר 93" in both, both
