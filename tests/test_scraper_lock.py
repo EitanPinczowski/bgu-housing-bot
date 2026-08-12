@@ -540,3 +540,40 @@ def test_a_readable_live_process_still_returns_its_command_line():
     pytest.importorskip("psutil")
     import os
     assert "python" in (scraper._pid_command_line(os.getpid()) or "").lower()
+
+
+def test_keep_awake_holds_and_releases_an_execution_power_request():
+    """The guard must survive MODERN STANDBY, which is all this machine has.
+
+    `powercfg /a` reports only `Standby (S0 Low Power Idle)`; S1/S2/S3 are disabled. The
+    original guard called SetThreadExecutionState, which was written for S3 and is quietly
+    a no-op against S0 entry — so it read as working while the machine idled into standby
+    anyway. Measured cost over the 7 days to 2026-08-12: runs of 509 and 371 minutes, each
+    starting within seconds of a Kernel-Power SLEEP event, each holding the lock so every
+    later slot logged `SKIP another scraper session is running`; 15 of 42 full runs (36%).
+
+    Asserts the handle rather than the OS state because `powercfg /requests` needs
+    elevation. The live check, run once by hand, showed the request under EXECUTION with
+    this project's reason string, and gone after release.
+    """
+    assert scraper._power_request is None, "a previous test leaked a power request"
+    try:
+        scraper._set_awake(True)
+        # None would mean PowerCreateRequest is unavailable — the legacy flag alone is
+        # exactly the silent failure this replaced, so it must not read as success.
+        assert scraper._power_request is not None
+    finally:
+        scraper._set_awake(False)
+    assert scraper._power_request is None
+
+
+def test_keep_awake_is_not_held_when_the_power_state_is_unknown(monkeypatch):
+    """`None` from on_ac_power means "could not tell", and the user's rule is mains-only,
+    so an unanswered question must not pin the machine awake."""
+    monkeypatch.setattr(scraper, "on_ac_power", lambda: None)
+    calls = []
+    monkeypatch.setattr(scraper, "_set_awake", lambda on: calls.append(on))
+    stop = scraper.start_keep_awake(poll_seconds=0.05)
+    time.sleep(0.2)
+    stop()
+    assert True not in calls

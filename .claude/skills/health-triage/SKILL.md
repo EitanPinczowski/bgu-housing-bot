@@ -69,9 +69,34 @@ The lock is an **OS file lock**, so only the holding process exiting frees it.
   `context.close()` never returned, and the python process sat alive holding the lock.
   `main._bounded_teardown` gives close() and stop() 30 s each. **A hang is not
   catchable** — a bare try/except would sail into the same permanent wait.
-- **A sleeping PC.** The 00:46 run took 8.5 h for ~23 min of work. `setup_always_on.cmd`
-  wakes the PC to START a run; `scraper.start_keep_awake()` holds `ES_SYSTEM_REQUIRED`
-  **during** one — but only on mains, and not when the power state is unknown.
+- **A sleeping PC — and until 2026-08-12 the guard against it did nothing here.** The
+  00:46 run took 8.5 h for ~23 min of work. `setup_always_on.cmd` wakes the PC to START a
+  run; `scraper.start_keep_awake()` holds it awake **during** one — on mains only, and not
+  when the power state is unknown.
+
+  **`SetThreadExecutionState` does not hold off MODERN STANDBY, which is all this machine
+  has.** `powercfg /a` reports only `Standby (S0 Low Power Idle) Network Connected`, with
+  S1/S2/S3 "disabled when S0 low power idle is supported". The legacy flag was written for
+  S3, so the guard read as working while the machine idled into standby anyway — and it
+  leaves no trace in `powercfg /requests`, so nothing looked wrong.
+
+  How it was found: the two multi-hour runs each began within seconds of a Kernel-Power
+  SLEEP event (start 00:46:19 vs SLEEP 00:46:23; 14:27:46 vs SLEEP 14:27:43). The
+  sleep→wake pairs are 4–20 s apart, which is the S0 signature — the system reports itself
+  awake while background processes are throttled to nothing.
+
+      Get-WinEvent -FilterHashtable @{LogName='System'
+        ProviderName='Microsoft-Windows-Kernel-Power'} | Where-Object Id -in 42,107
+
+  **The watchdog is throttled with everything else**, which is why it aborted at 388 and
+  438 min against a 120-minute ceiling. An abort that late is evidence of standby, not of
+  a broken watchdog.
+
+  Now asserts `PowerRequestExecutionRequired` via `PowerCreateRequest`/`PowerSetRequest`,
+  which is the supported mechanism on S0, *and* the legacy flag for any S3 machine. Verify
+  with an ELEVATED `powercfg /requests` during a run — it should list the process under
+  **EXECUTION** with `BGU housing scraper: reading Facebook groups`. If EXECUTION is empty
+  while a run is live, the guard is not working.
 - **A crawl, not a hang.** A run on Ollama at ~2 min/post has a fresh heartbeat and is
   healthy by every progress measure while holding the lock all day. `MAX_RUN_MINUTES`
   (120) is a wall-clock ceiling for exactly this.

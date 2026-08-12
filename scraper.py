@@ -1118,13 +1118,79 @@ def on_ac_power():
         return None
 
 
+# SetThreadExecutionState DOES NOT HOLD OFF MODERN STANDBY, and this machine has nothing
+# else: `powercfg /a` reports only `Standby (S0 Low Power Idle) Network Connected`, with
+# S1/S2/S3 all "disabled when S0 low power idle is supported". The legacy execution-state
+# flag was written for S3 and is quietly a no-op against S0 entry, so the guard read as
+# working while the machine idled into standby anyway.
+#
+# What that cost, measured 2026-08-12 over 7 days: two runs of 509 and 371 minutes, each
+# beginning within seconds of a Kernel-Power SLEEP event (00:46:19 vs SLEEP 00:46:23;
+# 14:27:46 vs SLEEP 14:27:43). A throttled run holds the lock for hours, so every later
+# slot logs `SKIP another scraper session is running` — 12 of them — and only 15 of 42
+# full runs completed (36%). The self-watchdog is throttled with everything else, which is
+# why it aborted at 388 and 438 minutes against a 120-minute ceiling: not late, not running.
+#
+# PowerRequestExecutionRequired is the supported mechanism on S0 — it keeps the PROCESS
+# executing through standby rather than merely asking the system to stay up. Both are
+# asserted: the power request for this machine, the legacy flag for any S3 machine this
+# ever runs on.
+_POWER_REQUEST_CONTEXT_VERSION = 0
+_POWER_REQUEST_CONTEXT_SIMPLE_STRING = 0x1
+_POWER_REQUEST_EXECUTION_REQUIRED = 3
+_power_request = None                    # HANDLE while held, else None
+
+
+def _power_request_handle():
+    """A REASON_CONTEXT-backed power request handle, or None if the API is unavailable."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _DETAILED(ctypes.Structure):
+        _fields_ = [("LocalizedReasonModule", wintypes.HMODULE),
+                    ("LocalizedReasonId", wintypes.ULONG),
+                    ("ReasonStringCount", wintypes.ULONG),
+                    ("ReasonStrings", ctypes.POINTER(wintypes.LPWSTR))]
+
+    class _REASON(ctypes.Union):
+        # BOTH members, so the union is the size Windows expects — declaring only the
+        # string member under-sizes the struct and PowerCreateRequest can read past it.
+        _fields_ = [("Detailed", _DETAILED), ("SimpleReasonString", wintypes.LPWSTR)]
+
+    class _REASON_CONTEXT(ctypes.Structure):
+        _fields_ = [("Version", wintypes.ULONG), ("Flags", wintypes.DWORD),
+                    ("Reason", _REASON)]
+
+    ctx = _REASON_CONTEXT()
+    ctx.Version = _POWER_REQUEST_CONTEXT_VERSION
+    ctx.Flags = _POWER_REQUEST_CONTEXT_SIMPLE_STRING
+    ctx.Reason.SimpleReasonString = "BGU housing scraper: reading Facebook groups"
+    k32 = ctypes.windll.kernel32
+    k32.PowerCreateRequest.restype = wintypes.HANDLE
+    h = k32.PowerCreateRequest(ctypes.byref(ctx))
+    return None if not h or h == wintypes.HANDLE(-1).value else h
+
+
 def _set_awake(on: bool) -> None:
+    global _power_request
     try:
         import ctypes
+        k32 = ctypes.windll.kernel32
+        if on:
+            if _power_request is None:
+                _power_request = _power_request_handle()
+            if _power_request is not None:
+                k32.PowerSetRequest(_power_request, _POWER_REQUEST_EXECUTION_REQUIRED)
+        elif _power_request is not None:
+            k32.PowerClearRequest(_power_request, _POWER_REQUEST_EXECUTION_REQUIRED)
+            k32.CloseHandle(_power_request)
+            _power_request = None
+        # Kept as well as, not instead of: harmless here, and the only thing that works
+        # on a machine that still has S3.
         ctypes.windll.kernel32.SetThreadExecutionState(
             _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[scraper] keep-awake could not be set ({exc})")
 
 
 def start_keep_awake(poll_seconds: int = 60):
