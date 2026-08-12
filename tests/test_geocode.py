@@ -517,6 +517,48 @@ def test_still_unplaceable_never_reaches_the_network(monkeypatch):
     assert geocode.still_unplaceable("קרבת אוניברסיטת בן גוריון") is True
 
 
+def test_pinnable_unknowns_splits_a_log_into_pinnable_and_two_reasons(monkeypatch):
+    """FOUR reports built a "pin these" section off `storage.unknown_locations` with no
+    re-check; this is the one filter they share, so it cannot drift between them.
+
+    The two removals are counted, never dropped — a filter you cannot audit hides a real
+    gap the day it goes wrong — and they mean OPPOSITE things: `resolved` is work already
+    done, `by_design` is work that must never be done."""
+    import geocode
+    monkeypatch.setattr(geocode, "still_unplaceable",
+                        lambda n: n in {"אוניברסיטה", "הרקנוס 37"})
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: n == "אוניברסיטה")
+    rows = [("שכונת הפארק", 5, "2026-07-23"), ("אוניברסיטה", 3, "2026-08-11"),
+            ("הרקנוס 37", 1, "2026-08-10")]
+    pin, resolved, by_design = geocode.pinnable_unknowns(rows)
+    assert [r[0] for r in pin] == ["הרקנוס 37"]
+    assert (resolved, by_design) == (1, 1)
+    assert pin[0] == ("הרקנוס 37", 1, "2026-08-10"), "the whole row survives, not just the name"
+
+
+def test_pinnable_unknowns_swallows_the_geocoders_narration(monkeypatch, capsys):
+    """The geocoder narrates its rejections ("[geocode] rejected extrapolated for …") and
+    loads anchors on first use. That is useful when placing a listing, noise in the middle
+    of a stats table, and on the Telegram callers not even visible — so it is captured
+    here rather than at four call sites.
+
+    The narration is FAKED rather than provoked with a real address. Calling the real
+    geocoder here loaded `_cache`/`_anchors`/`_landmarks_cache` from the repo's own data
+    files, and those are module-level with no invalidation — under `pytest-randomly` that
+    made `test_transient_overpass_failure_is_not_cached` fail in this same file on 3 of 4
+    seeds that were green without it. Same trap as the `_median_gap` fixture in
+    conftest.py; a test for a stdout redirect has no business loading the anchor set."""
+    import geocode
+    def _noisy(name):
+        print(f"[geocode] rejected extrapolated for {name}")
+        return True
+    monkeypatch.setattr(geocode, "still_unplaceable", _noisy)
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: False)
+    pin, _resolved, _by_design = geocode.pinnable_unknowns([("שדרות רגר 999", 1, "2026-08-10")])
+    assert capsys.readouterr().out == ""
+    assert len(pin) == 1, "suppressing stdout must not swallow the result too"
+
+
 def test_a_neighborhood_centroid_is_graded_area_not_exact():
     """19 listings whose post said only `שכונה ד` sat on ONE point drawn as solid,
     precise dots — the biggest pile on the map, and a lie. An area centroid is an area.
@@ -1099,10 +1141,18 @@ def test_near_a_landmark_is_not_at_the_landmark():
 
 
 def test_the_proximity_word_must_govern_the_landmark():
-    """Position, not mere presence: `רגר 5, ליד הבלוק` is a real address that happens to
-    mention a bearing, and must keep its house number."""
+    """Position, not mere presence: `רגר 153, ליד הבלוק` is a real address that happens to
+    mention a bearing, and must keep its house number.
+
+    The number used to be 5, and that made this the one test in the suite that genuinely
+    could not run offline: we hold no local record of `רגר 5`, so it only ever placed
+    because live Overpass answered. `static` — the landmark `הבלוק` — is the CORRECT
+    offline verdict for a number we cannot place, which means the assertion was testing the
+    mirror rather than the ranking rule. 153 is a real number we hold (`osm_addr`), so the
+    rule is now checked against our own data. The behaviour under test is unchanged: a
+    numbered address that mentions a bearing must not degrade to the bearing."""
     import geocode
-    _pt, src = geocode.geocode_detailed("רגר 5, ליד הבלוק")
+    _pt, src = geocode.geocode_detailed("רגר 153, ליד הבלוק")
     assert src not in ("static", "static_area"), src
     assert geocode.has_location(src)
 

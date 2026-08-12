@@ -1,6 +1,8 @@
 """dm_digest._core_token: pick the distinctive Hebrew word to geocode a messy
 location by, and _suggest's cache/format wiring (network stubbed)."""
 import dm_digest as d
+import geocode
+import storage
 
 
 def test_core_token_drops_generic_and_takes_longest():
@@ -78,9 +80,81 @@ def test_a_failure_alone_is_enough_to_send(monkeypatch):
     """Nothing unmapped and nothing low-confidence used to mean `build` returned None —
     so a wedged scraper would have been reported by nobody."""
     import doctor
-    import storage
     monkeypatch.setattr(storage, "unknown_locations", lambda *a, **k: [])
     monkeypatch.setattr(d, "_low_confidence_section", list)
     monkeypatch.setattr(doctor, "checks", lambda: [("osrm", doctor.FAIL, "down", "")])
     text = d.build(days=1, suggest=False)
     assert text and "osrm" in text
+
+
+# --- the log records what failed ONCE; nothing re-checked it ------------------------
+#
+# Mirrors tests/test_stats.py, which fixed the same bug in the same shape. The filters
+# are stubbed rather than exercised so these assert THIS module's wiring; the filters
+# themselves are tested in test_geocode.py.
+
+def _build(monkeypatch, rows, unplaceable=(), bearings=(), **kw) -> str:
+    monkeypatch.setattr(storage, "unknown_locations", lambda *a, **k: rows)
+    monkeypatch.setattr(geocode, "still_unplaceable", lambda n: n in unplaceable)
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: n in bearings)
+    monkeypatch.setattr(d, "_low_confidence_section", list)
+    monkeypatch.setattr(d, "_health_section", list)
+    return d.build(suggest=False, **kw) or ""
+
+
+def test_a_location_that_resolves_today_is_not_reported(monkeypatch):
+    """`unknown_locations` logs what failed ONCE and nothing expires an entry, so this
+    digest asked for pins on names that resolve perfectly well now."""
+    out = _build(monkeypatch, [("שכונת הפארק", 5, "2026-07-23"), ("הרקנוס 37", 1, "2026-08-10")],
+                 unplaceable={"הרקנוס 37"})
+    assert "שכונת הפארק" not in out, out
+    assert "הרקנוס 37" in out, out
+
+
+def test_a_bearing_off_a_landmark_is_never_reported(monkeypatch):
+    """THE FILTER THAT EARNS AT days=1. Measured 2026-08-12 through
+    `storage.unknown_locations(1)`: of the 4 names logged, the staleness filter removed
+    **0** — a no-op on a one-day window, exactly as expected, since a name resolves only
+    once somebody ACTS on this digest — while this one removed **3**, the most frequent
+    among them. "near the university" is not pinnable today and will not be in a year."""
+    out = _build(monkeypatch, [("ליד האוניברסיטה", 3, "2026-08-11"), ("הרקנוס 37", 1, "2026-08-10")],
+                 unplaceable={"ליד האוניברסיטה", "הרקנוס 37"}, bearings={"ליד האוניברסיטה"})
+    assert "האוניברסיטה" not in out, out
+    assert "הרקנוס 37" in out, out
+
+
+def test_the_staleness_filter_still_applies_at_a_wider_window(monkeypatch):
+    """`days` comes from argv — `python dm_digest.py 30` lands in the regime where 98 of
+    182 logged names resolve. The default window is not the only window it runs in, which
+    is why the near-no-op filter stays."""
+    out = _build(monkeypatch, [("שכונת הפארק", 5, "2026-07-23")], days=30)
+    assert "שכונת הפארק" not in out, out
+
+
+def test_both_exclusions_stay_visible(monkeypatch):
+    """A silent filter hides a real gap, and on a Telegram digest that would be invisible:
+    nobody diffs a message against the DB. The header carries n-of-N and each removed
+    group prints its own count."""
+    out = _build(monkeypatch,
+                 [("שכונת הפארק", 5, "2026-07-23"), ("ליד האוניברסיטה", 3, "2026-08-11"),
+                  ("הרקנוס 37", 1, "2026-08-10")],
+                 unplaceable={"ליד האוניברסיטה", "הרקנוס 37"}, bearings={"ליד האוניברסיטה"})
+    assert "1" in out and "3" in out, out          # "1 מתוך 3"
+    assert "כבר נפתרו מאז" in out, out
+    assert "לא ניתנים לקיבוע לעולם" in out, out
+
+
+def test_the_report_is_escaped_exactly_once(monkeypatch):
+    """`_excluded_lines` returns RAW text because its three callers escape differently —
+    this one escapes per line and `main` sends MarkdownV2, `weekly_digest` escapes the
+    whole string in `main`, and `bot_listener` sends with no parse_mode at all. Escaping
+    inside the helper would double-escape here and show backslashes there."""
+    out = _build(monkeypatch, [("הרקנוס 37", 1, "2026-08-10"), ("ליד האוניברסיטה", 3, "2026-08-11")],
+                 unplaceable={"הרקנוס 37", "ליד האוניברסיטה"}, bearings={"ליד האוניברסיטה"})
+    assert "\\(" in out, "the excluded-count line must be escaped for MarkdownV2"
+    assert "\\\\" not in out, f"escaped twice: {out}"
+
+
+def test_nothing_pinnable_reports_nothing(monkeypatch):
+    """Every logged name already resolves -> no section at all, not an empty heading."""
+    assert _build(monkeypatch, [("שכונת הפארק", 5, "2026-07-23")]) == ""

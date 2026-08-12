@@ -1,6 +1,7 @@
 """bot_listener DM command routing + the auto-pin callback. Network (_reply/_api) and
 heavy data calls are mocked; asserts the command dispatches to the right handler."""
 import bot_listener
+import geocode
 import notifier
 
 
@@ -90,3 +91,65 @@ def test_autopin_callback(monkeypatch):
     bot_listener._pending_pins["0"] = ("רחוב סיני", 31.25, 34.80)
     bot_listener._handle({"id": "cb1", "data": "pin|0"})
     assert calls.get("pinned") == ("רחוב סיני", 31.25, 34.80)
+
+
+# --- /unknowns: the log records what failed ONCE, and here every row carries a 📌 -----
+#
+# Mirrors tests/test_stats.py, which fixed the same bug in the same shape. Of the four
+# reports that shared it this is the DANGEROUS one: the others wasted a line, this one
+# offers a button wired to `geocode.add_pin`.
+
+def _unknowns(monkeypatch, rows, unplaceable=(), bearings=()) -> str:
+    sent = _setup(monkeypatch)
+    monkeypatch.setattr(bot_listener.storage, "unknown_locations", lambda *a, **k: rows)
+    monkeypatch.setattr(geocode, "still_unplaceable", lambda n: n in unplaceable)
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: n in bearings)
+    monkeypatch.setattr(bot_listener.dm_digest, "_suggest",
+                        lambda n: ("OSM " + n, 31.25, 34.80))
+    bot_listener._handle_message(_msg("/unknowns"))
+    return "\n".join(sent)
+
+
+def test_a_bearing_is_never_offered_a_pin_button(monkeypatch):
+    """A user pin is a SUBSTRING RULE that returns before `_not_on_campus`. Measured
+    2026-08-12: tapping 📌 on `אוניברסיטה` — row 1 of the 6 this command was showing —
+    moves 6 of 9 university-ish names onto the campus point, `רגר 5, ליד האוניברסיטה`
+    among them, because the pin loop runs ahead of the house-number interpolation. One tap
+    would rebuild by hand the dots `_is_bare_proximity` and the no-housing mask refuse."""
+    out = _unknowns(monkeypatch,
+                    [("אוניברסיטה", 3, "2026-08-11"), ("הרקנוס 37", 1, "2026-08-10")],
+                    unplaceable={"אוניברסיטה", "הרקנוס 37"}, bearings={"אוניברסיטה"})
+    assert "הרקנוס 37" in out, out
+    assert "אוניברסיטה" not in out, out
+    assert not any(v[0] == "אוניברסיטה" for v in bot_listener._pending_pins.values()), \
+        "a bearing must never reach _pending_pins — that dict IS the armed button"
+
+
+def test_a_location_that_resolves_today_is_not_offered(monkeypatch):
+    out = _unknowns(monkeypatch,
+                    [("שכונת הפארק", 5, "2026-07-23"), ("הרקנוס 37", 1, "2026-08-10")],
+                    unplaceable={"הרקנוס 37"})
+    assert "שכונת הפארק" not in out, out
+    assert "הרקנוס 37" in out, out
+
+
+def test_an_empty_list_says_why_it_is_empty(monkeypatch):
+    """The 7-day window held 30 names on 2026-08-12, 14 of them removed here. A bare 🎉
+    over that would be the silent-filter failure in its purest form."""
+    out = _unknowns(monkeypatch, [("שכונת הפארק", 5, "2026-07-23"),
+                                  ("אוניברסיטה", 3, "2026-08-11")],
+                    unplaceable={"אוניברסיטה"}, bearings={"אוניברסיטה"})
+    assert "כבר נפתרו מאז" in out and "לא ניתנים לקיבוע לעולם" in out, out
+
+
+def test_a_genuinely_empty_log_still_just_celebrates(monkeypatch):
+    assert "🎉" in _unknowns(monkeypatch, [])
+
+
+def test_the_reply_is_not_markdown_escaped(monkeypatch):
+    """`_reply` posts with no `parse_mode`, so escaped text would reach the chat with its
+    backslashes showing. `_excluded_lines` returns raw for exactly this reason."""
+    out = _unknowns(monkeypatch, [("שכונת הפארק", 5, "2026-07-23"),
+                                  ("הרקנוס 37", 1, "2026-08-10")],
+                    unplaceable={"הרקנוס 37"})
+    assert "\\" not in out, out

@@ -267,12 +267,40 @@ def _cmd_stats(chat_id) -> None:
 
 
 def _cmd_unknowns(chat_id) -> None:
-    rows = storage.unknown_locations(7)[:6]
+    """The unmapped-locations list, RE-CHECKED — and of the four reports that shared this
+    bug, THIS ONE IS THE DANGEROUS ONE, because it is the only one that offers a 📌.
+
+    The others merely wasted a line. Here every row carries a button wired to
+    `geocode.add_pin`, and a pin is a SUBSTRING RULE that returns before
+    `_not_on_campus`. Measured 2026-08-12: tapping 📌 on `אוניברסיטה` — row 1 of the 6
+    this command was showing — moves 6 of 9 university-ish names onto the campus point,
+    including `רגר 5, ליד האוניברסיטה`, because the pin loop runs ahead of the
+    house-number interpolation. One tap would have rebuilt by hand the exact dots
+    `_is_bare_proximity` and the no-housing mask exist to refuse, and nothing downstream
+    would ever complain.
+
+    The 7-day window made that likely, not hypothetical. Measured 2026-08-12 through
+    `storage.unknown_locations(7)`: 40 names logged, 8 of which resolve today and 9 of
+    which are bearings — and because the list is sorted by FREQUENCY the bearings float
+    to the top, so 3 of the 6 visible slots were unpinnable and **the first two were
+    `אוניברסיטה` and `שער האוניברסיטה`**, each with an armed 📌. The filter is what makes
+    the button safe.
+
+    Filtering before `_suggest` also stops paying for them: 1.2 s of pacing plus an
+    Overpass round trip each, for a suggestion that must never be accepted."""
+    logged = storage.unknown_locations(7)
+    pin, resolved, by_design = geocode.pinnable_unknowns(logged)
+    rows = pin[:6]
     if not rows:
-        _reply(chat_id, "אין מקומות שלא מופו 🎉")
+        # Say WHY it is empty. "🎉" over a log holding 40 names, 17 of them filtered here,
+        # would be the silent-filter failure in its purest form.
+        note = dm_digest._excluded_lines(resolved, by_design)
+        _reply(chat_id, "אין מקומות שלא מופו 🎉" if not logged
+               else "אין מקומות שלא מופו שכדאי לקבע 🎉\n" + "\n".join(note))
         return
     _pending_pins.clear()
-    _reply(chat_id, "🗺️ מקומות שלא מופו (הקישו 📌 כדי לקבע את ההצעה):")
+    _reply(chat_id, f"🗺️ מקומות שלא מופו ({len(pin)} מתוך {len(logged)}) — "
+                    f"הקישו 📌 כדי לקבע את ההצעה:")
     for i, (loc, cnt, _ts) in enumerate(rows):
         sug = dm_digest._suggest(loc)                 # (osm_name, lat, lon) or None (paced)
         if sug:
@@ -281,6 +309,9 @@ def _cmd_unknowns(chat_id) -> None:
                       [[{"text": "📌 קבע", "callback_data": f"pin|{i}"}]])
         else:
             _reply(chat_id, f"📍 {loc} ×{cnt} — אין הצעה (קבעו ידנית עם /pin)")
+    note = dm_digest._excluded_lines(resolved, by_design)
+    if note:
+        _reply(chat_id, "\n".join(note))
 
 
 def _cmd_pin(chat_id, arg) -> None:

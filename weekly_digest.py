@@ -24,6 +24,8 @@ except Exception:
     pass
 
 import config
+import dm_digest          # the unmapped-report module: `_excluded_lines`, shared wording
+import geocode
 import notifier
 import storage
 
@@ -93,9 +95,20 @@ def build(days: int = 7) -> str:
     if s["dangling"]:
         out.append(f"⚠️ {s['dangling']} ריצות שלא הסתיימו (ייתכן קריסה — בדקו את הלוג)")
     out.append(f"🗃️ מאגר: {listings} מודעות ({matches} התאמות) · {votes} הצבעות")
-    uk = storage.unknown_locations(days=days)
+    # RE-CHECKED against today's geocoder — `unknown_locations` is a log of what failed
+    # ONCE and nothing expires an entry. Measured 2026-08-12 at this function's default
+    # `days=7`: of 40 logged names 8 resolve today and 9 are bearings off a landmark, so
+    # 17 of 40 were dead advice — and since the list is sorted by FREQUENCY they crowd the
+    # top, which is exactly the 8 this line prints. At `days=30` it is 98 of 182.
+    # This report only wastes a line (unlike `/unknowns`, which puts a 📌 on each), but a
+    # line that names a fixed problem is what teaches you to stop reading the summary.
+    logged = storage.unknown_locations(days=days)
+    uk, resolved, by_design = geocode.pinnable_unknowns(logged)
     if uk:
-        out.append("🗺️ מקומות שלא מופו: " + ", ".join(f"{loc}×{cnt}" for loc, cnt, _ in uk[:8]))
+        out.append(f"🗺️ מקומות שלא מופו ({len(uk)}/{len(logged)}): "
+                   + ", ".join(f"{loc}×{cnt}" for loc, cnt, _ in uk[:8]))
+    # Kept visible even when nothing survives: a silent filter hides a real gap.
+    out += dm_digest._excluded_lines(resolved, by_design)
     return "\n".join(out)
 
 
