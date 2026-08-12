@@ -517,6 +517,48 @@ def test_still_unplaceable_never_reaches_the_network(monkeypatch):
     assert geocode.still_unplaceable("קרבת אוניברסיטת בן גוריון") is True
 
 
+def test_pinnable_unknowns_splits_a_log_into_pinnable_and_two_reasons(monkeypatch):
+    """FOUR reports built a "pin these" section off `storage.unknown_locations` with no
+    re-check; this is the one filter they share, so it cannot drift between them.
+
+    The two removals are counted, never dropped — a filter you cannot audit hides a real
+    gap the day it goes wrong — and they mean OPPOSITE things: `resolved` is work already
+    done, `by_design` is work that must never be done."""
+    import geocode
+    monkeypatch.setattr(geocode, "still_unplaceable",
+                        lambda n: n in {"אוניברסיטה", "הרקנוס 37"})
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: n == "אוניברסיטה")
+    rows = [("שכונת הפארק", 5, "2026-07-23"), ("אוניברסיטה", 3, "2026-08-11"),
+            ("הרקנוס 37", 1, "2026-08-10")]
+    pin, resolved, by_design = geocode.pinnable_unknowns(rows)
+    assert [r[0] for r in pin] == ["הרקנוס 37"]
+    assert (resolved, by_design) == (1, 1)
+    assert pin[0] == ("הרקנוס 37", 1, "2026-08-10"), "the whole row survives, not just the name"
+
+
+def test_pinnable_unknowns_swallows_the_geocoders_narration(monkeypatch, capsys):
+    """The geocoder narrates its rejections ("[geocode] rejected extrapolated for …") and
+    loads anchors on first use. That is useful when placing a listing, noise in the middle
+    of a stats table, and on the Telegram callers not even visible — so it is captured
+    here rather than at four call sites.
+
+    The narration is FAKED rather than provoked with a real address. Calling the real
+    geocoder here loaded `_cache`/`_anchors`/`_landmarks_cache` from the repo's own data
+    files, and those are module-level with no invalidation — under `pytest-randomly` that
+    made `test_transient_overpass_failure_is_not_cached` fail in this same file on 3 of 4
+    seeds that were green without it. Same trap as the `_median_gap` fixture in
+    conftest.py; a test for a stdout redirect has no business loading the anchor set."""
+    import geocode
+    def _noisy(name):
+        print(f"[geocode] rejected extrapolated for {name}")
+        return True
+    monkeypatch.setattr(geocode, "still_unplaceable", _noisy)
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: False)
+    pin, _resolved, _by_design = geocode.pinnable_unknowns([("שדרות רגר 999", 1, "2026-08-10")])
+    assert capsys.readouterr().out == ""
+    assert len(pin) == 1, "suppressing stdout must not swallow the result too"
+
+
 def test_a_neighborhood_centroid_is_graded_area_not_exact():
     """19 listings whose post said only `שכונה ד` sat on ONE point drawn as solid,
     precise dots — the biggest pile on the map, and a lie. An area centroid is an area.

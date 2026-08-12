@@ -9,8 +9,6 @@ Shows how many archived posts (those that reached the LLM) landed in each verdic
 The archive fills as the scraper runs; see replay.py to re-test against it.
 """
 from __future__ import annotations
-import contextlib
-import io
 import os
 import re
 import sqlite3
@@ -101,13 +99,7 @@ def _unmapped() -> None:
     uk = storage.unknown_locations(days=_UNMAPPED_WINDOW_DAYS)
     if not uk:
         return
-    # The geocoder narrates its own rejections ("[geocode] rejected extrapolated for …")
-    # and loads its anchors on first use. That is useful when placing a listing and pure
-    # noise in the middle of a stats table.
-    with contextlib.redirect_stdout(io.StringIO()):
-        still = [row for row in uk if geocode.still_unplaceable(row[0])]
-        pin = [row for row in still if not geocode.names_only_a_landmark(row[0])]
-    resolved, by_design = len(uk) - len(still), len(still) - len(pin)
+    pin, resolved, by_design = geocode.pinnable_unknowns(uk)
     print(f"--- top unmapped locations (pin these) — {len(pin)} of {len(uk)} logged "
           f"are still unplaceable AND worth pinning ---")
     for loc, cnt, last in pin[:8]:

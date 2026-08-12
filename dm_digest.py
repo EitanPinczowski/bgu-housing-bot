@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 import config
+import geocode
 import notifier
 import storage
 
@@ -73,6 +74,30 @@ def _suggest(name: str):
     return res
 
 
+def _excluded_lines(resolved: int, by_design: int) -> list:
+    """The two counts `geocode.pinnable_unknowns` removed, in Hebrew, for the Telegram
+    reports — shared so the three of them cannot word it three different ways.
+
+    They are NOT the same kind of exclusion and the text must not blur them. `resolved`
+    is a name the geocoder answers today: the work is done, and the count is there so a
+    filter that starts eating real gaps is visible instead of silent. `by_design` is a
+    bearing off a landmark, which is not pinnable now or ever — it carries `אין מה לקבע`
+    because on `/unknowns` the alternative reading ("pin it later") is a 📌 button away
+    from writing a campus pin that overrides real addresses.
+
+    RETURNS RAW TEXT, and the caller escapes. The three callers each do it differently and
+    a shared helper cannot pick one: this module's `build` escapes per line and `main`
+    sends the result as MarkdownV2; `weekly_digest.build` returns raw and `main` escapes
+    the whole string; `bot_listener._reply` posts with no `parse_mode` at all, so an
+    escaped string would reach the group with its backslashes showing."""
+    out = []
+    if resolved:
+        out.append(f"  ({resolved} כבר נפתרו מאז — אין מה לקבע, לא מוצגים)")
+    if by_design:
+        out.append(f"  ({by_design} ציון כיוון ביחס לציון דרך — לא ניתנים לקיבוע לעולם)")
+    return out
+
+
 def _low_confidence_section() -> list:
     """Kept listings geocoded by a fuzzy source (Overpass/Nominatim) rather than the
     trusted static table — flagged so a wrong pin gets a human glance."""
@@ -117,7 +142,29 @@ def _health_section() -> list:
 
 
 def build(days: int = 1, suggest: bool = True) -> str | None:
-    rows = storage.unknown_locations(days)
+    """The daily unmapped-locations report, RE-CHECKED against today's geocoder.
+
+    `unknown_locations` is a log of what failed ONCE — nothing re-checks an entry, so a
+    name stays on it forever however many pins, static entries and anchors have landed
+    since. Three reports shared that bug with `stats.py`; `geocode.pinnable_unknowns` is
+    the shared fix.
+
+    THE TWO FILTERS EARN VERY DIFFERENTLY AT `days=1`, and only measuring per-caller
+    shows it. Measured 2026-08-12 through `storage.unknown_locations(1)` — 4 names logged:
+    - the STALENESS filter removed **0 of 4**. It is a no-op on a one-day window, as
+      expected: a name resolves only once somebody ACTS on this digest, which has not
+      happened yet for a name reported this morning. Sliced by the day each name was last
+      logged, the whole 08-07..08-11 stretch is the same picture — 0 to 1 of 14.
+    - the LANDMARK filter removed **3 of the 4**, including the most frequent. It earns at
+      every window: "near the university" is not pinnable today and will not be in a year.
+    So the staleness filter stays anyway, for two reasons that cost nothing: `days` comes
+    from argv (`python dm_digest.py 30` lands squarely in the 98-of-182 regime), and the
+    re-check is local and takes 0.2 s.
+
+    It also spends the paced Overpass budget better — `_suggest` sleeps 1.2 s per call and
+    is capped at 15, so filtering first points those 15 calls at names worth pinning."""
+    logged = storage.unknown_locations(days)
+    rows, resolved, by_design = geocode.pinnable_unknowns(logged)
     low = _low_confidence_section()
     health = _health_section()
     if not rows and not low and not health:
@@ -127,7 +174,8 @@ def build(days: int = 1, suggest: bool = True) -> str | None:
         # first: a wedged scraper is why there are no listings to report on below
         lines += health + [""]
     if rows:
-        head = f"🗺️ מקומות שלא הצלחתי למפות ({days} ימים אחרונים) — שווה להוסיף לטבלת הגאוקוד:"
+        head = (f"🗺️ מקומות שלא הצלחתי למפות ({days} ימים אחרונים) — "
+                f"{len(rows)} מתוך {len(logged)} — שווה להוסיף לטבלת הגאוקוד:")
         lines += [notifier._esc(head), ""]
         for i, (loc, cnt, _) in enumerate(rows[:20]):
             line = f"• {loc} ×{cnt}"
@@ -136,6 +184,11 @@ def build(days: int = 1, suggest: bool = True) -> str | None:
                 osm_name, la, lo = s
                 line += f"  →  {osm_name} {la},{lo} (לאימות)"
             lines.append(notifier._esc(line))
+        # Both removals stay VISIBLE. A silent filter hides a real gap the day it goes
+        # wrong, and on this digest that would be invisible: nobody diffs a Telegram
+        # message against the DB. The two lines say opposite things on purpose — one is
+        # work already done, the other is work that must never be done.
+        lines += [notifier._esc(ln) for ln in _excluded_lines(resolved, by_design)]
     if low:
         if lines:
             lines.append("")

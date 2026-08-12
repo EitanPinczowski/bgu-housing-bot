@@ -556,6 +556,13 @@ def geocode_cached(location_text: Optional[str]):
     # KMZ for a new place (`מגדל הספורט`, 90 m) placed nothing at all — the loop never
     # matched it. Importing a survey is now enough on its own; no code edit per landmark.
     surveyed = {k: tuple(v["centroid"]) for k, v in landmarks().items() if v.get("centroid")}
+    # A USER PIN IS A SUBSTRING RULE, NOT AN ENTRY — and it returns below WITHOUT passing
+    # `_not_on_campus`, which is deliberate for a hand-placed point and catastrophic for a
+    # pin named after a landmark. Measured 2026-08-12: a single pin on `אוניברסיטה` moves
+    # 6 of 9 university-ish names onto the campus point, `ליד האוניברסיטה` and
+    # `שער האוניברסיטה` among them — and `רגר 5, ליד האוניברסיטה` too, because this loop
+    # runs BEFORE the house-number interpolation below, so the pin beats a real address.
+    # That is why a "pin these" report must never offer a bearing: `pinnable_unknowns`.
     for key, coords in (list(STATIC_TABLE.items()) + list(_load_user_pins().items())
                         + list(surveyed.items())):
         k = _normalize(key)
@@ -619,6 +626,33 @@ def still_unplaceable(location_text: Optional[str]) -> bool:
     listing (keyed on the geocode SOURCE, and `area` does not count). Here an area
     centroid means the name already HAS a table entry — nothing left to pin."""
     return geocode_cached(location_text) is None
+
+
+def pinnable_unknowns(rows):
+    """Split a `storage.unknown_locations` log into the names actually worth pinning.
+
+    Returns `(pinnable, resolved, by_design)` — the surviving rows, then the COUNTS of
+    the two groups removed. FOUR reports were building a "pin these" section straight off
+    that log with no re-check; this is the one filter they share, so it cannot drift
+    apart between them. Rows are `(location, count, last_seen)`, and only `[0]` is read.
+
+    Both removals are counted rather than dropped, because the callers must be able to
+    print them: a filter you cannot audit hides a real gap the day it goes wrong.
+
+    The two groups are removed for OPPOSITE reasons, and conflating them would be the
+    easy mistake. `resolved` is work already DONE — the geocoder answers the name today,
+    so there is nothing left to pin. `by_design` is work that must NEVER be done: a
+    bearing off a landmark (`ליד האוניברסיטה`) has no address to pin, and pinning one is
+    actively destructive — see the warning on `_load_user_pins` in `geocode_cached`."""
+    import contextlib
+    import io
+    # The geocoder narrates its own rejections ("[geocode] rejected extrapolated for …")
+    # and loads its anchors on first use. Useful when placing a listing, pure noise in
+    # the middle of a report — and on the Telegram path it is not even visible.
+    with contextlib.redirect_stdout(io.StringIO()):
+        still = [r for r in rows if still_unplaceable(r[0])]
+        pin = [r for r in still if not names_only_a_landmark(r[0])]
+    return pin, len(rows) - len(still), len(still) - len(pin)
 
 
 def _not_on_campus(pt):
