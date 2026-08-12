@@ -598,6 +598,29 @@ def geocode_cached(location_text: Optional[str]):
     return skipped_street                     # street-level, better than no dot at all
 
 
+def still_unplaceable(location_text: Optional[str]) -> bool:
+    """True when nothing we hold LOCALLY can put this name on the map.
+
+    For the "pin these" reports built on `storage.unknown_locations`, which is a log of
+    what failed ONCE — nothing ever re-checks it, so a name sits on that list forever
+    after a single miss, however many static entries, 📍 pins, anchors and street
+    polylines have landed since. Measured 2026-08-12: **98 of the 182 logged names
+    resolve today**, the top entry among them (`שכונת הפארק`, 5 hits, answered by the
+    static table), so the head of the list was recommending work already done.
+
+    Deliberately `geocode_cached` and NOT `geocode_detailed`: a report may not depend on
+    an Overpass mirror. Those mirrors disagree with each other — reading a measurement
+    off them is what made the accuracy harness a coin flip — and stats.py is documented
+    as making no network calls. The whole re-check runs in 0.33 s for 182 names.
+    That errs in the safe direction: a name only Overpass could place stays LISTED, so
+    the failure mode is a redundant suggestion, never a hidden one.
+
+    Note this is NOT `has_location`, which answers a different question about a saved
+    listing (keyed on the geocode SOURCE, and `area` does not count). Here an area
+    centroid means the name already HAS a table entry — nothing left to pin."""
+    return geocode_cached(location_text) is None
+
+
 def _not_on_campus(pt):
     """`pt`, unless it is on land nobody rents — then None. Hand-placed points never
     reach here; the static-table and user-pin returns above bypass it deliberately."""

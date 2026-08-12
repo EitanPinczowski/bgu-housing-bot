@@ -491,6 +491,32 @@ def test_a_bare_neighborhood_still_resolves():
     assert coords and src == "static_area"
 
 
+def test_still_unplaceable_answers_a_logged_miss_that_has_since_been_fixed():
+    """`storage.unknown_locations` records what failed ONCE and nothing expires an entry,
+    so the "pin these" reports recommended work already done — measured 2026-08-12, 98 of
+    182 logged names resolved, the top one (`שכונת הפארק`) straight from the static
+    table. A name the geocoder answers is not an unmapped name."""
+    import geocode
+    assert geocode.still_unplaceable("אוניברסיטה") is True
+    assert geocode.still_unplaceable("שכונה ג") is False
+    assert geocode.still_unplaceable("") is True
+
+
+def test_still_unplaceable_never_reaches_the_network(monkeypatch):
+    """It runs over the whole logged backlog inside a report, so it uses `geocode_cached`
+    and not `geocode_detailed`. Two reasons, both learned here: stats.py is documented as
+    making no network calls, and the Overpass mirrors disagree with each other — reading
+    a measurement off them is what once made the accuracy harness a coin flip. Erring
+    local also errs SAFE: a name only Overpass could place stays listed, so the failure
+    mode is a redundant suggestion rather than a hidden gap."""
+    import geocode
+    def _boom(*a, **k):
+        raise AssertionError("still_unplaceable must not touch the network")
+    monkeypatch.setattr(geocode, "_resolve_detailed", _boom)
+    assert geocode.still_unplaceable("שכונה ג") is False
+    assert geocode.still_unplaceable("קרבת אוניברסיטת בן גוריון") is True
+
+
 def test_a_neighborhood_centroid_is_graded_area_not_exact():
     """19 listings whose post said only `שכונה ד` sat on ONE point drawn as solid,
     precise dots — the biggest pile on the map, and a lie. An area centroid is an area.

@@ -9,6 +9,8 @@ Shows how many archived posts (those that reached the LLM) landed in each verdic
 The archive fills as the scraper runs; see replay.py to re-test against it.
 """
 from __future__ import annotations
+import contextlib
+import io
 import os
 import re
 import sqlite3
@@ -24,6 +26,7 @@ except Exception:
     pass
 
 import config
+import geocode
 import storage
 
 
@@ -57,15 +60,63 @@ def main() -> None:
             flag = "   ← 0 matches, candidate to drop from FB_GROUPS" if m == 0 else ""
             print(f"  {gid:>18}   {m:>3} | {n:>3} | {d:>3} | {tot:>3}{flag}")
 
-    uk = storage.unknown_locations(days=3650)
-    if uk:
-        print("--- top unmapped locations (pin these) ---")
-        for loc, cnt, _ in uk[:8]:
-            print(f"  {cnt:3}  {loc}")
-
+    _unmapped()
     _detection_lag()
     _run_reliability()
     _alert_gate()
+
+
+# The whole `unknown_locations` history, deliberately — NARROWING THIS WOULD BE A
+# PLACEBO. It reads like the obvious guard against stale advice ("it failed once, two
+# years ago"), but `record_unknown_location` refreshes `last_seen` on every re-sighting,
+# so a name only ages out once it stops appearing entirely. Measured 2026-08-12: the
+# table holds 182 rows spanning **23 days**, so every window from 30d to 3650d prints
+# the identical list. The staleness was never the window — it was that nothing re-checked
+# the names. `_unmapped` re-checks, and prints `last seen` so age is visible per row
+# instead of being enforced by an arbitrary cutoff.
+_UNMAPPED_WINDOW_DAYS = 3650
+
+
+def _unmapped() -> None:
+    """Locations the geocoder could not map — RE-CHECKED against today's geocoder.
+
+    The log records what failed ONCE. Nothing expires an entry, so this section used to
+    recommend pinning names that resolve perfectly well now: on 2026-08-12 its top entry
+    was `שכונת הפארק` (5 hits), which the static table already answers, and acting on it
+    would have added a STATIC_TABLE line that changed nothing. 98 of the 182 logged names
+    were in that state — over half the list was work already done.
+
+    UNPLACEABLE IS NOT THE SAME AS PINNABLE, and the difference was the whole top of the
+    list. `אוניברסיטה`, `ליד האוניברסיטה`, `מול שער האוניברסיטה` cannot be placed BY
+    DESIGN — "near the university" is a bearing, not an address (user, 2026-08-01), and
+    nobody rents on the campus — so pinning them would rebuild by hand the exact wrong
+    dots that `no_housing_here` and `_is_bare_proximity` exist to refuse. 16 of the 84
+    survivors are that, including the 5 most frequent. They are counted, not listed:
+    the action there is none, and a heading that says "pin these" must not be able to
+    point at a name that must never be pinned.
+
+    A suggestion you have to verify by hand is worth less than no suggestion, so every
+    filter stays visible: the header carries `n of N` and both excluded groups print
+    their count rather than vanishing."""
+    uk = storage.unknown_locations(days=_UNMAPPED_WINDOW_DAYS)
+    if not uk:
+        return
+    # The geocoder narrates its own rejections ("[geocode] rejected extrapolated for …")
+    # and loads its anchors on first use. That is useful when placing a listing and pure
+    # noise in the middle of a stats table.
+    with contextlib.redirect_stdout(io.StringIO()):
+        still = [row for row in uk if geocode.still_unplaceable(row[0])]
+        pin = [row for row in still if not geocode.names_only_a_landmark(row[0])]
+    resolved, by_design = len(uk) - len(still), len(still) - len(pin)
+    print(f"--- top unmapped locations (pin these) — {len(pin)} of {len(uk)} logged "
+          f"are still unplaceable AND worth pinning ---")
+    for loc, cnt, last in pin[:8]:
+        print(f"  {cnt:3}  {loc}   (last seen {(last or '')[:10]})")
+    if resolved:
+        print(f"  ({resolved} logged name(s) resolve today — nothing to pin, not shown)")
+    if by_design:
+        print(f"  ({by_design} are a bearing off a landmark — refused BY DESIGN, "
+              f"never pin these)")
 
 
 def _alert_gate() -> None:

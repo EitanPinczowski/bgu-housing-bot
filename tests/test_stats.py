@@ -4,7 +4,73 @@
 the one number that must not be able to flatter itself.
 """
 import config
+import geocode
 import stats
+import storage
+
+
+def _unmapped(monkeypatch, rows, unplaceable=(), bearings=()) -> str:
+    monkeypatch.setattr(storage, "unknown_locations", lambda *a, **k: rows)
+    monkeypatch.setattr(geocode, "still_unplaceable", lambda n: n in unplaceable)
+    monkeypatch.setattr(geocode, "names_only_a_landmark", lambda n: n in bearings)
+    out = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a))))
+    stats._unmapped()
+    return "\n".join(out)
+
+
+def test_a_location_that_resolves_today_is_not_recommended(monkeypatch):
+    """`unknown_locations` logs what failed ONCE and nothing ever expires an entry, so
+    the section recommended pinning names that resolve perfectly well now. Measured
+    2026-08-12: the top entry was `שכונת הפארק` (5 hits) — `geocode_detailed` answers it
+    from the static table and those posts are already dropped RED — and 98 of the 182
+    logged names were in the same state. Acting on the advice would have added a
+    STATIC_TABLE line that changed nothing."""
+    out = _unmapped(monkeypatch,
+                    [("שכונת הפארק", 5, "2026-07-23 10:34:28"),
+                     ("ארניה אוסוולדו", 2, "2026-08-09 09:23:55")],
+                    unplaceable={"ארניה אוסוולדו"})
+    assert "שכונת הפארק" not in out, out
+    assert "ארניה אוסוולדו" in out, out
+
+
+def test_a_bearing_off_a_landmark_is_never_recommended_for_pinning(monkeypatch):
+    """Unplaceable is not the same as pinnable. `אוניברסיטה` and `ליד האוניברסיטה` cannot
+    be placed BY DESIGN — "near X" is a bearing, not an address, and nobody rents on the
+    campus — so pinning them would rebuild by hand the wrong dots `no_housing_here` and
+    `_is_bare_proximity` exist to refuse. They were the 5 most frequent survivors of the
+    re-check, i.e. the whole top of a list headed "pin these"."""
+    out = _unmapped(monkeypatch,
+                    [("אוניברסיטה", 3, "2026-08-11 15:23:17"),
+                     ("הרקנוס 37", 1, "2026-08-10 10:00:00")],
+                    unplaceable={"אוניברסיטה", "הרקנוס 37"},
+                    bearings={"אוניברסיטה"})
+    assert "אוניברסיטה" not in out, out
+    assert "הרקנוס 37" in out, out
+    assert "refused BY DESIGN" in out, out
+
+
+def test_both_filters_report_what_they_removed(monkeypatch):
+    """A filter you cannot audit is one that hides a real gap the day it goes wrong. The
+    header carries n-of-N and each excluded group prints its own count, so the section
+    can never quietly shrink to nothing."""
+    out = _unmapped(monkeypatch,
+                    [("שכונת הפארק", 5, "2026-07-23 10:34:28"),
+                     ("אוניברסיטה", 3, "2026-08-11 15:23:17"),
+                     ("הרקנוס 37", 1, "2026-08-10 10:00:00")],
+                    unplaceable={"אוניברסיטה", "הרקנוס 37"},
+                    bearings={"אוניברסיטה"})
+    assert "1 of 3 logged" in out, out
+    assert "(1 logged name(s) resolve today" in out, out
+    assert "(1 are a bearing off a landmark" in out, out
+
+
+def test_the_last_seen_date_is_shown(monkeypatch):
+    """The window stays at the full history on purpose (narrowing it is a placebo — the
+    table spans 23 days), so the age of an entry has to be visible per row instead."""
+    out = _unmapped(monkeypatch, [("הרקנוס 37", 1, "2026-08-10 10:00:00")],
+                    unplaceable={"הרקנוס 37"})
+    assert "last seen 2026-08-10" in out, out
 
 
 def _log(tmp_path, monkeypatch, text: str) -> str:
