@@ -109,6 +109,23 @@ How a Hebrew address becomes a coordinate, and every rule learned by getting it 
   `אביסרור` (31.254823, 34.798264), `מרכז הנגב` (31.259132, 34.795781). **`מרכז הנגב` is
   NOT `מרכז אורן`** — measured **1,186 m** apart, and the street index matched the bare
   word `מרכז` to the street `מרכז אורן` until that was refused.
+- **A USER PIN IS A SUBSTRING RULE, NOT AN ENTRY, AND IT BEATS A REAL ADDRESS.** Both
+  lookup loops match pin keys with `norm.find(k)` — any location text CONTAINING the key —
+  and return before `_not_on_campus`, above the house-number interpolation. Simulated
+  2026-08-12: one pin on `אוניברסיטה` moves **6 of 9** university-ish names onto the campus
+  point, including `רגר 5, ליד האוניברסיטה`, where a numbered address loses to a bearing.
+  - The mask bypass is DELIBERATE and must stay — a 📍 pin is a human saying "this is
+    where it is", and the campus rule (nobody rents on the lawn) is exactly what a human
+    should be able to overrule. What is unsafe is not the bypass but the KEY: a pin named
+    after a landmark applies to every address that mentions it.
+  - **So a "pin these" report must never offer a bearing**, however unplaceable it is —
+    unplaceable is not the same as pinnable. `geocode.pinnable_unknowns` filters
+    `storage.unknown_locations` on `still_unplaceable` AND `names_only_a_landmark` for
+    exactly this reason; `/unknowns` was showing `אוניברסיטה` and `שער האוניברסיטה` as rows
+    1 and 2 of 6, each with an armed 📌, because that list sorts by frequency.
+  - The counter-example that keeps the rule honest: `מגדלי דוד` is a landmark the user
+    pinned BY HAND and it must keep working. The difference is not "landmark vs not" — it
+    is whether the name is a place or a bearing, which is `names_only_a_landmark`'s job.
 
 
 - `geocode.py` — static name table (primary) → house-number placement → cache →

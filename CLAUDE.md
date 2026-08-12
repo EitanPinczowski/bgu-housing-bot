@@ -4,7 +4,7 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-11)
+## OPEN RIGHT NOW — read this first (2026-08-12)
 
 **The geocoding accuracy targets are answered, and one of the three is not reachable
 from free sources. Nothing is blocking.**
@@ -101,6 +101,32 @@ and because a claim nobody can find again is a claim nobody can check.
 > `.claude/hooks/session_start.py`. The numbers below were true when typed and are not
 > maintained — this section is for open DECISIONS. That hook also warns when this
 > section's date falls behind the newest commit, which is how the drift was noticed.
+
+Done 2026-08-12: the "pin these" re-check finished across all four reports that build one
+(`stats`, `dm_digest`, `bot_listener`, `weekly_digest`) on `geocode.pinnable_unknowns`; the
+test suite made offline and reproducible. Suite GREEN (672), `ruff` clean.
+- **A USER PIN IS A SUBSTRING RULE, AND IT BEATS A REAL ADDRESS.** `geocode_cached` matches
+  pin keys with `norm.find(k)` and returns BEFORE `_not_on_campus`, above the house-number
+  interpolation. Simulated 2026-08-12: one pin on `אוניברסיטה` moves **6 of 9**
+  university-ish names onto the campus point — `ליד האוניברסיטה`, `שער האוניברסיטה`, and
+  `רגר 5, ליד האוניברסיטה`, a NUMBERED address losing to a bearing. `/unknowns` was
+  offering exactly those names with an armed 📌 (rows 1 and 2 of 6, because the list sorts
+  by frequency). The bypass is correct for a hand-placed point and catastrophic for a pin
+  named after a landmark; `names_only_a_landmark` is what keeps the two apart.
+- **MEASURE EACH CALLER — A SHARED BUG DOES NOT MEAN A SHARED SIZE.** The same stale-log
+  fix was worth wildly different amounts per window, and copying it across without checking
+  would have hidden that. At `stats`'s full history the staleness filter removes 98 of 182;
+  at `dm_digest`'s `days=1` default it removed **0 of 4**, while the landmark filter removed
+  **3 of 4**. A name resolves only once somebody ACTS on the digest, so a one-day window has
+  nothing stale in it yet — the two filters earn oppositely at the two ends.
+- **THE SUITE WAS GEOCODING AGAINST THE LIVE INTERNET, AND CACHING THE DISAGREEMENT.** Two
+  tests called real Overpass/Nominatim: 3 of 7 `pytest-randomly` seeds failed, and the same
+  seed could differ between runs. Worse, `geocode_detailed` CACHES, so the answers landed in
+  `data/geocode_cache.json` — `אברהם אבינו, שכונה ד` from overpass and `אברהם אבינו` from
+  nominatim, **711 m apart against a 300 m assertion** — which turned the flake permanent and
+  wrote test data into the file the live pipeline reads. Three autouse fixtures now enforce
+  it, proved in `tests/test_offline_guards.py`; the rules are in `testing-conventions`.
+  A constant runtime across seeds is the evidence that nothing is dialling out.
 
 Done 2026-08-10: the price divisor fix above; `street_geom` merged (a street whose
 POLYLINE we hold is a location even with no house number — `רחוב רמב״ם` was the last of
