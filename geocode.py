@@ -1831,7 +1831,48 @@ MAX_OVERPASS_CANDIDATES = 3        # bound the paced queries per address
 # this every lookup pays 15s × each dead mirror (measured: a single address could stall
 # ~3 minutes, and the live scraper pays it too). Once a mirror fails in this process we
 # stop calling it, so the cost of a dead mirror is paid once, not per address.
-_dead_mirrors: set = set()
+#
+# {url: unix time it may be tried again}. It WAS a set that was CLEARED the moment every
+# mirror was dead, which retried all of them for the very next address — so with the
+# mirrors down each uncached address paid 3-4 × (1 s pace + 8 s timeout) ≈ 36 s, and a
+# cache warm that should take minutes looked like an hours-long job (measured 2026-08-13).
+# A cooldown forgets on a CLOCK instead, so an outage costs one round of timeouts per
+# window rather than one per address, and recovery still happens on its own.
+_dead_mirrors: dict = {}
+_MIRROR_COOLDOWN_SEC = 120
+
+
+def _overpass_mirrors() -> list:
+    """The mirror URLs, one per DISTINCT HOST.
+
+    `config.OVERPASS_URLS` lists 4 URLs that resolve to 3 machines —
+    `overpass.kumi.systems` and `overpass.private.coffee` are both 193.219.97.30 — so the
+    redundancy is a third smaller than it looks and one dead host burns two timeouts.
+
+    Resolved lazily and cached, never at import: this must not do DNS at module load, and
+    it must FAIL OPEN. If resolution is unavailable (the offline test suite blocks it, a
+    machine has just woken) the full list is used — an unresolvable name is not evidence
+    that two mirrors are the same."""
+    global _mirror_cache
+    urls = tuple(config.OVERPASS_URLS)
+    if _mirror_cache and _mirror_cache[0] == urls:
+        return _mirror_cache[1]
+    import socket
+    seen, out = set(), []
+    for u in urls:
+        try:
+            host = socket.gethostbyname(u.split("/")[2])
+        except Exception:
+            host = u                                   # unresolvable -> keep it, fail open
+        if host in seen:
+            continue
+        seen.add(host)
+        out.append(u)
+    _mirror_cache = (urls, out)
+    return out
+
+
+_mirror_cache: tuple = ()
 
 
 def _overpass_query(name: str, hn: Optional[str]):
@@ -1851,10 +1892,15 @@ def _overpass_query(name: str, hn: Optional[str]):
          f'node["name"~"{name}"]({bbox}););'
          f'out center tags 25;')
     timeout = getattr(config, "OVERPASS_TIMEOUT_SEC", 15)
-    live = [u for u in config.OVERPASS_URLS if u not in _dead_mirrors]
-    if not live:                                           # all known-dead: retry them once
-        _dead_mirrors.clear()
-        live = list(config.OVERPASS_URLS)
+    now = time.time()
+    live = [u for u in _overpass_mirrors() if _dead_mirrors.get(u, 0) <= now]
+    if not live:
+        # EVERY MIRROR IS COOLING DOWN, so skip the tier rather than retrying them all.
+        # Retrying is what cost ~36 s per address during an outage, and it almost never
+        # succeeds — the answer is the same either way, and the caller treats a
+        # no-response as transient (it is not cached as a miss), so nothing is lost but
+        # the wait. They come back on their own when the cooldown expires.
+        return None, None, False
     for url in live:                                        # first mirror that responds wins
         try:
             time.sleep(1.0)                                # be polite to the shared instance
@@ -1863,7 +1909,7 @@ def _overpass_query(name: str, hn: Optional[str]):
             r.raise_for_status()
             data = r.json()
         except Exception:
-            _dead_mirrors.add(url)                         # don't pay this timeout again
+            _dead_mirrors[url] = time.time() + _MIRROR_COOLDOWN_SEC   # cool off, don't retry
             continue                                       # this mirror timed out — try the next
         # A valid response is authoritative (OSM data is identical across mirrors):
         # take the best-ranked in-box hit, or None — never keep hammering other mirrors.

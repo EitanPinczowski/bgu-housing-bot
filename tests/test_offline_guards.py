@@ -64,11 +64,11 @@ def test_a_mirror_killed_here_must_not_leak_to_the_next_test(monkeypatch):
 
 
 def test_the_dead_mirror_breaker_starts_clear():
-    """`_dead_mirrors` is a per-process circuit breaker with no invalidation — correct for
+    """`_dead_mirrors` is a per-process circuit breaker ({url: retry-after}) — correct for
     a scrape, wrong across tests, which pretend to be many processes. A single mirror left
     marked dead by an earlier test turned an exact call-count assertion from 8 into 7, in
     `test_transient_overpass_failure_is_not_cached`, which passes when run alone.
 
     The test immediately above marked every mirror dead. Reaching here with a clean set is
     the fixture working."""
-    assert geocode._dead_mirrors == set()
+    assert geocode._dead_mirrors == {}

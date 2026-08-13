@@ -131,6 +131,21 @@ How a Hebrew address becomes a coordinate, and every rule learned by getting it 
   - Two older tests asserted `src == "static"` for a bare street. Both were really about
     PLACEMENT — which key wins, and that a point survives at all — so both keep those
     assertions and only the grade moved.
+- **THE MIRROR LIST IS SHORTER THAN IT LOOKS, AND THE ALL-DEAD RESET WAS THE EXPENSIVE
+  PART** (2026-08-13). `config.OVERPASS_URLS` holds 4 URLs resolving to **3 machines** —
+  `overpass.kumi.systems` and `overpass.private.coffee` are both `193.219.97.30` — so one
+  dead host burned two timeouts. `_overpass_mirrors()` dedupes by resolved host, lazily and
+  **failing open**: an unresolvable name is not evidence that two mirrors are the same, and
+  it must never do DNS at import.
+  - `_dead_mirrors` was a SET that was CLEARED the moment every mirror was dead, which
+    retried them all for the very next address. With the mirrors down that cost
+    3-4 × (1 s pace + 8 s timeout) ≈ **36 s per uncached address**, and a cache warm that
+    should take minutes looked like an hours-long job. It is now `{url: retry-after}` with
+    a 120 s cooldown, and when every mirror is cooling the tier is SKIPPED rather than
+    retried — the answer is the same, the caller still treats it as transient (never cached
+    as a miss), and they recover on their own.
+  - Measured side effect: the test suite went **107s → 76s**, because tests resolving many
+    addresses stopped re-attempting the same dead mirrors.
 - **THE TWO LOOKUP LOOPS HAD DRIFTED, AND ONLY THE MAP WAS WRONG** (2026-08-12).
   `geocode_cached` (local-only, and the function EVERY map dot goes through —
   `dashboard.py:85`) is supposed to mirror `_resolve_detailed`. It did not: the

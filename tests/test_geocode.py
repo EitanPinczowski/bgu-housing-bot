@@ -334,7 +334,7 @@ def test_dead_mirror_is_skipped_after_first_failure(monkeypatch, tmp_path):
     """A dead Overpass mirror must cost its timeout ONCE, not on every lookup — that
     stall was making a single address take minutes."""
     _overpass_on(monkeypatch, tmp_path)
-    monkeypatch.setattr(geocode, "_dead_mirrors", set())
+    monkeypatch.setattr(geocode, "_dead_mirrors", {})   # {url: retry-after}
     monkeypatch.setattr(geocode.config, "OVERPASS_URLS",
                         ["https://dead.example/api", "https://live.example/api"])
     tried = []
@@ -429,9 +429,15 @@ def test_transient_overpass_failure_is_not_cached(monkeypatch, tmp_path):
     q = "רחוב שהשרת נפל עליו 42"
     assert geocode.geocode(q) is None
     assert geocode.geocode(q) is None
-    # a network blackout is NOT a real miss -> re-queried every time (all mirrors each call)
-    assert calls["n"] == 2 * len(geocode.config.OVERPASS_URLS)
+    # THE POINT OF THE TEST, and unchanged: a network blackout is NOT a real miss, so it is
+    # never written to the cache and the name resolves again once the mirrors are back.
     assert geocode._normalize(q) not in geocode._cache
+    # The RETRY POLICY changed on 2026-08-13. This asserted `2 * len(OVERPASS_URLS)` — every
+    # mirror retried for every address — which is what cost ~36 s per uncached address
+    # during an outage and made a cache warm look like an hours-long job. Now: one attempt
+    # per DISTINCT HOST (4 URLs resolve to 3 machines), and the second lookup skips the tier
+    # entirely because they are all still cooling down.
+    assert calls["n"] == len(geocode._overpass_mirrors()), calls["n"]
 
 
 # --- #3: geocode_detailed reports which tier resolved the name ------------------
@@ -1457,3 +1463,56 @@ def test_the_skipped_key_fallback_does_not_claim_a_house_it_could_not_place():
     for addr in ("וינגייט", "רינגלבלום"):
         _pt, src = geocode.geocode_detailed(addr)
         assert not geocode.is_precise_source(src), f"{addr} -> {src}"
+
+
+def test_a_dead_mirror_cools_down_instead_of_being_retried_for_every_address(monkeypatch, tmp_path):
+    """THE ALL-DEAD RESET WAS THE EXPENSIVE PART. `_dead_mirrors` was a set that was CLEARED
+    the moment every mirror was dead, so the very next address retried all of them: with the
+    mirrors down each uncached address paid 3-4 × (1 s pace + 8 s timeout) ≈ 36 s, and a
+    cache warm that should take minutes looked like hours (measured 2026-08-13).
+
+    Now they are skipped until a clock says otherwise, so an outage costs one round of
+    timeouts per window rather than one per address."""
+    _overpass_on(monkeypatch, tmp_path)
+    monkeypatch.setattr(geocode, "_dead_mirrors", {})
+    monkeypatch.setattr(geocode.config, "OVERPASS_URLS", ["https://a.example/api"])
+    monkeypatch.setattr(geocode, "_mirror_cache", ())
+    import requests
+    calls = {"n": 0}
+    def boom(url, **kw):
+        calls["n"] += 1
+        raise requests.exceptions.ReadTimeout("down")
+    monkeypatch.setattr(requests, "post", boom)
+
+    assert geocode._overpass_query("רגר", None) == (None, None, False)
+    assert calls["n"] == 1
+    # a second address while it is still cooling must not pay the timeout again
+    assert geocode._overpass_query("מצדה", None) == (None, None, False)
+    assert calls["n"] == 1, "the dead mirror was retried instead of cooling down"
+    # …and it comes back on its own once the window passes
+    geocode._dead_mirrors["https://a.example/api"] = 0
+    assert geocode._overpass_query("קדש", None) == (None, None, False)
+    assert calls["n"] == 2, "the mirror never recovered"
+
+
+def test_the_mirror_list_is_deduped_by_host_and_fails_open(monkeypatch):
+    """4 URLs resolve to 3 machines — `overpass.kumi.systems` and
+    `overpass.private.coffee` are both 193.219.97.30 — so the redundancy is a third
+    smaller than it looks and one dead host burns two timeouts.
+
+    FAILS OPEN: an unresolvable name is not evidence that two mirrors are the same, and
+    this must never do DNS at import."""
+    import socket
+    monkeypatch.setattr(geocode, "_mirror_cache", ())
+    monkeypatch.setattr(geocode.config, "OVERPASS_URLS",
+                        ["https://one.example/api", "https://two.example/api",
+                         "https://three.example/api"])
+    monkeypatch.setattr(socket, "gethostbyname",
+                        lambda h: "1.2.3.4" if h in ("one.example", "two.example") else "5.6.7.8")
+    assert geocode._overpass_mirrors() == ["https://one.example/api", "https://three.example/api"]
+
+    monkeypatch.setattr(geocode, "_mirror_cache", ())
+    def unresolvable(h):
+        raise OSError("no DNS")
+    monkeypatch.setattr(socket, "gethostbyname", unresolvable)
+    assert len(geocode._overpass_mirrors()) == 3, "must keep every URL when DNS is unavailable"
