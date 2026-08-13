@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, time as dt_time
 
 from dotenv import load_dotenv
 
@@ -393,7 +393,70 @@ def _run_reliability() -> None:
         print(f"  longest completed run {worst:.0f} min"
               + (f" (ceiling {cap})" if cap else "") + note)
     if pct < 90:
-        print("   ← missed runs; check `python doctor.py` wake timers")
+        print("   ← missed runs — see the line below for why, NOT the wake timers")
+    _slots_eaten_by_overrun(lines)
+
+
+def _slots_eaten_by_overrun(lines) -> None:
+    """Slots that never produced a process at all, and whether a previous run ate them.
+
+    THE HINT HERE USED TO SAY "check the wake timers", AND THAT WAS WRONG. Measured
+    2026-08-13: the scheduled tasks already have `WakeToRun=True` and
+    `StartWhenAvailable=True`, the OS allows wake timers on both AC and DC, and the machine
+    was powered on continuously through the week in question — yet **16 of 42 full-run
+    slots produced nothing at all**, not even a SKIP.
+
+    The cause is `MultipleInstances=IgnoreNew` on the scheduled task: while one instance is
+    running, Task Scheduler suppresses the next trigger SILENTLY. No process starts, so
+    nothing reaches this log — which is why the loss looked like a trigger that never fired.
+    And runs overrun: 6,127 s and 5,133 s in the last dozen, against slots 2 hours apart
+    and up to 25 minutes of start jitter.
+
+    So a missing slot is usually SELF-INFLICTED BY DURATION, and the remedy is run length
+    (depth, group count, MAX_RUN_MINUTES) — not the power settings. Attributing it here
+    stops the next person tuning the wrong thing."""
+    runs = []                                    # (start, end) of every completed run
+    start = None
+    for ln in lines:
+        try:
+            ts = datetime.strptime(ln[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        rest = ln[19:].strip()
+        if rest.startswith("START"):
+            start = ts
+        elif rest.startswith("END") and start is not None:
+            runs.append((start, ts))
+            start = None
+    if not runs:
+        return
+    logged = set()
+    for ln in lines:
+        try:
+            ts = datetime.strptime(ln[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        if ln[19:].strip().split(None, 1)[0] in ("START", "SKIP"):
+            logged.add((ts.date(), ts.hour))
+    hours = getattr(config, "SCRAPER_FULL_RUN_HOURS", (8, 10, 14, 16, 18, 20))
+    days = sorted({d for d, _h in logged})[-7:]
+    eaten = silent = 0
+    for d in days:
+        for h in hours:
+            if (d, h) in logged:
+                continue
+            slot = datetime.combine(d, dt_time(hour=h))
+            if any(a <= slot <= b for a, b in runs):
+                eaten += 1
+            else:
+                silent += 1
+    if eaten:
+        print(f"  {eaten} slot(s) SUPPRESSED by a still-running previous run "
+              f"(MultipleInstances=IgnoreNew — no process, no log line). Shorten runs, "
+              f"not the power settings.")
+    if silent:
+        print(f"  {silent} slot(s) produced nothing and no run was in flight — that IS a "
+              f"trigger/wake question")
 
 
 if __name__ == "__main__":
