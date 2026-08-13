@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import config
@@ -568,7 +568,7 @@ def mark_alerted(dedup_key: str) -> None:
         return
     with _conn() as c:
         c.execute("UPDATE listings SET alerted_at=? WHERE dedup_key=?",
-                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), dedup_key))
+                  (_utc_now().strftime(_NOW), dedup_key))   # same clock as first_seen
 
 
 def pending_alerts(max_age_hours: int = 24) -> list:
@@ -596,7 +596,9 @@ def pending_alerts(max_age_hours: int = 24) -> list:
         statuses.append("NEEDS_DATA")
     if not statuses:
         return []
-    cutoff = (datetime.now() - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    # UTC: `first_seen` is CURRENT_TIMESTAMP, so a local cutoff would silently make this
+    # a 21-hour window here — see `_utc_now`
+    cutoff = (_utc_now() - timedelta(hours=max_age_hours)).strftime(_NOW)
     marks = ",".join("?" * len(statuses))
     with _conn() as c:
         c.row_factory = sqlite3.Row
@@ -819,6 +821,26 @@ def find_similar(tokens, days: int = 4, threshold: float = 0.72,
 # --- raw-post archive: every post that reached the LLM, with its parsed fields
 # and final verdict. Lets us re-run classification/scoring against history WITHOUT
 # re-scraping Facebook (replay.py), and powers the --stats funnel (stats.py). ---
+def _utc_now() -> datetime:
+    """Naive UTC, matching what SQLite's `CURRENT_TIMESTAMP` writes.
+
+    THE TWO CLOCKS DID NOT MATCH, AND IT CORRUPTED THE LATENCY METRIC. `first_seen` is
+    `CURRENT_TIMESTAMP`, which SQLite writes in **UTC**; `posted_at` was computed from
+    `datetime.now()`, which is **local** (UTC+3 here). So a post's publication time sat 3
+    hours ahead of the sighting it is compared against.
+
+    Two consequences, both measured 2026-08-13:
+      * a post younger than the offset reads as published AFTER it was seen — 4,218 rows,
+        overshoot `3h - age`, giving a median of exactly **120 min** (age 1h) and a p90 of
+        **170 min** (age ~0.2h). That is 39% of the archive discarded as impossible.
+      * every SURVIVING row understates the lag by 3 hours, so the detection-lag figure the
+        whole cadence question rests on was three hours optimistic.
+
+    Comparisons must be same-clock; which clock matters less than that they agree, and UTC
+    is the one the schema already chose."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def record_post(sig: str, raw_text: str, comments, images, group, source_url,
                 extract, res: PipelineResult, age_hours=None) -> None:
     """Archive one post. `age_hours` (how old the post was when scraped) is stored as an
@@ -827,7 +849,8 @@ def record_post(sig: str, raw_text: str, comments, images, group, source_url,
     posted_at = None
     if age_hours is not None:
         try:
-            posted_at = (datetime.now() - timedelta(hours=float(age_hours))).strftime(_NOW)
+            # UTC, because `first_seen` below is CURRENT_TIMESTAMP — see `_utc_now`
+            posted_at = (_utc_now() - timedelta(hours=float(age_hours))).strftime(_NOW)
         except (TypeError, ValueError):
             posted_at = None
     with _conn() as c:
@@ -851,8 +874,24 @@ def record_post(sig: str, raw_text: str, comments, images, group, source_url,
                  -- why the detection-lag figure the whole latency question rests on was
                  -- computed over a third of the archive.
                  -- MIN over two zero-padded ISO strings is chronological.
-                 posted_at=MIN(COALESCE(excluded.posted_at, posts.posted_at),
-                               COALESCE(posts.posted_at, excluded.posted_at))""",
+                 -- …AND NEVER A PUBLICATION AFTER THE FIRST SIGHTING. We demonstrably
+                 -- had the post at `first_seen`, so any candidate later than that is
+                 -- known-false and must not be stored. It happens because the AGE IS
+                 -- OFTEN MISSING ON THE FIRST SIGHTING (the hover budget,
+                 -- SCRAPER_MAX_HOVERS_PER_RUN=300 against 262-390 posts a run), so the
+                 -- first age we ever get arrives on a LATER run and is by definition
+                 -- after first_seen. Measured 2026-08-13: 4,218 such rows, median
+                 -- overshoot exactly 120 min — one scrape interval, which is the
+                 -- fingerprint of that mechanism.
+                 -- Kept NULL rather than clamped to first_seen: clamping would invent a
+                 -- lag of ~0 and bias the very metric this protects.
+                 posted_at=CASE
+                   WHEN MIN(COALESCE(excluded.posted_at, posts.posted_at),
+                            COALESCE(posts.posted_at, excluded.posted_at)) > posts.first_seen
+                   THEN posts.posted_at
+                   ELSE MIN(COALESCE(excluded.posted_at, posts.posted_at),
+                            COALESCE(posts.posted_at, excluded.posted_at))
+                 END""",
             (sig, raw_text, comments or "", json.dumps(images or []), group, source_url,
              extract.model_dump_json() if extract else None,
              res.status.value, res.reason, res.location_tier, res.score, posted_at))

@@ -853,3 +853,46 @@ def test_a_listing_with_no_position_stores_none(temp_db):
     storage.save_listing(_placed("k3", None, None, None))
     with sqlite3.connect(config.DB_PATH) as c:
         assert c.execute("SELECT lat FROM listings WHERE dedup_key='k3'").fetchone()[0] is None
+
+
+# --- the two clocks must agree, or the latency metric is fiction -----------------------
+
+def test_posted_at_and_first_seen_use_the_same_clock(temp_db):
+    """`first_seen` is SQLite's CURRENT_TIMESTAMP, written in **UTC**. `posted_at` was
+    computed from `datetime.now()` — **local**, UTC+3 here — so a publication time sat
+    three hours ahead of the sighting it is compared against.
+
+    Measured 2026-08-13: 4,218 rows read as published AFTER they were seen, with an
+    overshoot of `3h - age` giving a median of exactly **120 min** and a p90 of **170 min**
+    — the fingerprint of the offset, not of anything about Facebook. That is 39% of the
+    archive discarded as impossible, and every surviving row understated the lag by 3h.
+
+    So the lag of a post known to be N minutes old must come back as N minutes."""
+    from datetime import datetime
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 1")
+    res = PipelineResult(status=Status.DROP, dedup_key="k")
+    storage.record_post("s-age", "t", "", [], "g", "u", e, res, age_hours=1.0)
+    with sqlite3.connect(config.DB_PATH) as c:
+        p, f = c.execute("SELECT posted_at, first_seen FROM posts WHERE sig='s-age'").fetchone()
+    lag_min = (datetime.fromisoformat(f) - datetime.fromisoformat(p)).total_seconds() / 60
+    assert 55 <= lag_min <= 65, f"a 1-hour-old post reported a {lag_min:.0f} min lag"
+    assert p <= f, "published after it was seen — the clocks have drifted apart again"
+
+
+def test_a_publication_after_the_first_sighting_is_never_stored(temp_db):
+    """We demonstrably had the post at `first_seen`, so a later candidate is known-false.
+    It arises because the age is often missing on the FIRST sighting (the hover budget:
+    SCRAPER_MAX_HOVERS_PER_RUN=300 against 262-390 posts a run), so the first age we ever
+    get can arrive on a later run.
+
+    Kept NULL rather than clamped to `first_seen`: clamping would invent a lag of ~0 and
+    bias the very metric this protects."""
+    e = ListingExtract(is_apartment_ad=True, street_address_or_neighborhood="רגר 1")
+    res = PipelineResult(status=Status.DROP, dedup_key="k")
+    storage.record_post("s-late", "t", "", [], "g", "u", e, res, age_hours=None)
+    with sqlite3.connect(config.DB_PATH) as c:
+        c.execute("UPDATE posts SET first_seen='2020-01-01 00:00:00' WHERE sig='s-late'")
+    storage.record_post("s-late", "t", "", [], "g", "u", e, res, age_hours=0.5)
+    with sqlite3.connect(config.DB_PATH) as c:
+        p = c.execute("SELECT posted_at FROM posts WHERE sig='s-late'").fetchone()[0]
+    assert p is None, f"stored an impossible publication time: {p}"
