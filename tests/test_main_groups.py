@@ -201,3 +201,27 @@ def test_ocr_posts_stay_on_the_single_path(monkeypatch):
 def test_batch_size_one_disables_batching(monkeypatch):
     sizes = _batch_run(monkeypatch, ["g1"], posts_per_group=4, batch_size=1)
     assert sizes == [1, 1, 1, 1]
+
+
+def test_a_run_that_fires_before_dns_is_a_skip_not_an_end(monkeypatch):
+    """2026-08-12 20:02:49: a slot fired seconds after the machine woke, all 15 groups
+    failed with `net::ERR_NAME_NOT_RESOLVED`, and it logged `END ... 6s posts=0
+    groups_ok=0/15`. `stats.py` scores an END as a COMPLETED run, so a slot that did
+    nothing counted as a success — the same trap as counting `END|SKIP` together.
+
+    The probe resolves NAMES only (the observed failure was `getaddrinfo`), and tries two
+    hosts so one dead host cannot look like a dead network."""
+    import socket
+    import main
+    calls = []
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+
+    def dead(host, port):
+        calls.append(host)
+        raise OSError("getaddrinfo failed")
+    monkeypatch.setattr(socket, "getaddrinfo", dead)
+    assert main._wait_for_network(timeout_s=0, probe_s=0) is False
+    assert len(set(calls)) == 2, f"must probe two hosts, got {set(calls)}"
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda h, p: [(2, 1, 6, "", (h, p))])
+    assert main._wait_for_network(timeout_s=0, probe_s=0) is True

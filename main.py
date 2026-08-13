@@ -54,6 +54,33 @@ def _log_search(event: str, detail: str = "") -> None:
         print(f"[main] could not write search log: {exc}")
 
 
+def _wait_for_network(timeout_s: int = 90, probe_s: int = 5) -> bool:
+    """Is DNS working? Wait up to `timeout_s` for it, because a wake is not instant.
+
+    Resolution only, not a fetch: the observed failure was `getaddrinfo` — Facebook AND
+    `oauth2.googleapis.com` both unresolvable — so name resolution is the thing that was
+    missing, and probing it needs no request to anyone.
+
+    Two names, so one dead host cannot look like a dead network."""
+    import socket
+    deadline = time.time() + timeout_s
+    waited = False
+    while True:
+        for host in ("www.facebook.com", "one.one.one.one"):
+            try:
+                socket.getaddrinfo(host, 443)
+                if waited:
+                    print(f"[main] DNS came up after {timeout_s - int(deadline - time.time())}s")
+                return True
+            except OSError:
+                continue
+        if time.time() >= deadline:
+            return False
+        waited = True
+        print("[main] no DNS yet (just woken?) — waiting…")
+        time.sleep(probe_s)
+
+
 def _load_scrapes() -> dict:
     try:
         return json.loads(_SCRAPES_PATH.read_text())
@@ -223,6 +250,23 @@ def run(dry_run: bool, hot: bool = False) -> None:
         if depths:
             print(f"[main] yield-scaled depth for {len(depths)} low-yield group(s): "
                   + ", ".join(f"{u.rstrip('/').split('/')[-1]}={d}" for u, d in depths.items()))
+    # A RUN THAT FIRES BEFORE THE NETWORK IS UP IS NOT A RUN, AND MUST NOT LOG `END`.
+    #
+    # 2026-08-12 20:02:49: a slot fired seconds after the machine woke; all 15 groups
+    # failed with `net::ERR_NAME_NOT_RESOLVED`, Sheets could not resolve
+    # `oauth2.googleapis.com` either, and it logged `END LIVE 6s posts=0 groups_ok=0/15`.
+    # `stats.py` scores an END as a COMPLETED run, so a slot that did nothing counted as a
+    # success and the reliability row read healthier than the day deserved — the same trap
+    # as counting `END|SKIP` together, one variant along.
+    #
+    # Waiting beats failing: DNS is usually back within seconds of a wake, so this costs a
+    # healthy run nothing and rescues one that merely fired early.
+    if not _wait_for_network():
+        _log_search("SKIP", "network down (no DNS) — not a run")
+        print("[main] no DNS after waiting — logged as SKIP, not END: this slot did "
+              "not happen, and must not be counted as one.")
+        stop_keep_awake()
+        return
     _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
     print(f"=== BGU housing scraper — {mode} ===")
     print(f"groups this run ({len(selected)}/{len(config.FB_GROUPS)}): {selected}\n")
