@@ -653,7 +653,27 @@ SCRAPER_HOVER_FOR_LINK = True
 # We hover a post when it's missing a link OR an age, so nearly every fresh post gets
 # hovered — hence the higher cap. Already-seen posts are skipped BEFORE hovering (see
 # scrape_group), so the 2nd–7th daily runs stay cheap; only run 1 hovers in bulk.
-SCRAPER_MAX_HOVERS_PER_RUN = 300     # hard cap on hovers per run
+# RAISED 300 -> 800 on 2026-08-13, at the user's explicit request after being shown the
+# trade (CLAUDE.md requires that for anything touching scraper volume).
+#
+# WHY IT WAS TOO LOW: a hover is the ONLY way to read a post's age under he-IL — the
+# on-page timestamp is CSS-scrambled and the date lives in a tooltip. At 300, with up to
+# `SCRAPER_HOVER_MAX_PER_POST` tries each, the budget ran out partway through runs that
+# read 262-390 posts, and every post after that was archived with NO age at all: 10-35% a
+# day, which is most of why `stats._detection_lag` runs on a fraction of the archive.
+#
+# SIZED, NOT GUESSED: the observed miss rate implies ~1.2-1.5 hovers per post (300 hovers
+# covering ~65-85% of ~350 posts), so a full 390-post run needs ~500-600 with headroom for
+# posts that burn all three tries. 800 covers it and still bounds a runaway.
+#
+# COST: ~0.7 s each (a 0.6 s tooltip wait plus the hover), so the extra 500 add ~6 minutes
+# to a run that already takes 45-60. A hover is mouse movement over ALREADY-LOADED
+# content — it loads no page and reads no extra post, so it does not change scrape volume
+# in the sense the safety rules bound; it changes run duration.
+#
+# `scan["hovers"]` now reports what a run actually spends, so the next adjustment to this
+# number can be measured instead of estimated.
+SCRAPER_MAX_HOVERS_PER_RUN = 800     # hard cap on hovers per run
 SCRAPER_HOVER_MAX_PER_POST = 3       # candidates to try per post
 # The hover both reveals the permalink href AND pops a date tooltip (FB renders the
 # date in English even under he-IL, e.g. "Tuesday, July 21, 2026 at 12:56 PM"), which

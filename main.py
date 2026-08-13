@@ -504,6 +504,14 @@ def run(dry_run: bool, hot: bool = False) -> None:
           f"seen-skip {scan['seen_skipped']} · processed {total_posts}")
     _nolink_pct = round(100 * (total_posts - posts_with_link) / total_posts) if total_posts else 0
     print(f"post links: {posts_with_link}/{total_posts} captured · {_nolink_pct}% without a link")
+    # A hover is the ONLY way to read a post's age under he-IL, so exhausting this budget
+    # means every later post is archived with no age — which is most of why the
+    # detection-lag metric runs on a fraction of the archive. Reported so the cap can be
+    # sized from what runs actually spend rather than from an estimate.
+    _hov, _hov_cap = scraper.hovers_used(), config.SCRAPER_MAX_HOVERS_PER_RUN
+    print(f"hovers: {_hov}/{_hov_cap}"
+          + ("   ← BUDGET EXHAUSTED: posts after this point have no age" if _hov >= _hov_cap
+             else ""))
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")
@@ -578,6 +586,7 @@ def run(dry_run: bool, hot: bool = False) -> None:
     _log_search("END", f"{end_tag}  {time.monotonic() - started:.0f}s  "
                        f"posts={total_posts} match={matches} needs={needs} "
                        f"read={scan['read']} age_skip={scan['age_skipped']} seen_skip={scan['seen_skipped']} "
+                       f"hovers={scraper.hovers_used()}/{config.SCRAPER_MAX_HOVERS_PER_RUN} "
                        f"groups_ok={groups_with_posts}/{len(selected)}"
                        + (f"  block={blocked_reason}" if blocked_reason else ""))
 

@@ -860,6 +860,12 @@ def _permalink_and_age(story, group_url: Optional[str] = None, allow_hover: bool
 _hover_used = 0   # hovers spent this run (bounded by SCRAPER_MAX_HOVERS_PER_RUN)
 
 
+def hovers_used() -> int:
+    """How many hovers this run has spent. Reported in the run summary because the cap was
+    raised on an estimate: a budget nobody measures is a budget nobody can size."""
+    return _hover_used
+
+
 def _hover_reveal(anchors, url_gid):
     """Hover up to SCRAPER_HOVER_MAX_PER_POST candidate anchors: FB populates the
     timestamp link's lazily-rendered permalink href AND pops a date tooltip. Returns
