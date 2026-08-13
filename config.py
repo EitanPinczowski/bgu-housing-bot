@@ -336,6 +336,12 @@ LLM_BATCH_SIZE = 1
 # retries that also spend quota.
 # **If a future refusal names a different `limit:`, follow it** — `doctor`'s llm budget
 # row reports the value Google last stated, precisely so this is not guessed again.
+# How many PAST quota windows to keep in data/llm_budget.json. The file held only the
+# CURRENT window, so the moment one rolled over its record was gone — including the
+# measured refusal point, which is the only evidence of where Google's real cap sits.
+# That made "how much quota did we use last Tuesday" unanswerable, and it is exactly the
+# question you ask when deciding whether the ladder is leaving 3.1 unused.
+LLM_BUDGET_HISTORY_WINDOWS = 14
 LLM_DAILY_BUDGET = 480
 
 # ---------------------------------------------------------------------------

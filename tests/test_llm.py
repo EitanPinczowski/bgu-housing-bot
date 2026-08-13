@@ -745,3 +745,69 @@ def test_the_model_actually_sent_follows_the_ladder_not_the_legacy_name(monkeypa
     monkeypatch.setattr(config, "GEMINI_MODEL", "legacy-name")
     monkeypatch.setattr(llm, "_model_rung", 0)
     assert llm.active_model() == "ladder-model"
+
+
+# --- a rolled-over quota window is archived, not discarded -----------------------------
+
+def _budget(tmp_path, monkeypatch, rec):
+    """Point the budget file at tmp_path and return it. `dates` is imported lazily inside
+    `budget_state`, so the window is patched on the module, not on `llm`."""
+    import json
+    p = tmp_path / "b.json"
+    p.write_text(json.dumps(rec), encoding="utf-8")
+    monkeypatch.setattr(llm, "_BUDGET_PATH", p)
+    return p
+
+
+def test_a_rolled_over_window_is_kept(tmp_path, monkeypatch):
+    """The file held only the CURRENT window, so a roll-over destroyed the record —
+    including the measured refusal point, the one piece of evidence for where Google's real
+    cap sits. "How much quota did we use on Tuesday" was unanswerable, which is why the
+    ladder question had to be settled from a usage dashboard (where you have BEEN, never
+    where the cap IS)."""
+    import json
+    p = _budget(tmp_path, monkeypatch,
+                {"window": "2026-08-01", "calls": 431,
+                 "models": {"gemini-3.5-flash-lite": 480, "gemini-3.1-flash-lite": 51},
+                 "refused_at": 500, "refused_kind": "daily", "stated_limit": "500"})
+    monkeypatch.setattr(llm, "active_model", lambda: "gemini-3.5-flash-lite")
+    monkeypatch.setattr(__import__("dates"), "quota_window", lambda: "2026-08-02")
+    llm._spend_budget(1)
+    rec = json.loads(p.read_text(encoding="utf-8"))
+    assert rec["window"] == "2026-08-02" and rec["calls"] == 1
+    assert len(rec["history"]) == 1
+    old = rec["history"][0]
+    assert old["window"] == "2026-08-01" and old["calls"] == 431
+    # THE WHOLE RECORD, not a named subset — the diagnosis is the point of keeping it
+    assert old["refused_at"] == 500 and old["stated_limit"] == "500"
+    assert old["refused_kind"] == "daily"
+
+
+def test_history_is_bounded_and_never_nests(tmp_path, monkeypatch):
+    """A counter that grows without bound becomes its own problem, and a `history` copied
+    into the next `history` would double every roll-over."""
+    import json
+    monkeypatch.setattr(config, "LLM_BUDGET_HISTORY_WINDOWS", 3)
+    monkeypatch.setattr(llm, "active_model", lambda: "gemini-3.5-flash-lite")
+    p = _budget(tmp_path, monkeypatch, {"window": "2026-08-01", "calls": 1, "models": {}})
+    for day in range(2, 9):
+        monkeypatch.setattr(__import__("dates"), "quota_window", lambda d=day: f"2026-08-{d:02d}")
+        llm._spend_budget(1)
+    rec = json.loads(p.read_text(encoding="utf-8"))
+    assert len(rec["history"]) == 3, [w["window"] for w in rec["history"]]
+    assert [w["window"] for w in rec["history"]] == ["2026-08-05", "2026-08-06", "2026-08-07"]
+    assert all("history" not in w for w in rec["history"]), "history nested inside history"
+
+
+def test_spending_inside_one_window_does_not_touch_history(tmp_path, monkeypatch):
+    """The pre-existing lesson still holds: a same-window call must not erase anything."""
+    import json
+    p = _budget(tmp_path, monkeypatch,
+                {"window": "2026-08-02", "calls": 5, "models": {"gemini-3.5-flash-lite": 5},
+                 "refused_at": 500, "history": [{"window": "2026-08-01", "calls": 9}]})
+    monkeypatch.setattr(llm, "active_model", lambda: "gemini-3.5-flash-lite")
+    monkeypatch.setattr(__import__("dates"), "quota_window", lambda: "2026-08-02")
+    llm._spend_budget(1)
+    rec = json.loads(p.read_text(encoding="utf-8"))
+    assert rec["calls"] == 6 and rec["refused_at"] == 500
+    assert rec["history"] == [{"window": "2026-08-01", "calls": 9}]

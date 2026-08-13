@@ -59,6 +59,7 @@ def main() -> None:
             print(f"  {gid:>18}   {m:>3} | {n:>3} | {d:>3} | {tot:>3}{flag}")
 
     _unmapped()
+    _quota_windows()
     _detection_lag()
     _run_reliability()
     _alert_gate()
@@ -109,6 +110,38 @@ def _unmapped() -> None:
     if by_design:
         print(f"  ({by_design} are a bearing off a landmark — refused BY DESIGN, "
               f"never pin these)")
+
+
+def _quota_windows() -> None:
+    """Quota used per 10:00 window, and whether the ladder actually climbed.
+
+    The budget file kept only the CURRENT window, so this could not be asked at all — the
+    record was discarded the moment a window rolled over, taking the measured refusal point
+    with it. On 2026-08-10 the question "is the ladder leaving 3.1's quota unused?" had to
+    be answered from a usage dashboard, which shows where you have BEEN and never where the
+    cap IS. Retention (`config.LLM_BUDGET_HISTORY_WINDOWS`) makes it local and checkable.
+
+    Fills in from the first roll-over onward; it cannot recover windows already lost."""
+    import llm
+    hist = llm.budget_history()
+    if not hist:
+        return
+    cap = getattr(config, "LLM_DAILY_BUDGET", 0)
+    print(f"--- quota per window (cap {cap}) ---")
+    for w in hist[-8:]:
+        models = w.get("models") or {}
+        mix = " · ".join(f"{k.replace('gemini-', '')}={v}" for k, v in sorted(models.items()))
+        calls = w.get("calls", 0)
+        flag = ""
+        if w.get("refused_at"):
+            flag = f"   ← GOOGLE REFUSED at {w['refused_at']}"
+            if w.get("stated_limit"):
+                flag += f" (it stated limit={w['stated_limit']})"
+        elif cap and calls >= cap:
+            flag = "   ← hit our own budget; the ladder should have climbed"
+        print(f"  {w.get('window', '?')}  {calls:>4}/{cap}  {mix}{flag}")
+    if len(hist) == 1:
+        print("  (only the live window so far — retention starts at the next roll-over)")
 
 
 def _alert_gate() -> None:

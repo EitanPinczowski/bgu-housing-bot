@@ -367,7 +367,17 @@ def _spend_budget(n: int = 1) -> None:
     try:
         rec = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
         if rec.get("window") != window:
-            rec = {}                    # a stale window is not this window's record
+            # A ROLLED-OVER WINDOW IS ARCHIVED, NOT DISCARDED. It used to be dropped on
+            # the floor, so the file could only ever answer "today" — and the measured
+            # refusal point, the one piece of evidence for where Google's real cap sits,
+            # went with it. The WHOLE record is kept for the same reason the docstring
+            # above gives: a named subset loses the diagnosis.
+            prev, rec = rec, {}
+            hist = prev.pop("history", []) if isinstance(prev, dict) else []
+            if prev.get("window"):
+                hist.append(prev)
+            keep = getattr(config, "LLM_BUDGET_HISTORY_WINDOWS", 14)
+            rec["history"] = hist[-keep:] if keep else []
     except Exception:
         rec = {}
     rec["window"] = window
@@ -379,6 +389,22 @@ def _spend_budget(n: int = 1) -> None:
         _BUDGET_PATH.write_text(json.dumps(rec), encoding="utf-8")
     except Exception as exc:                      # a counter must never break a run
         print(f"[llm] could not record budget: {exc}")
+
+
+def budget_history() -> list:
+    """Past quota windows, oldest first — [{window, calls, models, …}, …].
+
+    Empty until a window has actually rolled over; retention starts from the first
+    roll-over after this landed, so it fills in over days rather than retroactively."""
+    import json
+    try:
+        rec = json.loads(_BUDGET_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    hist = list(rec.get("history") or [])
+    if rec.get("window"):                      # the live window belongs at the end
+        hist.append({k: v for k, v in rec.items() if k != "history"})
+    return hist
 
 
 def budget_spent() -> bool:

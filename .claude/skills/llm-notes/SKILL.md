@@ -154,3 +154,24 @@ How the LLM layer behaves, and why each part is the way it is. For the procedure
 
 - `llm.py` — Gemini extraction + Ollama fallback (provider-abstracted); rate-limit;
   optional bounded OCR of image-only posts (one image, Gemini-only, capped per run).
+
+## The budget file keeps past windows now — read them before theorising about quota
+
+`data/llm_budget.json` held only the CURRENT window, so a roll-over destroyed the record
+— including `refused_at`, the one measurement of where Google's real cap sits. That is why
+"is the ladder leaving 3.1's quota unused?" (2026-08-10) had to be answered off a usage
+dashboard, which shows where you have BEEN and never where the cap IS.
+
+- `config.LLM_BUDGET_HISTORY_WINDOWS` (14) past windows are archived on roll-over, WHOLE —
+  a named subset would drop the refusal fields, which is the same mistake `_spend_budget`
+  already carries a docstring about.
+- `llm.budget_history()` returns them oldest-first with the live window appended;
+  `stats.py` prints the last 8 with the model mix and flags a window where Google refused.
+- **It fills in from the first roll-over onward.** Windows already lost cannot be
+  recovered, so the trend is only readable a few days after this landed (2026-08-13).
+
+**Measured while adding it:** Ollama has not been used since **2026-08-06** — six
+`local fallback cap reached (40 posts)` events on 08-04/05/06 and none since. The cause was
+`LLM_DAILY_BUDGET` sitting at 900, ABOVE Google's real limit of 500, so the budget could
+never bind and Google refused first; a refusal is what exiles a run to Ollama. Lowering it
+to 480 the same day is what stopped it.
