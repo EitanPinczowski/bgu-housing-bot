@@ -6,6 +6,46 @@ check they're within a hand-drawn walkable zone, and alert on Telegram.
 
 ## OPEN RIGHT NOW — read this first (2026-08-13)
 
+**OPEN: post-age capture is unstable, and the next measurement arrives on its own.
+Read the 08:00 run's `tooltips:` line before touching anything in the hover path.**
+
+Age capture per full run on 2026-08-13: **90% → 37% → 10% → 68% → 24%.** The 10% was a
+stale-tooltip bug and is fixed (`ba8d4e9`); the swing between the last two is NOT
+explained. Nothing is blocking — a missing age costs the detection-lag metric, not a
+listing.
+
+**Three explanations were proposed today and two were wrong. Do not add a fourth before
+reading the new line.** The 08:00 run prints:
+
+    post age: 26/66 captured (page 11 · hover 15 · none 40)
+    tooltips: 41/97 hovers popped one · 33 parsed to a date
+
+and the second line decides it, because the two remaining causes need opposite fixes:
+
+| reading | cause | fix |
+|---|---|---|
+| `hovers` ≫ `with_tip` | nothing rendered inside `SCRAPER_HOVER_WAIT_SEC` (0.6 s) | wait longer, or poll for the node instead of a fixed sleep |
+| `with_tip` ≫ `parsed` | it rendered and `_age_from_aria` cannot read it | a format/locale gap in the parser — capture a failing string first |
+| both healthy, capture still low | the age is not coming from tooltips at all | look at `page` vs `hover` in the line above |
+
+- **JUDGE THIS ON THE ARCHIVED ROWS, NOT ON THE SUMMARY LINE** — they answer different
+  questions and disagreed all day. `python .claude/tools/age_capture.py` prints the
+  per-run table and is the number to quote; the summary counts every post the run READ,
+  including age-skipped and already-seen ones. The tool also handles the two traps that
+  produced wrong figures by hand: `first_seen` is UTC while runs are named in local time,
+  and a hot pass's rate is noise (n=1–4), so it reads the mode from the run log rather
+  than guessing it from row count. A first version of the summary counter additionally
+  tallied once per SCROLL PASS rather than once per post and read 67/231 against 27/40.
+- **A HOT RUN'S CAPTURE RATE MEANS NOTHING** — n=1 to 4. Only the full runs (08/10/14/16/
+  18/20) carry a usable sample, and even those are n≈40–110.
+- **Do not measure a run you are competing with.** A dashboard publish and a geocode warm
+  ran across the 14:00 scrape and its capture dipped in exactly that window; the test
+  suite run across the 17:00 scrape took 190 s instead of 71 s. `guard.py` enforces this
+  for the LLM harnesses only. Check `python -c "import scraper; print(scraper.run_in_progress())"`.
+
+Everything below this line is closed, and kept because each was closed in a way that
+contradicts how it was framed.
+
 **The geocoding accuracy targets are answered, and one of the three is not reachable
 from free sources. Nothing is blocking.**
 
@@ -112,7 +152,25 @@ and because a claim nobody can find again is a claim nobody can check.
 
 Done 2026-08-13: the map's landmark pile fixed, the "no number, no exact" rule, a
 reproducible replay, and a full `--apply` (535 → **579 listings, 302 → 310 MATCH**, 18
-rescued, 79 duplicates merged, sheet rebuilt). Suite GREEN (695), `ruff` clean.
+rescued, 79 duplicates merged, sheet rebuilt). Then, in the afternoon: the UTC/local clock
+fix, the alert outbox, stored coordinates, the OSRM self-heal at run start, mirror
+dedupe/cooldown, and the hover work in the open section above. Suite GREEN (**725**),
+`ruff` clean, `doctor` all-green (588 listings).
+- **`document.querySelector` READ THE WRONG TOOLTIP, AND SPENDING MORE COULD NOT HELP.**
+  It returns the first `[role="tooltip"]` in DOCUMENT ORDER, not the one this hover
+  popped — FB leaves them in the DOM as they fade, and a profile-name tooltip parses to
+  None, so one stale node answered every later read. Signature: **2.8 hovers per post and
+  10% capture**, maximum spend against near-zero yield. Details in `scraper-volume`.
+- **INSTRUMENT YIELD, NOT SPEND.** `hovers=N/CAP` looked healthy through all three failing
+  runs because it reports what was SPENT. Two wrong diagnoses (the budget, then local
+  contention) came out of that gap and each cost a run to refute. `age_sources()` and
+  `tooltip_stats()` exist so the next question is read, not guessed.
+- **"sent 0 of 1" WAS THE ALERT GATE WORKING.** `alertable` holds every MATCH/NEEDS_DATA
+  and the score gate is applied afterwards, so a suppression and a failed send printed the
+  same line — reported to the user as a lost alert, twice; the listings scored 32 and 56
+  against a gate of 75 and nothing was ever attempted. `telegram-notes` had warned that
+  this line "usually is NOT a failure, check `pending_alerts` first" and it was misread
+  anyway. **When a note has to say that, stop printing the ambiguous line.**
 - **EVERY FAILURE THAT NIGHT WAS THE MACHINE SLEEPING, AND EACH LOOKED LIKE SOMETHING
   ELSE.** A 30-minute replay stall with idle CPU and one parked TCP connection was
   diagnosed as a dead Overpass mirror; it was S0 standby. The 20:02 scrape that died in 6s
