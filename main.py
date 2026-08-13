@@ -543,6 +543,15 @@ def run(dry_run: bool, hot: bool = False) -> None:
               f"(page {_src['page']} · hover {_src['hover']} · none {_src['none']})"
               + ("   ← HOVERING IS YIELDING NOTHING" if _hov > 20 and not _src["hover"]
                  else ""))
+    # WHICH HALF OF THE TOOLTIP FAILS. `hovers > with_tip` = nothing rendered inside
+    # SCRAPER_HOVER_WAIT_SEC (timing); `with_tip > parsed` = it rendered and
+    # `_age_from_aria` could not read it (format/locale). The two need opposite fixes and
+    # look identical from the capture rate alone, which is why 68% -> 24% across two
+    # clean runs on 2026-08-13 could not be explained from what was recorded.
+    _tip = scraper.tooltip_stats()
+    if _tip["hovers"]:
+        print(f"tooltips: {_tip['with_tip']}/{_tip['hovers']} hovers popped one · "
+              f"{_tip['parsed']} parsed to a date")
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")

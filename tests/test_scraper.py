@@ -459,3 +459,17 @@ def test_the_page_is_asked_for_every_tooltip_not_just_the_first(monkeypatch):
     assert "querySelectorAll" in a.script, "the page was asked for one tooltip, not all"
     assert "role=" in a.script and "tooltip" in a.script
 
+
+def test_tooltip_stats_separates_not_rendered_from_not_parsed(monkeypatch):
+    """The capture rate alone cannot tell the two apart, and they need opposite fixes:
+    a tooltip that never rendered inside SCRAPER_HOVER_WAIT_SEC is a timing problem, one
+    that rendered and did not parse is a format problem in `_age_from_aria`. Capture swung
+    68% -> 24% across two clean runs on 2026-08-13 with nothing recorded to say which."""
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._tip_stats.update(hovers=0, with_tip=0, parsed=0)
+    scraper._hover_used = 0
+    scraper._hover_reveal([_TipsAnchor(tips=[])], "1")                    # nothing popped
+    scraper._hover_reveal([_TipsAnchor(tips=["דנה כהן"])], "1")           # popped, no date
+    scraper._hover_reveal([_TipsAnchor(tips=["Tuesday, July 21, 2026 at 12:56 PM"])], "1")
+    assert scraper.tooltip_stats() == {"hovers": 3, "with_tip": 2, "parsed": 1}
+

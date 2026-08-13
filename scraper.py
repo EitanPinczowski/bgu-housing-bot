@@ -873,6 +873,18 @@ def _permalink_and_age(story, group_url: Optional[str] = None, allow_hover: bool
 _age_sources = {"page": 0, "hover": 0, "none": 0}
 
 
+# Tooltip yield, per hover: how many hovers popped ANY [role="tooltip"] node, and how many
+# of those parsed to a date. `hovers > with_tip` means the tooltip is not rendering in time;
+# `with_tip > parsed` means it renders and `_age_from_aria` cannot read it. Opposite fixes.
+_tip_stats = {"hovers": 0, "with_tip": 0, "parsed": 0}
+
+
+def tooltip_stats() -> dict:
+    """Per-run tooltip yield — see `_tip_stats`. Only counts hovers that still needed an
+    age; a post whose age came off the rendered page never reaches the tooltip read."""
+    return dict(_tip_stats)
+
+
 def age_sources() -> dict:
     """Per-run tally of where each post's age came from: the rendered page (`page`), a
     hover tooltip/label (`hover`), or nowhere (`none`).
@@ -937,9 +949,20 @@ def _hover_reveal(anchors, url_gid):
                         tips.append(v)
                 except Exception:
                     pass
+            # WAS THERE A TOOLTIP AT ALL? The two ways a hover yields no age need
+            # opposite fixes and are indistinguishable from the outside: nothing rendered
+            # within SCRAPER_HOVER_WAIT_SEC (a timing problem — wait longer or poll), or
+            # something rendered and did not parse (a locale/format problem in
+            # `_age_from_aria`). Capture swung 68% -> 24% across two clean runs on
+            # 2026-08-13 with the stale-tooltip bug already fixed, and nothing recorded
+            # says which of the two is happening.
+            _tip_stats["hovers"] += 1
+            if tips:
+                _tip_stats["with_tip"] += 1
             for tip in tips:                     # first one that parses to a date wins
                 if tip and (h := _age_from_aria(tip)) is not None:
                     age = h
+                    _tip_stats["parsed"] += 1
                     break
         gid, pid = _post_id(href)
         if pid:
