@@ -78,7 +78,13 @@ def test_no_link_when_no_post_id_anywhere():
 
 class _HoverAnchor:
     """A timestamp anchor whose href only appears AFTER a hover (FB's lazy render);
-    `tooltip` is the date text FB pops on hover (read via evaluate)."""
+    `tooltip` is the date text FB pops on hover (read via evaluate).
+
+    `evaluate` returns a LIST because the page script is a `querySelectorAll(...).map(...)`
+    collecting EVERY tooltip in the document, not just the first. It used to return a bare
+    string, matching a `querySelector` that read only the first node — and a double that
+    lags the code it doubles is part of how the stale-tooltip bug stayed invisible. See
+    `test_a_stale_tooltip_does_not_swallow_the_date`."""
     def __init__(self, href_after_hover, tooltip=""):
         self._href = href_after_hover
         self._tip = tooltip
@@ -91,7 +97,7 @@ class _HoverAnchor:
         return self._href if name == "href" else ""
 
     def evaluate(self, _script):
-        return self._tip
+        return [self._tip] if self._tip else []
 
 
 def test_hover_reveal_reconstructs_link(monkeypatch):
@@ -367,3 +373,82 @@ def test_hovering_stops_as_soon_as_both_are_known(monkeypatch):
     link, age = scraper._hover_reveal([both, extra], "1")
     assert link == "https://www.facebook.com/groups/1/posts/2/" and age is not None
     assert extra.hovered is False, "kept hovering after both were known"
+
+
+# --- the tooltip read must not be answered by a stale node ----------------------------
+
+class _TipsAnchor:
+    """An anchor whose hover leaves the document holding SEVERAL [role="tooltip"] nodes —
+    what FB actually does, because a tooltip lingers in the DOM while it fades. `tips` is
+    the list in document order; `label` is the anchor's own lazily-rendered aria-label."""
+    def __init__(self, href="/groups/1/posts/2/", tips=(), label=""):
+        self._href, self._tips, self._label = href, list(tips), label
+        self.hovered = False
+
+    def hover(self, timeout=None):
+        self.hovered = True
+
+    def get_attribute(self, name):
+        if name == "href":
+            return self._href
+        return self._label if name == "aria-label" else ""
+
+    def evaluate(self, script):
+        self.script = script          # kept so a test can assert WHAT the page was asked
+        return list(self._tips)
+
+
+def test_a_stale_tooltip_does_not_swallow_the_date(monkeypatch):
+    """`document.querySelector('[role="tooltip"]')` returns whichever tooltip comes first
+    in DOCUMENT ORDER — not the one this hover popped. A profile-name tooltip parses to
+    None, so one lingering node answered every read and no amount of extra hovering could
+    help.
+
+    Measured 2026-08-13 on the 16:00 run: **2.8 hovers per post (233 of 800) and 6 ages
+    out of 58 posts (10%)**, against 90% that morning. Spend without yield."""
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    a = _TipsAnchor(tips=["דנה כהן", "Tuesday, July 21, 2026 at 12:56 PM"])
+    link, age = scraper._hover_reveal([a], "1")
+    assert link == "https://www.facebook.com/groups/1/posts/2/"
+    assert age is not None, "the first tooltip was not a date, so the date was never read"
+
+
+def test_the_anchors_own_label_is_read_after_the_hover(monkeypatch):
+    """FB renders `aria-label` lazily, exactly like the href. It was only ever read BEFORE
+    the hover — when FB has not filled it in — so a post whose date lives there and not in
+    a tooltip lost its age."""
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    a = _TipsAnchor(tips=[], label="Tuesday, July 21, 2026 at 12:56 PM")
+    _, age = scraper._hover_reveal([a], "1")
+    assert age is not None, "the date on the anchor's own label was ignored"
+
+
+def test_age_sources_records_what_the_hovering_yielded(monkeypatch):
+    """The tally that would have settled this in one run instead of three: `hovers=N/CAP`
+    reports SPEND, and nothing reported YIELD."""
+    scraper._age_sources.update(page=0, hover=0, none=0)
+    monkeypatch.setattr(scraper.config, "SCRAPER_HOVER_FOR_LINK", False)
+    scraper._permalink_and_age(_Story([_Anchor(href="/groups/1/posts/2/", text="5h")]))
+    scraper._permalink_and_age(_Story([_Anchor(href="/groups/1/posts/3/", text="")]))
+    assert scraper.age_sources() == {"page": 1, "hover": 0, "none": 1}
+
+
+def test_the_page_is_asked_for_every_tooltip_not_just_the_first(monkeypatch):
+    """The one part of this fix a test double CANNOT exercise: the double returns whatever
+    list it was built with, no matter what script it is handed, so reverting
+    `querySelectorAll` to `querySelector` leaves every other test in this file green —
+    verified by reverting it.
+
+    So assert the request itself. This is weaker than running the JS, and it is the
+    strongest check available without a real browser: it fails if someone narrows the
+    query back to a single node, which is the exact regression that cost 90% of the age
+    capture on 2026-08-13."""
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    a = _TipsAnchor(tips=["Tuesday, July 21, 2026 at 12:56 PM"])
+    scraper._hover_reveal([a], "1")
+    assert "querySelectorAll" in a.script, "the page was asked for one tooltip, not all"
+    assert "role=" in a.script and "tooltip" in a.script
+

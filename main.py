@@ -512,6 +512,16 @@ def run(dry_run: bool, hot: bool = False) -> None:
     print(f"hovers: {_hov}/{_hov_cap}"
           + ("   ← BUDGET EXHAUSTED: posts after this point have no age" if _hov >= _hov_cap
              else ""))
+    # What the hovering YIELDED. Spend without yield is the state that cost three runs to
+    # diagnose on 2026-08-13: `hovers=233/800` looked healthy while 90% of posts came back
+    # with no age at all, because a stale tooltip node was answering every read.
+    _src = scraper.age_sources()
+    _seen = sum(_src.values())
+    if _seen:
+        print(f"post age: {_seen - _src['none']}/{_seen} captured "
+              f"(page {_src['page']} · hover {_src['hover']} · none {_src['none']})"
+              + ("   ← HOVERING IS YIELDING NOTHING" if _hov > 20 and not _src["hover"]
+                 else ""))
     for status in ("MATCH", "NEEDS_DATA", "DROP", "NOT_AD", "ERROR"):
         if counts.get(status):
             print(f"  {status}: {counts[status]}")

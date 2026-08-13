@@ -104,6 +104,42 @@ now carry `hovers=N/CAP`, and the summary says so when the cap is hit:
 
 Read that line before changing the number again.
 
+### THE CAUSE WAS A STALE TOOLTIP NODE (2026-08-13, third diagnosis and the right one)
+
+Age capture fell **90% → 37% → 10%** across three full runs in one day. Two causes were
+proposed and each was measured and refuted — the hover budget (233 of 800 spent) and local
+contention (the 16:00 run had none and scored worst). The actual bug:
+
+```js
+document.querySelector('[role="tooltip"]')     // the FIRST tooltip in DOCUMENT ORDER
+```
+
+That is not the tooltip this hover popped. **FB leaves tooltips in the DOM as they fade**,
+and a profile-name tooltip parses to `None` — so one stale non-date node answered every
+subsequent read, for the rest of the post. Hovering harder could not help, which is why
+the 16:00 run shows the paradoxical signature **2.8 hovers per post and 10% capture**:
+maximum spend, near-zero yield.
+
+The fix reads `querySelectorAll` and takes the first tooltip that parses to a date, and
+also re-reads the anchor's own `aria-label`/`title` AFTER the hover — FB renders those
+lazily too, exactly like the href, and they were only ever read before the hover, when FB
+has not filled them in.
+
+**SPEND IS NOT YIELD, AND ONLY SPEND WAS INSTRUMENTED.** `hovers=N/CAP` looked healthy
+throughout. `scraper.age_sources()` now tallies where each age came from — page, hover, or
+nowhere — and the run summary prints `post age: N/M captured (page · hover · none)` with a
+`← HOVERING IS YIELDING NOTHING` marker. Any one of the three runs would have been
+diagnosed immediately by that line.
+
+**A TEST DOUBLE CANNOT CATCH A SELECTOR BUG, AND WILL LOOK LIKE IT DID.** `_TipsAnchor`
+returns whatever list it was built with regardless of the script it is handed, so
+reverting `querySelectorAll` to `querySelector` left the whole file green — verified by
+reverting it. The Python half (try every tooltip, take the first that parses) IS pinned,
+proved by reverting that instead. For the JS half the strongest available check without a
+real browser is asserting the script text itself, which
+`test_the_page_is_asked_for_every_tooltip_not_just_the_first` does. Worth knowing which
+half of a browser fix your tests actually hold.
+
 ### DO NOT MEASURE A SCRAPE YOU ARE COMPETING WITH (2026-08-13)
 
 **The run used to judge the raise was contaminated by my own commands, and the retraction

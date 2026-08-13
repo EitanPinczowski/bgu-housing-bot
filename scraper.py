@@ -845,6 +845,7 @@ def _permalink_and_age(story, group_url: Optional[str] = None, allow_hover: bool
     # hrefs — first). Bounded per post and per run.
     # Hover when we're missing a link OR an age (age is unreadable under he-IL without
     # the hover tooltip), so nearly every fresh post gets a real link + accurate age.
+    from_page = age is not None          # captured before the hover can supply one
     if (allow_hover and (link is None or age is None) and group_url
             and getattr(config, "SCRAPER_HOVER_FOR_LINK", False)
             and _hover_used < getattr(config, "SCRAPER_MAX_HOVERS_PER_RUN", 0)):
@@ -854,7 +855,21 @@ def _permalink_and_age(story, group_url: Optional[str] = None, allow_hover: bool
             link = hlink
         if age is None:
             age = hage
+    _age_sources["page" if from_page else "hover" if age is not None else "none"] += 1
     return link, age
+
+
+# WHICH PATH THE AGE CAME FROM. Age capture fell 90% -> 37% -> 10% across three runs on
+# 2026-08-13 and two plausible causes (the hover budget, local contention) were each
+# measured and refuted. Both would have been settled in one run by this counter, because
+# `hovers=N/CAP` says how much hovering happened and nothing said what it YIELDED.
+_age_sources = {"page": 0, "hover": 0, "none": 0}
+
+
+def age_sources() -> dict:
+    """Per-run tally of where each post's age came from: the rendered page (`page`), a
+    hover tooltip/label (`hover`), or nowhere (`none`)."""
+    return dict(_age_sources)
 
 
 _hover_used = 0   # hovers spent this run (bounded by SCRAPER_MAX_HOVERS_PER_RUN)
@@ -886,14 +901,35 @@ def _hover_reveal(anchors, url_gid):
             href = a.get_attribute("href") or ""
         except Exception:
             continue
-        if age is None:                          # read the date tooltip this hover popped
+        if age is None:
+            # EVERY tooltip, not `document.querySelector`'s first one. That call returns
+            # whichever [role="tooltip"] node comes first in DOCUMENT ORDER, which is not
+            # necessarily the one this hover popped: FB leaves tooltips in the DOM as they
+            # fade, and a profile-name tooltip parses to None. So one stale non-date node
+            # swallowed every later read, and hovering more anchors could not help —
+            # measured 2026-08-13 on the 16:00 run, **2.8 hovers per post (233/800) and 6
+            # ages out of 58 posts (10%)**, against 90% that morning.
             try:
-                tip = a.evaluate("() => { const t = document.querySelector('[role=\"tooltip\"]');"
-                                 " return t ? t.textContent : ''; }") or ""
+                tips = a.evaluate(
+                    "() => Array.from(document.querySelectorAll('[role=\"tooltip\"]'))"
+                    ".map(t => t.textContent || '')") or []
             except Exception:
-                tip = ""
-            if tip:
-                age = _age_from_aria(tip)         # a profile-name tooltip won't parse -> None
+                tips = []
+            if isinstance(tips, str):            # a lone string would iterate CHARACTERS
+                tips = [tips]
+            # The anchor's own label is rendered lazily too, exactly like the href above,
+            # so it is worth re-reading now that the hover has happened — it was only ever
+            # read BEFORE the hover, when FB has not filled it in yet.
+            for attr in ("aria-label", "title"):
+                try:
+                    if v := a.get_attribute(attr):
+                        tips.append(v)
+                except Exception:
+                    pass
+            for tip in tips:                     # first one that parses to a date wins
+                if tip and (h := _age_from_aria(tip)) is not None:
+                    age = h
+                    break
         gid, pid = _post_id(href)
         if pid:
             gid = gid or url_gid
