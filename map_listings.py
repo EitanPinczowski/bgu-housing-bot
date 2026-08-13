@@ -35,10 +35,12 @@ def _load_listings():
     dot to its table row."""
     with sqlite3.connect(config.DB_PATH) as c:
         rows = c.execute("SELECT address, location_tier, score, price_per_room, "
-                         "walk_minutes, dedup_key FROM listings").fetchall()
+                         "walk_minutes, dedup_key, lat, lon FROM listings").fetchall()
     placed, unplaced = [], 0
-    for addr, tier, score, price, walk, key in rows:
-        coords = geocode.geocode_cached(addr)
+    for addr, tier, score, price, walk, key, lat, lon in rows:
+        # the point stored with the verdict, so this map agrees with the dashboard and the
+        # pipeline; `geocode_cached` only covers rows older than the column
+        coords = (lat, lon) if lat is not None and lon is not None else geocode.geocode_cached(addr)
         if coords:
             placed.append((coords[0], coords[1], tier or "UNKNOWN", score, addr, price,
                            walk, key))

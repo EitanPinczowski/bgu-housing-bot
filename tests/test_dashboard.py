@@ -780,3 +780,53 @@ def test_the_pin_flow_is_confirm_only_and_live_only(temp_db, monkeypatch, tmp_pa
     assert "if (!SNAP && window.__LIVE__){" in live
     snap = dashboard.render(live=False, snapshot=True)
     assert "startPinFlow" not in snap or "__SNAPSHOT__" in snap
+
+
+def test_the_map_draws_the_stored_point_not_a_recomputed_one(temp_db, monkeypatch):
+    """THE DOT AND ITS BADGE MUST COME FROM THE SAME PLACE.
+
+    `dashboard` graded confidence from the STORED `geocode_source` while recomputing the
+    POSITION through `geocode_cached`. Two sources of truth for one pin, and they diverged:
+    on 2026-08-12, 15 listings were drawn up to 626 m from where the pipeline had placed
+    them, each under a badge reading `exact`.
+
+    Here `geocode_cached` is made to answer something else entirely. The map must ignore it
+    and use what the pipeline stored — if this fails, the two have parted again."""
+    import dashboard
+    import geocode
+    import storage
+    from models import ListingExtract, PipelineResult, Status
+    storage.save_listing(PipelineResult(
+        status=Status.MATCH, dedup_key="k-pin", location_tier="GREEN", score=90,
+        lat=31.2613, lon=34.7975, geo_source="osm_addr",
+        extract=ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                               available_rooms_count=2,
+                               street_address_or_neighborhood="רגר 93, הבלוק")))
+    monkeypatch.setattr(geocode, "geocode_cached", lambda a: (31.2590, 34.7967))  # the pin
+    row = next(r for r in dashboard._rows() if r["dedup_key"] == "k-pin")
+    assert (round(row["lat"], 4), round(row["lon"], 4)) == (31.2613, 34.7975), \
+        "the map recomputed the position instead of using the stored one"
+    assert row["geo_confidence"] == geocode.confidence("osm_addr")
+
+
+def test_a_row_older_than_the_lat_lon_column_still_gets_a_dot(temp_db, monkeypatch):
+    """Backfill covered the live table, but the fallback has to stay: a row written before
+    lat/lon existed has none, and dropping it off the map would be worse than the bug being
+    fixed."""
+    import sqlite3
+    import config
+    import dashboard
+    import geocode
+    import storage
+    from models import ListingExtract, PipelineResult, Status
+    storage.save_listing(PipelineResult(
+        status=Status.MATCH, dedup_key="k-old", location_tier="GREEN", score=80,
+        lat=31.26, lon=34.79, geo_source="osm_addr",
+        extract=ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                               available_rooms_count=2,
+                               street_address_or_neighborhood="רגר 93")))
+    with sqlite3.connect(config.DB_PATH) as c:      # simulate a pre-column row
+        c.execute("UPDATE listings SET lat=NULL, lon=NULL WHERE dedup_key='k-old'")
+    monkeypatch.setattr(geocode, "geocode_cached", lambda a: (31.2555, 34.8031))
+    row = next(r for r in dashboard._rows() if r["dedup_key"] == "k-old")
+    assert (round(row["lat"], 4), round(row["lon"], 4)) == (31.2555, 34.8031)

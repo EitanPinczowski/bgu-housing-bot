@@ -1,5 +1,7 @@
 """storage — the vote ledger (one vote per user, final) and the file_id cache
 that keeps top-N albums alive after Facebook URLs expire."""
+import sqlite3
+
 import config
 import storage
 from models import ListingExtract, PipelineResult, Status
@@ -803,3 +805,51 @@ def test_a_multi_unit_address_is_never_merged(temp_db, monkeypatch):
     storage.invalidate_address_posts()
     assert storage.is_multi_unit("אלכסנדר ינאי 17") is True
     assert storage.is_multi_unit("רגר 93") is False
+
+
+# --- the position is part of the verdict, so it is stored with it ----------------------
+#
+# `listings` had no lat/lon, so every map dot was recomputed through `geocode_cached` while
+# its confidence badge came from the stored `geocode_source` (`dashboard.py:85` vs `:94`).
+# Two sources of truth for one pin — which is exactly how 15 listings came to be drawn up
+# to 626 m from where the pipeline placed them, under a badge reading `exact` (2026-08-12).
+
+def _placed(key, lat, lon, src="osm_addr", score=80):
+    return PipelineResult(
+        status=Status.MATCH, dedup_key=key, location_tier="GREEN", score=score,
+        lat=lat, lon=lon, geo_source=src,
+        extract=ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                               available_rooms_count=2,
+                               street_address_or_neighborhood="רגר 93"))
+
+
+def test_a_listing_stores_the_point_it_was_placed_at(temp_db):
+    storage.save_listing(_placed("k1", 31.2613, 34.7975))
+    with sqlite3.connect(config.DB_PATH) as c:
+        lat, lon, src = c.execute(
+            "SELECT lat, lon, geocode_source FROM listings WHERE dedup_key='k1'").fetchone()
+    assert (round(lat, 4), round(lon, 4)) == (31.2613, 34.7975)
+    assert src == "osm_addr"
+
+
+def test_the_point_is_recomputed_not_enriched(temp_db):
+    """`save_listing` ENRICHES nullable columns — a thinner later read must never blank a
+    field. The position is NOT one of those: it is recomputed from the address every time,
+    like status/tier/score/walk, and it must travel with the `geocode_source` written
+    beside it. A stale coordinate next to a fresh source is the very disagreement the
+    column exists to remove."""
+    storage.save_listing(_placed("k2", 31.2613, 34.7975, "osm_addr"))
+    storage.save_listing(_placed("k2", 31.2590, 34.7967, "static"))
+    with sqlite3.connect(config.DB_PATH) as c:
+        lat, src = c.execute(
+            "SELECT lat, geocode_source FROM listings WHERE dedup_key='k2'").fetchone()
+    assert round(lat, 4) == 31.2590 and src == "static", (lat, src)
+
+
+def test_a_listing_with_no_position_stores_none(temp_db):
+    """An unplaced listing must not acquire a coordinate — 9 of the live rows have no
+    location at all, and inventing one for them is the failure the whole geocoding
+    section exists to avoid."""
+    storage.save_listing(_placed("k3", None, None, None))
+    with sqlite3.connect(config.DB_PATH) as c:
+        assert c.execute("SELECT lat FROM listings WHERE dedup_key='k3'").fetchone()[0] is None

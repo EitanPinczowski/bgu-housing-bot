@@ -141,6 +141,14 @@ def _conn() -> sqlite3.Connection:
         # config (config.AMENITY_TARGETS) and will grow, and a schema migration per
         # bus stop would be absurd.
         c.execute("ALTER TABLE listings ADD COLUMN amenities TEXT")
+    if "lat" not in cols:
+        # THE POSITION IS PART OF THE VERDICT, so it is stored with it. Without these the
+        # map recomputed every dot through `geocode_cached` while its confidence badge came
+        # from the stored `geocode_source` — two sources of truth for one pin, which is
+        # exactly how 15 listings came to be drawn up to 626 m from where the pipeline put
+        # them, under a badge reading `exact` (2026-08-12).
+        c.execute("ALTER TABLE listings ADD COLUMN lat REAL")
+        c.execute("ALTER TABLE listings ADD COLUMN lon REAL")
     if "alerted_at" not in cols:
         # NULL = never successfully alerted. An alert that failed to send used to be lost
         # outright — see `pending_alerts`. Existing rows are backfilled below rather than
@@ -1461,14 +1469,19 @@ def save_listing(res: PipelineResult) -> None:
                (dedup_key,status,location_tier,price_per_room,available_rooms,total_roommates,
                 address,walk_minutes,lease_start,contact,summary,source_url,"group",
                 price_from_comment,score,images,floor,furnished,balcony,elevator,geocode_source,
-                amenities)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                amenities,lat,lon)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(dedup_key) DO UPDATE SET
                  status=excluded.status,
                  location_tier=excluded.location_tier,
                  score=excluded.score,
                  walk_minutes=excluded.walk_minutes,
                  geocode_source=excluded.geocode_source,
+                 -- the point travels with the source that produced it: both are recomputed
+                 -- every time, and a stale coordinate beside a fresh source is the very
+                 -- disagreement this column exists to remove
+                 lat=excluded.lat,
+                 lon=excluded.lon,
                  price_from_comment=excluded.price_from_comment,
                  -- everything below only ever GAINS detail (see the docstring)
                  price_per_room=COALESCE(excluded.price_per_room, price_per_room),
@@ -1495,7 +1508,7 @@ def save_listing(res: PipelineResult) -> None:
              e.contact_phone_or_link, e.summary_hebrew, res.source_url, res.group,
              1 if e.price_from_comment else 0, res.score, imgs,
              e.floor, _tri(e.furnished), e.balcony_or_garden, _tri(e.has_elevator),
-             res.geo_source, am),
+             res.geo_source, am, res.lat, res.lon),
         )
 
 

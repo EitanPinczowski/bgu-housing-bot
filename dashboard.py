@@ -38,7 +38,7 @@ _SQL = """
            l.available_rooms, l.total_roommates, l.address, l.walk_minutes,
            l.lease_start, l.contact, l.source_url, l."group", l.floor, l.furnished,
            l.balcony, l.elevator, l.images, l.amenities, l.first_seen, l.summary,
-           l.price_from_comment, l.geocode_source
+           l.price_from_comment, l.geocode_source, l.lat, l.lon
     FROM listings l
 """
 
@@ -82,8 +82,16 @@ def _rows() -> list:
             r["lat"], r["lon"] = pinned
             r["geocode_source"] = "manual"
         else:
-            coords = geocode.geocode_cached(r["address"])
-            r["lat"], r["lon"] = (coords if coords else (None, None))
+            # THE STORED POINT WINS. It is written by `save_listing` from the same verdict
+            # that produced `geocode_source`, so the dot and the confidence badge beside it
+            # can no longer disagree — they used to, because this recomputed the position
+            # through `geocode_cached` while :94 graded the STORED source. That split drew
+            # 15 listings up to 626 m from where the pipeline placed them, labelled
+            # `exact` (2026-08-12). `geocode_cached` remains only for rows written before
+            # the column existed.
+            if r.get("lat") is None or r.get("lon") is None:
+                coords = geocode.geocode_cached(r["address"])
+                r["lat"], r["lon"] = (coords if coords else (None, None))
         r["manual_location"] = bool(pinned)
         # where THIS listing's bus stops and gym actually are, so the map can point at
         # them and the card can offer a walking route to each
