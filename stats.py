@@ -142,8 +142,18 @@ def _alert_gate() -> None:
         print(f"  {lo:3}-{lo+step-1:3} {'#' * min(n, 60)} {n}{mark}")
     kept = [s for k, s in voted if k == "saved"]
     binned = [s for k, s in voted if k == "dismissed"]
-    print(f"  votes: {len(kept)} saved, {len(binned)} dismissed"
-          + ("" if len(voted) >= 20 else "   ← too few to move the gate on"))
+    # SAY HOW FAR OFF THE EVIDENCE IS, not just that it is short. This read "too few to
+    # move the gate on", which is true and unactionable: at 5 votes against 310 MATCHes the
+    # threshold its own advice requires is not merely unmet, it is not being approached.
+    # A number you cannot act on and cannot see the distance to is one you stop reading.
+    need = 20
+    print(f"  votes: {len(kept)} saved, {len(binned)} dismissed  "
+          f"({len(voted)}/{need} needed to move the gate)")
+    if len(voted) < need:
+        rate = len(voted) / max(len(scores), 1)
+        print(f"    ← {need - len(voted)} more needed. At {len(voted)} vote(s) per "
+              f"{len(scores)} MATCHes ({rate:.1%}), that evidence does not arrive by "
+              f"waiting — MIN_ALERT_SCORE and fit.py stay unfalsifiable until it does.")
     if kept and len(voted) >= 20 and min(kept) < gate:
         print(f"    ⚠ a saved listing scored {min(kept)}, below the gate — it would not "
               f"have been alerted")

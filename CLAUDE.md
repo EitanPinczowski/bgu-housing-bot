@@ -36,6 +36,14 @@ decline only hands the number to an extrapolation that mixes parities too.
   dense street brackets it between ADJACENT seeds and the answer inherits THEIR error.
   That is why seeding moved p50 down and p90 **up**. Only a rooftop-accurate source
   (`_google_geocode`, already written, `config.USE_GOOGLE_GEOCODE=False`) clears 50 m.
+  - **AND IT WOULD BUY 35 ADDRESSES, NOT 190** (costed 2026-08-13, and the framing that
+    prompted it was wrong). Of the 190 listings placed street-level or worse, **149 (79%)
+    carry NO HOUSE NUMBER**, so no geocoder on earth can put them on a building — they are
+    the documented floor, fixable only by a 📍 pin. Just **41 listings / 35 distinct
+    addresses** have a number a rooftop source could sharpen. Ongoing cost is small too:
+    Google is asked only where the local tiers fail, and those place ~90% already.
+    **Judge this by the 35, not by the 190** — and note that the same 149 are why "a third
+    of listings sit on a line" reads worse than it is.
 - **JUDGE AN ANCHOR SET BY THE ZONE VERDICT, NOT BY PERCENTILES** (`.claude/tools/geo_tiers.py`).
   Seeding trades p50 against p90 and the percentiles cannot say whether that is good. The
   tier can: **31 → 29** wrong-or-unplaced of 250. The 2 regressions are both
