@@ -104,31 +104,52 @@ now carry `hovers=N/CAP`, and the summary says so when the cap is hit:
 
 Read that line before changing the number again.
 
-### THE RAISE BOUGHT NOTHING, AND THE FIRST RUN AFTER IT SAID SO (2026-08-13)
+### DO NOT MEASURE A SCRAPE YOU ARE COMPETING WITH (2026-08-13)
 
-The 14:00 full run under the new 800 cap used **305** of it and still captured an age on
-only **36 of 101 posts (35%)**. A budget that ends a run with 62% unspent was never the
-binding constraint — so the note above is right about the symptom and was wrong about the
-CAUSE.
+**The run used to judge the raise was contaminated by my own commands, and the retraction
+below is more useful than anything the run appeared to show.**
 
-**Measure a raise against the run that follows it, not against the reasoning that
-justified it.** The comparison that settles it is subtle: the 10:00 run under the old 300
-cap looks better at first (39 of 113 = 35%) and is in fact IDENTICAL once its **63
-impossible ages** — from the UTC-vs-local clock bug fixed the same morning — are excluded.
-Bad data was padding the old number, so the two runs read as a flat line, which is the
-shape of a fix that did not fix anything.
+The 14:00 full run spent **305 of 800** and captured an age on only **37 of 101 posts
+(37%)**, which read as "the cap was never the constraint, so the raise bought nothing".
+That conclusion was wrong twice over.
 
-The real cause was `_hover_reveal`'s exit condition: it broke on the **link** alone, on a
-comment asserting the timestamp anchor yields link and tooltip together. It does not —
-`_age_from_aria` returns None for a profile-name tooltip or one that has not rendered — so
-a post whose first anchor revealed a permalink was abandoned with `age` still None, no
-matter how much budget was left. Now `if link is not None and age is not None`, bounded as
-before by `SCRAPER_HOVER_MAX_PER_POST` (3); the worst case rises from the measured ~2.2
-hovers per post to ~3, which 800 has room for. Both directions are pinned in
-`tests/test_scraper.py` (`test_hovering_continues_until_the_age_is_found_not_just_the_link`
-and `test_hovering_stops_as_soon_as_both_are_known`); the first was confirmed to fail with
-the fix reverted.
+**Capture is normally 68-93%, so 37% is an incident, not a baseline.** Per run, by local
+hour: 08-11 19:00 → 54%, 08-12 11:00 → 93%, 08-12 14:00 → 68%, 08-12 18:00 → 93%,
+08-13 10:00 → **90%**. The 35% that looked like a flat line came from comparing the 14:00
+run against a 10:00 figure I had wrongly deflated — I confused *has* a `posted_at` with
+*has a usable one*, subtracting the 63 rows the UTC/local clock bug had made impossible.
+Those 63 were present-but-wrong, not missing. **Presence and correctness are different
+questions and one measurement cannot answer both.**
 
-**A CAP AND A LOOP BOUND LOOK THE SAME FROM THE OUTSIDE.** Both produce "posts have no
-age", and both get worse late in a run. Only the `hovers=N/CAP` line separates them —
-which is why it is worth printing even now that the number is comfortable.
+**The shape tells you which fault it is. Group capture is bimodal — ~100% or ~0% — so
+order the groups by visit time and look at WHERE the zeros sit:**
+
+- **Zeros at the END, never recovering** = the budget ran out. 08-12 collapses from 14:48
+  onward, 08-11's last group scores 5%. Both ran under the old 300 cap, so the note above
+  was right and the raise did fix this — the 14:00 run's final groups scored 54-100% where
+  300 would have left them dead.
+- **Zeros in the MIDDLE, recovering afterwards** = contention, not budget. 14:00's dead
+  block runs 14:13:47 → 14:31:44 and heals at 14:34:40, with 62% of the budget unspent.
+  The window brackets my own work exactly: `geocode_cache.json` written 14:14:54, the
+  dashboard published 14:30:07. The plausible mechanism is `SCRAPER_HOVER_WAIT_SEC` — a
+  **fixed 0.6 s** wait for the tooltip to render, which heavy local CPU/IO can outrun. A
+  post whose tooltip has not appeared yet yields no age however many hovers remain.
+
+CLAUDE.md already forbids running the A/B harnesses during a scrape, for the LLM's
+per-project RPM limit. **This is the same rule for a different shared resource — wall-clock
+responsiveness — and it applies to anything heavy, including a dashboard publish or a
+geocode warm.** `guard.py` enforces the LLM case; nothing enforces this one, so check
+`python -c "import scraper; print(scraper.run_in_progress())"` before a long local job, and
+discard any age-capture number measured across one.
+
+The exit-condition fix that came out of this stands on its own logic rather than on that
+measurement: `_hover_reveal` broke on the **link** alone, on a comment asserting the
+timestamp anchor yields link and tooltip together. It does not — `_age_from_aria` returns
+None for a profile-name tooltip or one that has not rendered — so a post whose first anchor
+revealed a permalink was abandoned with `age` still None. Now `if link is not None and age
+is not None`, still bounded by `SCRAPER_HOVER_MAX_PER_POST` (3), worst case ~3 hovers per
+post against the ~2.2 measured. It should help most where the tooltip is slow, which is
+exactly the contention case. Pinned both ways in `tests/test_scraper.py`
+(`test_hovering_continues_until_the_age_is_found_not_just_the_link`,
+`test_hovering_stops_as_soon_as_both_are_known`); the first fails with the fix reverted.
+**Its value is unmeasured** — judge it on a run nothing else is competing with.
