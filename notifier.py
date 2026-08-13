@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 import requests
@@ -11,6 +12,7 @@ import requests
 import amenities
 import config
 import fit
+import storage
 from models import PipelineResult, Status
 
 
@@ -409,11 +411,16 @@ def send_media_group(photo_urls: list, caption: str, target: str = "all") -> boo
     return _post_to_all("sendMediaGroup", {"media": media}, 30, target=target)
 
 
-def _send_alert(res: PipelineResult, target: str = "group") -> None:
+def _send_alert(res: PipelineResult, target: str = "group") -> bool:
     """Send one listing alert: an album if there are several photos, a single
     photo if there's one, else text — each falling back to the next if it fails,
     so the alert always gets through. Listings default to the GROUP; pass
-    target='primary' to preview in your own DM without touching the group."""
+    target='primary' to preview in your own DM without touching the group.
+
+    RETURNS WHETHER IT ACTUALLY REACHED ANYONE. It used to return None, so a send that
+    failed on the network was indistinguishable from one that worked — and the caller had
+    already marked the flat seen, so it never re-alerted. `storage.pending_alerts` is what
+    picks those up now, and it needs this answer to know what is owed."""
     text = format_alert(res)
     kb = _alert_keyboard(res)
     imgs = res.images or []
@@ -424,13 +431,13 @@ def _send_alert(res: PipelineResult, target: str = "group") -> None:
             # albums can't carry buttons — send them as a small follow-up message
             if kb:
                 send("👆 פעולות לדירה שלמעלה:", reply_markup=kb, target=target)
-            return
+            return True
     if len(imgs) >= 1:
         resp = send_photo(imgs[0], text, reply_markup=kb, target=target)
         if resp:
             _remember_file_ids(res, _file_ids_from_response(resp))
-            return
-    send(text, reply_markup=kb, target=target)
+            return True
+    return bool(send(text, reply_markup=kb, target=target))
 
 
 def is_alertworthy(res: PipelineResult) -> bool:
@@ -459,21 +466,30 @@ def send_batch(results, target: str = "group", top_k=None) -> int:
     if len(worthy) > k:
         head += f" (מוצגות {k})"
     send(_esc(head), target=target)
+    sent = 0
     for r in worthy[:k]:
-        _send_alert(r, target=target)
-    return k
+        # Per listing, not per batch: one photo upload can fail while the rest land, and
+        # the uncapped remainder below was never alerted at all. `mark_alerted` records
+        # only what actually went out, so `storage.pending_alerts` retries the rest.
+        if _send_alert(r, target=target):
+            sent += 1
+            storage.mark_alerted(r.dedup_key)
+    return sent
 
 
-def notify(res: PipelineResult) -> None:
+def notify(res: PipelineResult) -> Optional[bool]:
     """Ping only listings worth looking at: MATCH or NEEDS_DATA whose fit score
     reaches config.MIN_ALERT_SCORE. Everything else is still saved by the
-    pipeline (SQLite/Sheets) — it just doesn't buzz your phone."""
+    pipeline (SQLite/Sheets) — it just doesn't buzz your phone.
+
+    Returns None when no alert was owed, True when one was sent, False when one was owed
+    and FAILED — the caller records the difference so a lost alert can be retried."""
     if res.status == Status.MATCH and not config.NOTIFY_ON_MATCH:
-        return
+        return None
     if res.status == Status.NEEDS_DATA and not config.NOTIFY_ON_NEEDS_DATA:
-        return
+        return None
     if res.status not in (Status.MATCH, Status.NEEDS_DATA):
-        return
+        return None
     if res.score is None or res.score < config.MIN_ALERT_SCORE:
-        return  # below the quality gate — saved, but not pinged
-    _send_alert(res)
+        return None  # below the quality gate — saved, but not pinged
+    return _send_alert(res)

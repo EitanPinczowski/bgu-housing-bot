@@ -54,6 +54,47 @@ def _log_search(event: str, detail: str = "") -> None:
         print(f"[main] could not write search log: {exc}")
 
 
+def _retry_pending_alerts() -> int:
+    """Re-send alerts that were owed and never delivered. Returns how many went out.
+
+    AN ALERT THAT FAILED TO SEND WAS LOST OUTRIGHT. `notifier` retried only a 400 (bad
+    MarkdownV2, resent as plain text); a network failure printed
+    `[notifier] sendMessage … failed (status None)` and dropped it — and `mark_seen_all`
+    had already run, so the flat could never re-alert. Observed 2026-08-12 20:02, in the
+    run where DNS was down: the listing reached SQLite and the Sheet, and the notification
+    never happened.
+
+    Runs at the START of a scrape, after the network and OSRM checks, so a listing found by
+    a previous run gets its alert even if THIS run finds nothing at all.
+
+    Bounded by `config.ALERT_RETRY_MAX_AGE_HOURS`; `storage.pending_alerts` applies it."""
+    try:
+        owed = storage.pending_alerts(config.ALERT_RETRY_MAX_AGE_HOURS)
+    except Exception as exc:                   # noqa: BLE001 - never break a run over this
+        print(f"[main] could not check for owed alerts: {exc}")
+        return 0
+    if not owed:
+        return 0
+    print(f"[main] {len(owed)} alert(s) were owed and never sent — retrying")
+    # reuse top_listings' row->PipelineResult converter rather than writing a second one
+    # that could disagree with it about what an alert looks like
+    import top_listings
+    sent = 0
+    for row in owed:
+        try:
+            # `_to_result` takes a tuple zipped against its own _COLS; pending_alerts
+            # returns dicts, so line them up explicitly rather than duplicating the SELECT
+            res = top_listings._to_result(tuple(row.get(c) for c in top_listings._COLS))
+        except Exception as exc:              # noqa: BLE001 - one bad row must not stop the rest
+            print(f"[main] could not rebuild {row.get('dedup_key')}: {exc}")
+            continue
+        if notifier.notify(res) is True:
+            storage.mark_alerted(row["dedup_key"])
+            sent += 1
+    print(f"[main] re-sent {sent}/{len(owed)} owed alert(s)")
+    return sent
+
+
 def _wait_for_network(timeout_s: int = 90, probe_s: int = 5) -> bool:
     """Is DNS working? Wait up to `timeout_s` for it, because a wake is not instant.
 
@@ -287,6 +328,7 @@ def run(dry_run: bool, hot: bool = False) -> None:
             print(f"[main] osrm heal: {what} — {'ok' if ok else 'FAILED'} ({detail})")
     except Exception as exc:                   # noqa: BLE001 - never break a run over this
         print(f"[main] osrm heal skipped: {exc}")
+    _retry_pending_alerts()
     _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
     print(f"=== BGU housing scraper — {mode} ===")
     print(f"groups this run ({len(selected)}/{len(config.FB_GROUPS)}): {selected}\n")

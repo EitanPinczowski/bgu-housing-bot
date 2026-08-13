@@ -817,5 +817,10 @@ def _classify(e, raw_text: str, source_url, group, images: list,
         storage.record_fingerprint(res.dedup_key, _tokens(raw_text))   # for fuzzy dedup of reposts
         sheets.save_listing(res)   # optional Google Sheets sink (no-op if unset)
         if alert:
-            notifier.notify(res)   # batch mode (alert=False) defers this to main.py
+            # RECORD WHETHER IT LANDED. `notify` returns None (nothing owed), True (sent)
+            # or False (owed and FAILED). A failure used to be invisible, and by this point
+            # `mark_seen_all` has run — so without this the flat can never re-alert.
+            # `storage.pending_alerts` retries the False ones on a later run.
+            if notifier.notify(res) is True:
+                storage.mark_alerted(res.dedup_key)
     return res

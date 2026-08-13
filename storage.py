@@ -141,6 +141,12 @@ def _conn() -> sqlite3.Connection:
         # config (config.AMENITY_TARGETS) and will grow, and a schema migration per
         # bus stop would be absurd.
         c.execute("ALTER TABLE listings ADD COLUMN amenities TEXT")
+    if "alerted_at" not in cols:
+        # NULL = never successfully alerted. An alert that failed to send used to be lost
+        # outright — see `pending_alerts`. Existing rows are backfilled below rather than
+        # left NULL, or every listing already in the table would look owed at once.
+        c.execute("ALTER TABLE listings ADD COLUMN alerted_at TEXT")
+        c.execute("UPDATE listings SET alerted_at = first_seen")
     pcols = {r[1] for r in c.execute("PRAGMA table_info(posts)").fetchall()}
     if pcols and "posted_at" not in pcols:
         c.execute("ALTER TABLE posts ADD COLUMN posted_at TEXT")
@@ -546,6 +552,50 @@ def is_seen_any(keys) -> bool:
 def mark_seen(dedup_key: str) -> None:
     with _conn() as c:
         c.execute("INSERT OR IGNORE INTO seen(dedup_key) VALUES (?)", (dedup_key,))
+
+
+def mark_alerted(dedup_key: str) -> None:
+    """Record that this listing's alert actually reached someone."""
+    if not dedup_key:
+        return
+    with _conn() as c:
+        c.execute("UPDATE listings SET alerted_at=? WHERE dedup_key=?",
+                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), dedup_key))
+
+
+def pending_alerts(max_age_hours: int = 24) -> list:
+    """Alert-worthy listings that were never successfully sent, newest first.
+
+    AN ALERT THAT FAILED TO SEND USED TO BE LOST OUTRIGHT. `notifier` retried only a 400
+    (bad MarkdownV2, resent as plain text); a network failure printed
+    `[notifier] sendMessage … failed (status None)` and dropped it. By then `mark_seen_all`
+    had already run, so the flat could never re-alert. It happened on 2026-08-12 20:02, in
+    the run where DNS was down: the listing reached SQLite and the Sheet, and the
+    notification — the entire point of the bot — was gone.
+
+    NO NEW 'OWED' FLAG IS NEEDED. The alert gate is `status in (MATCH, NEEDS_DATA)` and
+    `score >= MIN_ALERT_SCORE`, and both are already stored, so 'owed' is recomputable:
+    alert-worthy AND `alerted_at IS NULL`. One nullable column, no second source of truth
+    to drift.
+
+    BOUNDED BY AGE ON PURPOSE: a flat found two days ago has probably gone, and an alert
+    that arrives that late is worse than none — it trains you to ignore the channel. The
+    window is the caller's (`config.ALERT_RETRY_MAX_AGE_HOURS`)."""
+    statuses = []
+    if config.NOTIFY_ON_MATCH:
+        statuses.append("MATCH")
+    if config.NOTIFY_ON_NEEDS_DATA:
+        statuses.append("NEEDS_DATA")
+    if not statuses:
+        return []
+    cutoff = (datetime.now() - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    marks = ",".join("?" * len(statuses))
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        return [dict(r) for r in c.execute(
+            f"SELECT * FROM listings WHERE alerted_at IS NULL AND status IN ({marks}) "
+            "AND score >= ? AND first_seen >= ? ORDER BY score DESC, first_seen DESC",
+            (*statuses, config.MIN_ALERT_SCORE, cutoff))]
 
 
 def mark_seen_all(keys) -> None:

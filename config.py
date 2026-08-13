@@ -539,6 +539,10 @@ NOTIFY_ON_NEEDS_DATA = True        # master switch for near-miss pings
 # ~68% of genuine matches never reached the phone. 75 sits just under the median and lets
 # a clear majority through. Re-check against the score distribution if scoring changes.
 MIN_ALERT_SCORE = 75
+# How far back a FAILED alert is still worth retrying. An alert that failed to send used
+# to be lost outright (`storage.pending_alerts`), but a stale one is worse than none — it
+# trains you to ignore the channel — so the retry is bounded rather than unbounded.
+ALERT_RETRY_MAX_AGE_HOURS = 24
 # A listing older than this is almost certainly gone — stop surfacing it in /top and the
 # scheduled top-N so you don't chase dead flats. It stays in the DB/Sheet and in /search.
 LISTING_STALE_DAYS = 21

@@ -101,8 +101,11 @@ def test_no_amenities_prints_no_line():
 
 def test_send_batch_ranks_and_caps(monkeypatch):
     sent = []
+    # the stub must report SUCCESS: since 2026-08-13 `send_batch` returns how many alerts
+    # actually went out, not how many it attempted. It used to return `k` even when every
+    # send failed, which is precisely the blindness that lost the 20:02 alert.
     monkeypatch.setattr(notifier, "_send_alert",
-                        lambda res, target="group": sent.append(res.score))
+                        lambda res, target="group": sent.append(res.score) or True)
     headers = []
     monkeypatch.setattr(notifier, "send",
                         lambda text, reply_markup=None, target="all": headers.append(text) or True)
@@ -201,3 +204,71 @@ def test_send_document_returns_false_for_a_missing_file(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "T")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100123")
     assert notifier.send_document(tmp_path / "never-built.html") is False
+
+
+# --- an alert that fails to send must not be lost --------------------------------------
+#
+# 2026-08-12 20:02, the run where DNS was down: `[notifier] sendMessage … failed (status
+# None)`, and that was the end of it. `notifier` retried only a 400 (bad MarkdownV2,
+# resent as plain text); a network failure was printed and dropped. By then
+# `mark_seen_all` had run, so the flat could never re-alert — it reached SQLite and the
+# Sheet, and the notification, which is the entire point of the bot, never happened.
+
+def _alertable(key="k-owed", score=90):
+    from models import ListingExtract, PipelineResult, Status
+    return PipelineResult(
+        status=Status.MATCH, dedup_key=key, location_tier="GREEN", score=score,
+        extract=ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                               available_rooms_count=2,
+                               street_address_or_neighborhood="רגר 93"))
+
+
+def test_notify_reports_whether_the_alert_actually_landed(monkeypatch):
+    """It returned None either way, so a failed send was indistinguishable from a good one
+    and nothing downstream could know an alert was owed."""
+    import notifier
+    monkeypatch.setattr(notifier, "_send_alert", lambda res, target="group": True)
+    assert notifier.notify(_alertable()) is True
+    monkeypatch.setattr(notifier, "_send_alert", lambda res, target="group": False)
+    assert notifier.notify(_alertable()) is False
+
+
+def test_notify_says_nothing_was_owed_for_a_listing_below_the_gate(monkeypatch):
+    """None means "no alert was owed" — distinct from False, which means one was owed and
+    LOST. `pending_alerts` must never retry the first kind."""
+    import config
+    import notifier
+    monkeypatch.setattr(notifier, "_send_alert", lambda res, target="group": True)
+    assert notifier.notify(_alertable(score=config.MIN_ALERT_SCORE - 1)) is None
+
+
+def test_a_failed_alert_is_still_owed_and_a_sent_one_is_not(temp_db, monkeypatch):
+    """The whole point: an owed alert survives the run that failed to send it."""
+    import config
+    import storage
+    storage.save_listing(_alertable("k-lost", 90))
+    storage.save_listing(_alertable("k-sent", 88))
+    storage.mark_alerted("k-sent")
+    owed = [r["dedup_key"] for r in storage.pending_alerts(config.ALERT_RETRY_MAX_AGE_HOURS)]
+    assert owed == ["k-lost"], owed
+
+
+def test_an_owed_alert_goes_stale_rather_than_arriving_late(temp_db):
+    """A flat found two days ago has probably gone, and a late alert is worse than none —
+    it trains you to ignore the channel. The retry is bounded on purpose."""
+    import sqlite3
+    import config
+    import storage
+    storage.save_listing(_alertable("k-old", 95))
+    with sqlite3.connect(config.DB_PATH) as c:
+        c.execute("UPDATE listings SET first_seen='2020-01-01 00:00:00' WHERE dedup_key='k-old'")
+    assert storage.pending_alerts(24) == []
+
+
+def test_a_listing_below_the_gate_is_never_owed(temp_db):
+    """`pending_alerts` recomputes the alert gate from stored columns rather than keeping a
+    second 'owed' flag — so the two can never drift apart."""
+    import config
+    import storage
+    storage.save_listing(_alertable("k-quiet", config.MIN_ALERT_SCORE - 1))
+    assert storage.pending_alerts(24) == []
