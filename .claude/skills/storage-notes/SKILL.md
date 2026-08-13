@@ -77,3 +77,31 @@ What is stored, how a flat is identified, and the ways that has gone wrong.
     failures by design, so listings silently stopped reaching the mirror while SQLite was
     fine. **Only ever grow:** `resize(rows=N)` below the current count DELETES rows, and
     those rows are listings.
+
+## The position is part of the verdict, so it is stored with it
+
+`listings` now carries `lat`/`lon`, written by `save_listing` beside `geocode_source`.
+They **overwrite** rather than COALESCE: the position is recomputed from the address every
+time, like status/tier/score/walk, and a stale coordinate next to a fresh source is exactly
+the disagreement the column exists to remove.
+
+Before this, every map dot was recomputed through `geocode_cached` at render time while the
+confidence badge came from the STORED source — two sources of truth for one pin. They
+diverged: **15 listings drawn up to 626 m from where the pipeline placed them, each under a
+badge reading `exact`** (2026-08-12). Readers fall back to `geocode_cached` only when
+`lat` is NULL, which covers rows written before the column; do not remove that fallback,
+or pre-column rows vanish off the map.
+
+## Two clocks, and they must agree
+
+`first_seen` (and every other `CURRENT_TIMESTAMP` column) is written by SQLite in **UTC**.
+Python's `datetime.now()` is **local** — UTC+3 here. Mixing them silently corrupted the
+latency metric: `posted_at` sat 3 hours ahead of the sighting it is compared against, so
+**4,218 rows (39%) read as published AFTER they were seen** and every surviving row
+understated the lag by three hours.
+
+Use `storage._utc_now()` for anything compared against a `CURRENT_TIMESTAMP` column —
+`record_post`, `mark_alerted` and `pending_alerts` all do. A publication later than
+`first_seen` is now never stored: we demonstrably had the post at `first_seen`, so a later
+candidate is known-false. It is kept NULL rather than clamped, because clamping would
+invent a lag of ~0 and bias the metric it protects.

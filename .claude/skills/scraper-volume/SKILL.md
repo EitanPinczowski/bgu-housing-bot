@@ -80,3 +80,26 @@ for a hot pass" trade-off is not needed if the scheduled runs simply happen. Use
 - Facebook is the **only** source. Yad2 was evaluated and rejected — every endpoint sits
   behind Radware Bot Manager, so the only ways in are forbidden, and it would risk the
   **home IP the FB scraper depends on**.
+
+## Hovering is run DURATION, not scrape volume — and it is what captures post age
+
+`SCRAPER_MAX_HOVERS_PER_RUN` bounds how many timestamp anchors a run may hover. **A hover
+is the only way to read a post's age under he-IL**: the on-page timestamp is CSS-scrambled
+and the date lives in a tooltip.
+
+It is NOT covered by the volume rules above. A hover is mouse movement over already-loaded
+content — it loads no page and reads no extra post. What it costs is ~0.7 s each, i.e. run
+length.
+
+**RAISED 300 -> 800 on 2026-08-13, at the user's explicit request.** At 300, with up to 3
+tries per post, the budget ran out partway through runs reading 262-390 posts and every
+later post was archived with **no age at all** — 10-35% a day, which is much of why
+`stats._detection_lag` runs on a fraction of the archive.
+
+**Size it from a run, not from a guess.** The cap was raised on an estimate because
+`_hover_used` was private and nothing reported it. Both the run summary and the search log
+now carry `hovers=N/CAP`, and the summary says so when the cap is hit:
+
+    hovers: 800/800   ← BUDGET EXHAUSTED: posts after this point have no age
+
+Read that line before changing the number again.

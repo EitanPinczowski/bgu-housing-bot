@@ -16,7 +16,7 @@ Every dependency with remediation attached. Start here — three separate outage
 now ride the DM digest** (`dm_digest._health_section`) so silence means healthy rather
 than unobserved.
 
-## A run can be lost FOUR different ways, and they need different fixes
+## A run can be lost SIX different ways, and they need different fixes
 
 `stats.py` separates them. Do not treat them as one problem.
 
@@ -26,12 +26,46 @@ than unobserved.
 | `START` with no `END`, process gone | a **crash** | releases the lock; next slot runs normally, so nothing downstream complains. 7 in the 7 days to 08-05 |
 | `START`, no `END`, process **alive** | a **hang or a crawl** | the self-watchdog should abort it |
 | `ABORT` | the watchdog did its job | read why: stalled, or past `MAX_RUN_MINUTES` |
+| `SKIP network down (no DNS)` | fired seconds after a wake, before the network | none — it is now correctly a SKIP, not a hollow END |
+| **nothing at all in the log** | the trigger never produced a process | see below — usually NOT the wake timers |
+
+**A HOLLOW `END` USED TO COUNT AS A COMPLETED RUN.** On 2026-08-12 20:02 a slot fired
+seconds after the machine woke, every group failed `net::ERR_NAME_NOT_RESOLVED`, and it
+logged `END … 6s posts=0 groups_ok=0/15` — which `stats.py` scores as a SUCCESS. `main`
+now resolves two names first and logs a SKIP instead, so a slot that did nothing stops
+flattering the reliability row.
+
+**NOTHING IN THE LOG IS NOT A WAKE-TIMER PROBLEM — CHECK THAT FIRST, THEN STOP.**
+Measured 2026-08-13: both tasks already have `WakeToRun=True` and `StartWhenAvailable=True`,
+the OS allows wake timers on AC **and** DC, and the machine was powered on continuously
+for the week in question. `stats.py` used to print "check your wake timers" here and it
+sent the investigation the wrong way for a week. It now attributes instead:
+
+- **suppressed by a still-running previous run** — `MultipleInstances=IgnoreNew` means
+  Task Scheduler skips the trigger SILENTLY while an instance runs, and runs do overrun
+  (6,127 s and 5,133 s against 2-hour slots plus 25 min of jitter). Fix run LENGTH.
+- **nothing in flight either** — 19 of 42 slots. The leading cause is
+  `LogonType=Interactive`, which the non-headless-browser rule REQUIRES: no logged-on
+  session, no run, no log line. A locked screen is still logged on; signing out is not.
+  Not fixable by configuration without breaking the safety constraint.
+
+The `Microsoft-Windows-TaskScheduler/Operational` log was **disabled** (that is why no
+history exists) and was enabled on 2026-08-13 — read it before theorising again.
+
+## OSRM repairs itself now, so a run should not be scoring straight-line walks
 
 **A SKIP is a run that did not happen.** `stats.py`'s reliability row used to count
 `END|SKIP` together and so read healthiest exactly when runs were being lost — 08-03
 reported 11 runs / **119%** of target while 5 were lock-held and 4 actually ran. The
 ~1-in-8 designed `random human-like skip` is counted apart, because flagging it trains
 you to ignore the row.
+
+`main.run()` calls `doctor.try_fix()` at run start (2026-08-13), which starts Docker
+Desktop and then `osrm_bgu`. Before that it only NOTICED the router was down and carried
+on: **7 of 29 recent runs (24%), 15 of 102 all-time, wrote straight-line tiers**. It
+degrades rather than blocks — a routerless run still finds flats — so check the summary
+for `⚠️ OSRM DOWN` and `stats.py` for how many listings still carry an estimated tier
+(*placed, but no `walk_minutes`* is the marker; no extra column needed).
 
 ## Is a run actually running right now?
 

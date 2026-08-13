@@ -42,3 +42,27 @@ How alerts and digests reach the user, and the caps that silently drop them.
       itself as a line and the unmapped-locations digest still goes out.
 - `bot_listener.py` / `watchdog.py` — vote-button listener + DM-only `/search`
   (`query.py`) and `/status` commands; dependency health check.
+
+## An alert that fails to send is OWED, not lost
+
+`notifier` retried exactly one failure: a 400 from bad MarkdownV2, resent as plain text. A
+**network** failure printed `[notifier] sendMessage … failed (status None)` and dropped the
+alert — and `mark_seen_all` had already run, so the flat could never re-alert. Observed
+2026-08-12 20:02, in the run where DNS was down: the listing reached SQLite and the Sheet;
+the notification, which is the entire point of the bot, never happened.
+
+- `notify()` returns **None** (nothing owed), **True** (sent) or **False** (owed and
+  FAILED). It returned None either way, so a failed send was indistinguishable from a good
+  one. `send_batch` likewise returns what actually went out — it used to return `k` even
+  when every send failed.
+- `storage.mark_alerted(key)` records a delivery; `storage.pending_alerts(hours)` lists
+  what is still owed, and `main._retry_pending_alerts()` re-sends at the START of the next
+  run — so a listing found by a previous run gets its alert even if this run finds nothing.
+- **NO 'OWED' FLAG EXISTS**, deliberately. The gate is `status in (MATCH, NEEDS_DATA)` and
+  `score >= MIN_ALERT_SCORE`, both already stored, so owed is recomputable as alert-worthy
+  AND `alerted_at IS NULL`. One nullable column, no second source of truth to drift.
+- **BOUNDED BY AGE** (`config.ALERT_RETRY_MAX_AGE_HOURS`, 24): a flat found two days ago has
+  probably gone, and a late alert is worse than none — it trains you to ignore the channel.
+- `sent 1 of 2` in the run log is usually NOT a failure: `send_batch` reports how many
+  cleared the notifier's own gate, which is narrower than main's `alertable` list. Check
+  `pending_alerts` before treating it as a lost alert.

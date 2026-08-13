@@ -101,7 +101,36 @@ published once*, and `stats.py` now says so.
 
 Always report the n, and what was excluded.
 
-## 11. Prefer the visible failure mode
+## 11. If the measurement calls the network, you measured the network
+
+Two `replay.py` passes minutes apart over the same 10,565 posts disagreed on **1,144
+rows** — 736 `street_geom -> overpass` — while the code change under test accounted for
+**116**. Reported as-is, that is a 10x overstatement of your own change.
+
+The same shape has now bitten three times: the geo-accuracy harness (a 715 m "regression"
+that was a different mirror), the test suite (3 of 7 seeds failing), and this. **The tell
+is always that a re-run disagrees with itself.**
+
+- Freeze the external tiers and compare like with like: `replay.py --frozen`,
+  `geo_dump --local-only`. Both are verified byte-for-byte reproducible.
+- When you cannot freeze, run the SAME comparison at both commits and diff the diffs —
+  the shared noise cancels and what remains is your change.
+- **Check the source column, not just the counts.** `('static','static_street'): 116`
+  beside `('street_geom','overpass'): 736` is what separated signal from noise here; the
+  totals alone looked like a catastrophe.
+
+## 12. A number that matches your theory can still be a coincidence
+
+The archive's impossible `posted_at` rows had a median overshoot of exactly **120 min**,
+which is exactly the scrape interval — so the diagnosis "ages lost to the hover budget"
+fit and felt confirmed. It was wrong. The **p90 of 170 min** is not a scrape interval, and
+`3h - 0.2h` is: the real cause was a UTC/local clock mismatch, and the prediction
+`overshoot = 3h - age` fits BOTH points.
+
+One statistic agreeing is not evidence; a model that predicts the whole distribution is.
+Before accepting a cause, ask what ELSE it predicts, and go and look at that.
+
+## 13. Prefer the visible failure mode
 
 When two options are both wrong sometimes, prefer the one that fails where a person will
 see it. 3.1 inflates a price and the ≤2000 filter drops the flat **silently**; 3.5 returns

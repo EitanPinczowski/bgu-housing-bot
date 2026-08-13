@@ -16,6 +16,30 @@ announce themselves.
 `.claude/hooks/guard.py` blocks the command when either fails. Do not reach for
 `BGU_SKIP_GUARD=1` to get past it — the block is the mechanism working.
 
+## ⚠ Use `full_replay.py`, and never apply un-frozen
+
+    python full_replay.py            # preview: warm the cache, then replay --frozen
+    python full_replay.py --apply    # the same, then WRITE
+
+**A REPLAY THAT CALLS THE NETWORK PRODUCES A SAMPLE, NOT AN ANSWER** (2026-08-13). Two
+passes minutes apart over the same 10,565 posts disagreed on **1,144 rows** — 736 of them
+`street_geom -> overpass` — purely because the mirrors answered differently. Only 116 rows
+were the code change under test. `--apply` WRITES those verdicts, so an un-frozen apply
+bakes one roll of the dice into the DB and a re-run rewrites a different set.
+
+`replay.py --frozen` places from the cache and local tiers only, and is byte-for-byte
+reproducible: same 162 changed rows every time.
+
+**IT IS LOSSLESS ONLY AFTER A WARM, WHICH IS WHY IT IS NOT THE DEFAULT.**
+`warm_cache.py --archive` asks the network about every archived address first, so the
+cache then holds everything the network could place — local-only puts 2,425 of 2,683
+archive addresses on the map and the other 258 fail WITH the network too. `full_replay.py`
+is the one command that does the two in the right order, and it refuses on battery, with
+OSRM down, or with a scheduled scrape imminent.
+
+**Warming is the slow part, not the replay**: ~36 min for the network gaps, then all
+10,565 posts re-classify in **under 20 seconds**.
+
 ## 1. Verify the base
 
     python doctor.py
@@ -66,6 +90,8 @@ until somebody notices the listings have stopped arriving.
 
 ## Useful flags
 
+- `--frozen` — cache + local tiers only, never a live geocoder. **The only reproducible
+  mode**; see the warning at the top. Warm first, or it is not lossless.
 - `--only-merged`, `--only-imprecise`, `--only-bare`, `--min-score N` narrow the set.
 - `--llm` re-parses through Gemini. It **spends quota** and is blocked while a scrape
   runs (pacing is per PROCESS, the RPM limit is per PROJECT — two writers issue ~27/min

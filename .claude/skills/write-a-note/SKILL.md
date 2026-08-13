@@ -56,6 +56,22 @@ question being reopened on the score shape alone.
 up are printed by `.claude/hooks/session_start.py`. A hand-dated status block drifts:
 `OPEN RIGHT NOW` said 2026-08-06 while commits had landed on 08-07 and 08-08.
 
+## Ask what PROCEDURE changed, not only what fact you learned
+
+The table above places a note by TOPIC, which is easy for a fact and easy to forget for a
+procedure — so reference notes stay current while the workflow skills rot. Measured
+2026-08-13: eleven commits in one session put findings in `CLAUDE.md` (3) and
+`geocoding-notes` (1) and **nothing anywhere else**, leaving `apply-replay` with no mention
+of `--frozen` or `full_replay.py`, `health-triage` unaware that OSRM now self-heals, and
+`telegram-notes` unaware that a failed alert is retried.
+
+**A stale workflow skill is worse than a missing one**: someone loading `apply-replay`
+would have followed it, run a non-reproducible apply, and never learned the safe command
+exists. A missing note leaves you to think; a wrong one stops you thinking.
+
+So after recording a finding, ask: **would anyone following the old procedure now do the
+wrong thing?** If yes, that skill is part of the change, not follow-up work.
+
 ## The rules for moving a note
 
 - **Do not reword while moving.** `.claude/tools/split_check.py` matches the frozen
