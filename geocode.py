@@ -786,7 +786,7 @@ def _resolve_detailed(location_text: Optional[str]):
     # skipped too, and calling one of those "street" would relabel a 2 km area as a
     # street-level fix. `שלמה המלך, שכונה ג` came back `static_street` 1,070 m from
     # שלמה המלך: the right point was never found, and the wrong one claimed to be good.
-    skipped_street_coords = skipped_grade = None
+    skipped_street_coords = skipped_grade = skipped_key = None
     # Surveyed landmarks are keys in their own right — see the twin loop above. THERE
     # ARE TWO of these loops; patching only one placed nothing, because the live path
     # runs this one.
@@ -821,7 +821,10 @@ def _resolve_detailed(location_text: Optional[str]):
                          or k in landmarks()) \
                 and k in norm:
             if skipped_street_coords is None:
+                # the KEY too, not just its grade: the fallback below has to tell a
+                # surveyed landmark from a street, and the grade alone cannot
                 skipped_street_coords, skipped_grade = coords, _static_source(key)
+                skipped_key = key
             continue                                        # let the house number win
         # A KEY THE FLAT IS ONLY *NEAR* LOSES TO ONE IT IS *AT*, whatever the word order.
         # A post often names both — `ליד הבלוק, מגדלי דוד` is AT מגדלי דוד and NEAR
@@ -967,7 +970,24 @@ def _resolve_detailed(location_text: Optional[str]):
     # source and the boundary/edge rules stay cautious about it — but a listing that
     # used to be placed still gets placed.
     if skipped_street_coords is not None:
-        return skipped_street_coords, skipped_grade or "static_street"
+        # …AND THAT COMMENT WAS NOT TRUE UNTIL 2026-08-13. `skipped_grade` is
+        # `_static_source(key)` of the key we stepped over, and that grades the KEY: a
+        # street or a surveyed landmark sitting in STATIC_TABLE both come back `static`,
+        # i.e. `exact` AND `is_precise_source`. So this fallback — reached only when the
+        # house number could NOT be placed — handed back a street point labelled as a
+        # specific building, which then bought `edge_grace` and skipped the
+        # boundary-street caution meant for exactly this case.
+        #
+        # Same rule as the one that fixed the other branch, and stricter here: we KNOW a
+        # number was given and we KNOW we failed to place it, so no landmark exception
+        # applies. Only an already-WORSE grade survives — `static_area` stays an area.
+        if skipped_key is not None and _normalize(skipped_key) in landmarks():
+            grade = skipped_grade          # a surveyed landmark keeps its own grade
+        elif skipped_grade == "static_area":
+            grade = "static_area"          # already worse; leave it
+        else:
+            grade = "static_street"
+        return skipped_street_coords, grade
     # 4) THE STREET'S OWN POLYLINE. We hold the geometry of all 1,174 named streets in the
     # box, so an address naming one of them is never really unknown — `רחוב רמב"ם` was the
     # last of 322 listings that named a resolvable street and still had no location, and

@@ -4,7 +4,7 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-12)
+## OPEN RIGHT NOW — read this first (2026-08-13)
 
 **The geocoding accuracy targets are answered, and one of the three is not reachable
 from free sources. Nothing is blocking.**
@@ -101,6 +101,41 @@ and because a claim nobody can find again is a claim nobody can check.
 > `.claude/hooks/session_start.py`. The numbers below were true when typed and are not
 > maintained — this section is for open DECISIONS. That hook also warns when this
 > section's date falls behind the newest commit, which is how the drift was noticed.
+
+Done 2026-08-13: the map's landmark pile fixed, the "no number, no exact" rule, a
+reproducible replay, and a full `--apply` (535 → **579 listings, 302 → 310 MATCH**, 18
+rescued, 79 duplicates merged, sheet rebuilt). Suite GREEN (695), `ruff` clean.
+- **EVERY FAILURE THAT NIGHT WAS THE MACHINE SLEEPING, AND EACH LOOKED LIKE SOMETHING
+  ELSE.** A 30-minute replay stall with idle CPU and one parked TCP connection was
+  diagnosed as a dead Overpass mirror; it was S0 standby. The 20:02 scrape that died in 6s
+  with `net::ERR_NAME_NOT_RESOLVED` on all 15 groups was a slot firing seconds after wake,
+  before DNS. **Before calling a stall a hung remote, ask whether the machine was awake** —
+  the two are indistinguishable from CPU and socket state alone.
+- **A HOLLOW `END` COUNTS AS A COMPLETED RUN.** That 6-second scrape logged `END … posts=0
+  groups_ok=0/15`, and `stats.py` scores an END as a success, so a slot that did nothing
+  made the reliability row read healthier. Third variant of "a run that did not happen must
+  never count as one", after the wedged lock and the START with no END. `main` now resolves
+  two names first and logs `SKIP network down (no DNS)` instead.
+- **A REPLAY THAT CALLS THE NETWORK PRODUCES A SAMPLE, NOT AN ANSWER.** Two passes minutes
+  apart over the same 10,565 posts disagreed on **1,144 rows** — 736 `street_geom →
+  overpass` — while only 116 were the code change under test. `--apply` writes those, so an
+  un-frozen apply bakes one roll of the dice into the DB. `replay.py --frozen` is
+  byte-for-byte reproducible and, after `warm_cache --archive`, loses nothing: local-only
+  places 2,425 of 2,683 archive addresses and the other 258 fail with the network too.
+  **`full_replay.py` is the one command that warms then freezes, in that order.**
+- **COUNT WHAT NEEDS THE NETWORK, NOT WHAT IS MISSING FROM THE CACHE FILE.** The warming
+  backlog was estimated at 2,148 addresses / ~12 hours from `geocode_cache.json`
+  membership. It was **521 / 36 minutes**: `geocode_cached` also answers from the static
+  table, anchors, interpolation and street geometry.
+- **`_static_source` GRADES THE KEY, AND BOTH BRANCHES BELIEVED IT.** A street in
+  `STATIC_TABLE` grades `static` → `exact` → `is_precise_source`, so a bare `רינגלבלום`
+  claimed a specific building (14 listings on one point), and the skipped-key fallback did
+  the same for a number it had FAILED to place. Both now yield to `static_street`; a
+  surveyed landmark keeps `exact`, which is why that fallback needed the KEY and not just
+  the grade. 38 of 66 `static` listings were affected — details in `geocoding-notes`.
+- A `--apply` gate that guesses from the clock gets worked around. `full_replay.py`'s
+  refused 07:00–21:00 and blocked a demonstrably safe 90-minute window; it now asks Task
+  Scheduler for the real next run, and fails OPEN if it cannot read it.
 
 Done 2026-08-12: the "pin these" re-check finished across all four reports that build one
 (`stats`, `dm_digest`, `bot_listener`, `weekly_digest`) on `geocode.pinnable_unknowns`; the
@@ -319,6 +354,8 @@ Modules whose notes are short enough to live here:
 - `pipeline.py` — `process_post(...)` funnel; `_classify(...)` reused by replay.
 - `query.py` — parse a free Hebrew/English search into filters; ranked SQLite search.
 - `replay.py` / `stats.py` — offline re-classify (+`--apply`) and funnel stats.
+  **`replay.py --frozen` is the only reproducible mode**; `full_replay.py` warms the
+  geocode cache then replays frozen, and refuses on battery / no OSRM / a scrape due.
 - `load_zone_from_kmz.py` — regenerate `green_zone.json` from a new My Maps export.
 - `green_zone.json` / `no_amber_zones.json` — the walkable polygon + no-amber (ד') areas.
 - `README.md` — full Windows setup (Python, Docker OSRM Israel extract, Telegram bot, .env).

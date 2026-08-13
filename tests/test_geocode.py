@@ -1436,3 +1436,24 @@ def test_warm_cache_archive_covers_more_than_the_listings_table(temp_db, monkeyp
     assert warm_cache.addresses() == ["וינגייט 4"]
     both = warm_cache.addresses(archive=True)
     assert "וינגייט 4" in both and "רגר 93" in both, both
+
+
+def test_the_skipped_key_fallback_does_not_claim_a_house_it_could_not_place():
+    """The OTHER branch of the same rule, fixed 2026-08-13.
+
+    When an address carries a number, the static loop steps over the street/landmark key
+    and lets the house number win. If the number then cannot be placed, `_resolve_detailed`
+    falls back to that skipped point — and returned `_static_source(key)` with it, which
+    for a STREET in STATIC_TABLE is `static`, i.e. `exact` and `is_precise_source`. So a
+    street point was labelled a specific building, bought `edge_grace`, and skipped the
+    boundary-street caution meant for exactly this case. The comment above that return
+    already claimed it was "reported as a LOW-precision source"; it was not.
+
+    A SURVEYED LANDMARK STILL KEEPS ITS GRADE, which is why the fallback needs the KEY and
+    not just the grade: `מגדלי דוד 3` is a numbered unit inside a 115 m complex, and the
+    complex's own centroid is a fair answer for it — the same exception the user set."""
+    _pt, src = geocode.geocode_detailed("מגדלי דוד 3")
+    assert src == "static" and geocode.is_precise_source(src), src
+    for addr in ("וינגייט", "רינגלבלום"):
+        _pt, src = geocode.geocode_detailed(addr)
+        assert not geocode.is_precise_source(src), f"{addr} -> {src}"

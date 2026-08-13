@@ -83,14 +83,41 @@ def preconditions(apply_mode: bool) -> list:
     return bad
 
 
+_APPLY_NEEDS_MINUTES = 15          # the apply itself takes ~2; this is generous headroom
+
+
 def _next_scrape_gap():
-    """--apply must not collide with a scheduled run. Full runs are hourly-ish through the
-    day; the safe window is the evening after the last one."""
-    h = datetime.now().hour
-    if 7 <= h < 21:
-        return ("--apply between 07:00 and 21:00 risks a scheduled run starting mid-write "
-                "(they hold the same DB). Either run it after 21:00, or disable the "
-                "'BGU Housing Scraper*' tasks first and re-enable them after.")
+    """--apply must not collide with a scheduled run — they hold the same SQLite.
+
+    ASK THE SCHEDULER, DO NOT GUESS FROM THE CLOCK. This was a flat 07:00-21:00 refusal,
+    which on 2026-08-13 blocked an apply at 08:30 when the next scrape was not due until
+    10:00 — a demonstrably safe 90-minute window — and the author worked around his own
+    gate, which is the worst outcome a gate can produce. Task Scheduler knows the real
+    answer, including whether a task is disabled or its trigger has moved.
+
+    Fails OPEN with a warning if the scheduler cannot be read: an unreadable schedule is
+    not evidence of a collision, and refusing on it would send people around the gate
+    again."""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-ScheduledTask -TaskName 'BGU Housing Scraper*' | "
+             "Where-Object State -ne 'Disabled' | Get-ScheduledTaskInfo | "
+             "ForEach-Object { $_.NextRunTime.ToString('o') }"],
+            capture_output=True, text=True, timeout=30)
+        stamps = [s.strip() for s in out.stdout.splitlines() if s.strip()]
+    except Exception as exc:
+        say(f"  (could not read the scrape schedule: {exc} — continuing)")
+        return None
+    if not stamps:
+        return None                                   # nothing scheduled, or all disabled
+    soonest = min(datetime.fromisoformat(s) for s in stamps)
+    mins = (soonest - datetime.now(soonest.tzinfo)).total_seconds() / 60
+    if 0 <= mins < _APPLY_NEEDS_MINUTES:
+        return (f"the next scheduled scrape starts in {mins:.0f} min "
+                f"({soonest:%H:%M}) and they hold the same DB. Wait for it to run, or "
+                f"disable the 'BGU Housing Scraper*' tasks, apply, and re-enable them.")
+    say(f"  next scheduled scrape: {soonest:%H:%M} ({mins:.0f} min away) — room to run")
     return None
 
 
