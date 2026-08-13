@@ -267,6 +267,26 @@ def run(dry_run: bool, hot: bool = False) -> None:
               "not happen, and must not be counted as one.")
         stop_keep_awake()
         return
+    # OSRM GIVES THE AMBER BOUNDARY ITS UNITS, SO A RUN WITHOUT IT WRITES APPROXIMATIONS.
+    # Nothing crashes when the router is down — a calibrated straight-line estimate stands
+    # in — which is exactly why it went unnoticed: measured 2026-08-13, **7 of 29 recent
+    # runs (24%), and 15 of 102 all-time, scored their walk times that way**, and those
+    # tiers and scores are in the DB.
+    #
+    # The repair already existed and was only ever run by hand. `doctor.try_fix` starts
+    # Docker Desktop and then the container, only ever STARTS things (there is a test
+    # asserting it never runs a destructive docker verb — `osrm_bgu` is a multi-GB rebuild),
+    # and was called from `doctor.main` alone. Wiring it here is the whole fix.
+    #
+    # DEGRADE, DO NOT BLOCK: a straight-line run still finds flats, and refusing the slot
+    # would trade approximate tiers for no listings at all. Say so loudly instead — the
+    # run summary already carries `⚠️ OSRM DOWN`, and item 2 records it per listing.
+    try:
+        import doctor
+        for what, ok, detail in doctor.try_fix():
+            print(f"[main] osrm heal: {what} — {'ok' if ok else 'FAILED'} ({detail})")
+    except Exception as exc:                   # noqa: BLE001 - never break a run over this
+        print(f"[main] osrm heal skipped: {exc}")
     _log_search("START", f"{'LIVE' if not dry_run else 'DRY'}  groups={len(selected)}/{len(config.FB_GROUPS)}")
     print(f"=== BGU housing scraper — {mode} ===")
     print(f"groups this run ({len(selected)}/{len(config.FB_GROUPS)}): {selected}\n")

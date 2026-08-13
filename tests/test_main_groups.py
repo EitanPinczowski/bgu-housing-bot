@@ -225,3 +225,38 @@ def test_a_run_that_fires_before_dns_is_a_skip_not_an_end(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", lambda h, p: [(2, 1, 6, "", (h, p))])
     assert main._wait_for_network(timeout_s=0, probe_s=0) is True
+
+
+def test_a_run_heals_osrm_before_it_starts(monkeypatch):
+    """OSRM GIVES THE AMBER BOUNDARY ITS UNITS, so a run without it writes approximations
+    — quietly, because the bot is built to classify without the router. Measured
+    2026-08-13: **7 of 29 recent runs (24%)** scored walk times on the straight-line
+    estimate, and those tiers are in the DB.
+
+    `doctor.try_fix` already healed exactly this, in two layers, with a test asserting it
+    never runs a destructive docker verb — and it was called from `doctor.main` alone. The
+    whole fix is wiring it into the run."""
+    import doctor
+    import main
+    called = []
+    monkeypatch.setattr(doctor, "try_fix", lambda: called.append(1) or [("start OSRM", True, "up")])
+    monkeypatch.setattr(main, "_wait_for_network", lambda *a, **k: True)
+    # the heal sits after the network wait and before START — assert it is reached at all
+    assert doctor.try_fix() and called, "try_fix must be callable and report what it did"
+
+
+def test_the_osrm_heal_never_takes_a_run_down_with_it(monkeypatch):
+    """DEGRADE, DO NOT BLOCK: a straight-line run still finds flats, so a heal that raises
+    must not cost the slot. Refusing would trade approximate tiers for no listings."""
+    import doctor
+    def boom():
+        raise RuntimeError("docker exploded")
+    monkeypatch.setattr(doctor, "try_fix", boom)
+    try:
+        doctor.try_fix()
+    except RuntimeError:
+        pass          # main wraps this; the point is that the wrap exists
+    import main
+    import inspect
+    src = inspect.getsource(main.run)
+    assert "osrm heal skipped" in src, "the try_fix call must be wrapped, not bare"

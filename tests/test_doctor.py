@@ -2,7 +2,20 @@
 carries a remediation hint (the point of the command). All deps mocked, no network."""
 import config
 import doctor
+import pytest
 
+
+@pytest.fixture(autouse=True)
+def _this_module_tests_try_fix_itself(monkeypatch):
+    """Undo the conftest stub for THIS file only.
+
+    `_no_test_may_try_to_heal_osrm` neuters `doctor.try_fix` everywhere, because
+    `main.run()` now calls it and every test exercising a run would otherwise shell out to
+    Docker (measured: 0.33s -> 128s). These tests are the exception it was written for —
+    they are the ones that check `try_fix` does the right thing, and they stub `subprocess`
+    themselves."""
+    import doctor
+    monkeypatch.setattr(doctor, "try_fix", doctor._real_try_fix)
 
 def test_osrm_down_has_docker_remediation(monkeypatch):
     monkeypatch.setattr(doctor, "_osrm_ok", lambda: False)

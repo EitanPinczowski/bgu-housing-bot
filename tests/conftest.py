@@ -50,6 +50,29 @@ def _no_test_may_launch_docker_desktop(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_test_may_try_to_heal_osrm(monkeypatch):
+    """NO TEST MAY RUN `doctor.try_fix()`.
+
+    `main.run()` calls it at run start (2026-08-13) so a scrape repairs a down router
+    instead of quietly writing straight-line tiers. Right in production, wrong here:
+    `try_fix` probes OSRM and shells out to `docker`, so every test exercising `run()`
+    began touching Docker. Measured the moment it landed — `test_main_groups.py` went from
+    **0.33s to 128s**, ~18s per affected test, and the suite was reaching an external
+    service again, which is exactly what the network fixture below exists to prevent.
+
+    Same shape and the same reason as `_no_test_may_launch_docker_desktop` above: the
+    module that needs the guard is not the module that trips it. A test wanting the real
+    behaviour patches it back."""
+    import doctor
+    # stashed so the tests that exercise try_fix ITSELF can put it back — see
+    # tests/test_doctor.py, which is the "a test wanting the real behaviour" case
+    monkeypatch.setattr(doctor, "_real_try_fix", doctor.try_fix, raising=False)
+    monkeypatch.setattr(
+        doctor, "try_fix",
+        lambda: [("osrm heal", False, "blocked by the test suite — see conftest")])
+
+
+@pytest.fixture(autouse=True)
 def _no_test_may_poison_the_median_gap():
     """Confine `geocode._median_gap` to the test that computed it.
 

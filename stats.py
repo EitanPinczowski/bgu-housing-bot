@@ -247,6 +247,34 @@ def _osrm_degraded(days: list) -> None:
     if total_end and total_down:
         print(f"     all time: {total_down}/{total_end} "
               f"({round(100 * total_down / total_end)}%)")
+    _osrm_degraded_rows()
+
+
+def _osrm_degraded_rows() -> None:
+    """Which LISTINGS still carry an approximated tier — the damage, not the events above.
+
+    NO NEW COLUMN IS NEEDED, and one was nearly added before this was checked.
+    `osrm.walk_to_nearest` returns `(None, None)` when the router is down — it does not
+    invent a walk time — and `zones.classify_location` then falls back to the straight-line
+    estimate internally. So a listing that HAS a position but NO `walk_minutes` is exactly
+    a listing whose tier was estimated. The provenance was already in the schema.
+
+    Measured 2026-08-13: 0 of 570, because that morning's `replay --frozen --apply` ran with
+    OSRM up and recomputed every one. The count is printed anyway — it is a live gauge of a
+    condition that recurs (24% of recent runs had no router), and it says what to do about
+    it, which a bare number would not."""
+    with sqlite3.connect(config.DB_PATH) as c:
+        placed, est = c.execute(
+            "SELECT COUNT(*), SUM(walk_minutes IS NULL) FROM listings "
+            "WHERE geocode_source IS NOT NULL").fetchone()
+    if not placed:
+        return
+    est = est or 0
+    if est:
+        print(f"  {est}/{placed} placed listing(s) have an ESTIMATED tier (no measured "
+              f"walk time) — fix OSRM, then `python full_replay.py --apply --skip-warm`")
+    else:
+        print(f"  0/{placed} placed listings carry an estimated tier — all measured")
 
 
 def _run_reliability() -> None:
