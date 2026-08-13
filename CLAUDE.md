@@ -291,6 +291,14 @@ SQLite + optional Google Sheets + Telegram alert`
 - **OSRM gives the amber walk time** for real listings (min over gates); when it's
   down, and for the whole-area map, a calibrated straight-line estimate is used —
   so the bot still classifies without OSRM running. (`BUFFER_METERS` is deprecated.)
+- **THE PROJECT STAYS FREE — no paid API, ever** (user, 2026-08-13). This settles the
+  standing `_google_geocode` question: it is written and stays behind
+  `config.USE_GOOGLE_GEOCODE=False`, and `p90 ≤ 50 m` is therefore **permanently out of
+  reach**, not merely unmet. Stop re-costing it. The measured prize was small anyway —
+  35 distinct addresses, because 149 of the 190 street-level listings carry no house
+  number and no geocoder can place those. Everything the bot depends on (Gemini's free
+  tier, OSM/Overpass, Nominatim, self-hosted OSRM, govmap) is free, and a proposal that
+  needs a card is a proposal to reject.
 - **Blacklist** (`config.BLACKLIST_NEIGHBORHOODS`: Ramot, Neve Zeev, Nahal
   Ashan, Pelach 7) is a separate hard instant-drop applied before geocoding.
 
@@ -406,6 +414,16 @@ the scraper MUST be conservative and the user must stay in control:
 
 - Non-headless, **persistent real browser profile** (log in once manually), NOT
   headless cookie injection.
+  - **THIS IS WHY THE SCHEDULED TASK IS `LogonType=Interactive`, AND WHY SLOTS ARE LOST.**
+    A visible Chrome window needs a desktop session, so the task must run as
+    *"run only when user is logged on"* — the alternative renders in session 0, where there
+    is no desktop. The cost is unavoidable: **no logged-on session at the trigger time, no
+    run, and no log line anywhere.** A locked screen still counts as logged on; signing
+    out, switching user, or a reboot you have not logged back into does not.
+    `StartWhenAvailable=True` then fires the missed slot once you log in, which is why runs
+    sometimes bunch. Measured 2026-08-13: 19 of 42 slots produced nothing with no run in
+    flight and the machine powered on — this is the leading explanation, and the
+    TaskScheduler/Operational log (enabled the same day) will confirm or refute it.
 - Long randomized delays, +up to 25 min jitter per scheduled run so it isn't
   clockwork; daytime only, no night runs. Volume has been raised repeatedly at the
   user's request — currently **`SCRAPER_SCAN_ALL_GROUPS=True` (all 14 groups every
