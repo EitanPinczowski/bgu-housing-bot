@@ -855,7 +855,14 @@ def _permalink_and_age(story, group_url: Optional[str] = None, allow_hover: bool
             link = hlink
         if age is None:
             age = hage
-    _age_sources["page" if from_page else "hover" if age is not None else "none"] += 1
+    # ONCE PER POST, NOT ONCE PER READ. This function runs again for the same story on
+    # every scroll pass, and only the first pass may hover (`allow_hover`) — so counting
+    # every call buried the signal under re-reads that could never produce an age. The
+    # 18:00 run on 2026-08-13 read `67/231 captured` that way while the archived rows say
+    # 27 of 40 (68%). `allow_hover` is true exactly once per post per run, which is also
+    # the read that decides whether the age is found at all.
+    if allow_hover:
+        _age_sources["page" if from_page else "hover" if age is not None else "none"] += 1
     return link, age
 
 
@@ -868,7 +875,11 @@ _age_sources = {"page": 0, "hover": 0, "none": 0}
 
 def age_sources() -> dict:
     """Per-run tally of where each post's age came from: the rendered page (`page`), a
-    hover tooltip/label (`hover`), or nowhere (`none`)."""
+    hover tooltip/label (`hover`), or nowhere (`none`).
+
+    Counted once per post, on the read that is allowed to hover. A post whose timestamp
+    renders only on a LATER scroll pass therefore lands in `none` here while the archived
+    row does have an age — so treat `none` as an upper bound on what was lost."""
     return dict(_age_sources)
 
 

@@ -433,6 +433,13 @@ def test_age_sources_records_what_the_hovering_yielded(monkeypatch):
     scraper._permalink_and_age(_Story([_Anchor(href="/groups/1/posts/2/", text="5h")]))
     scraper._permalink_and_age(_Story([_Anchor(href="/groups/1/posts/3/", text="")]))
     assert scraper.age_sources() == {"page": 1, "hover": 0, "none": 1}
+    # A RE-READ MUST NOT COUNT. The same story is passed again on every scroll pass, with
+    # allow_hover=False after the first — counting those buried the signal under reads
+    # that could never produce an age: the 18:00 run on 2026-08-13 reported 67/231 that
+    # way while its archived rows were 27 of 40.
+    scraper._permalink_and_age(_Story([_Anchor(href="/groups/1/posts/3/", text="")]),
+                               allow_hover=False)
+    assert scraper.age_sources() == {"page": 1, "hover": 0, "none": 1}
 
 
 def test_the_page_is_asked_for_every_tooltip_not_just_the_first(monkeypatch):
