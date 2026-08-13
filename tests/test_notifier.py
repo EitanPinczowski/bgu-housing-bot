@@ -1,5 +1,6 @@
 """notifier recipient routing — listings to the group, ops/digest to the DM.
 Telegram group ids are negative, DMs positive; routing is by sign."""
+import main
 import notifier
 from models import ListingExtract, PipelineResult, Status
 
@@ -272,3 +273,27 @@ def test_a_listing_below_the_gate_is_never_owed(temp_db):
     import storage
     storage.save_listing(_alertable("k-quiet", config.MIN_ALERT_SCORE - 1))
     assert storage.pending_alerts(24) == []
+
+
+# --- a suppressed alert and a failed alert must not print the same line ----------------
+
+def test_below_the_gate_is_not_reported_as_a_failed_send():
+    """The live line was `batched alerts: sent 0 of 1 to the group` on two consecutive
+    runs on 2026-08-13, whose only listings scored 32 and 56 against MIN_ALERT_SCORE=75.
+    Nothing failed and nothing was attempted — but it reads as a lost alert, and was taken
+    as one."""
+    line = main._batch_alert_report(n_alertable=1, n_worthy=0, sent=None)
+    assert "gate" in line and "not pinged" in line
+    assert "sent 0" not in line and "FAILED" not in line
+
+
+def test_a_real_send_failure_says_so():
+    """The opposite event: alerts were owed, the send did not land, and the user is not
+    getting them. This one must be loud — it is the case `pending_alerts` retries."""
+    line = main._batch_alert_report(n_alertable=3, n_worthy=3, sent=1)
+    assert "sent 1 of 3" in line and "SEND FAILED" in line
+
+
+def test_a_clean_send_is_quiet():
+    line = main._batch_alert_report(n_alertable=5, n_worthy=2, sent=2)
+    assert "sent 2 of 2" in line and "FAILED" not in line

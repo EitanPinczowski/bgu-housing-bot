@@ -95,6 +95,27 @@ def _retry_pending_alerts() -> int:
     return sent
 
 
+def _batch_alert_report(n_alertable: int, n_worthy: int, sent: int | None) -> str:
+    """The run's one line about batched alerts — which must SAY WHICH ZERO IT IS.
+
+    `alertable` holds every MATCH/NEEDS_DATA; the score gate is applied afterwards, inside
+    `notifier.send_batch`. So a run whose only listing scored below `MIN_ALERT_SCORE`
+    printed `sent 0 of 1`, which reads as a failed send. It was read as exactly that on
+    2026-08-13 — twice, on consecutive runs — and taken as evidence of a broken notifier
+    worth investigating. Nothing had failed; nothing had even been attempted. The two
+    listings scored 32 and 56 against a gate of 75.
+
+    A suppression and a failure are opposite events: one is the gate working, the other
+    means the user is owed an alert they never got. Reporting them identically hid the
+    difference."""
+    if not n_worthy:
+        return (f"[main] batched alerts: none of {n_alertable} reached the alert gate "
+                f"(score ≥ {config.MIN_ALERT_SCORE}) — saved, not pinged")
+    return (f"[main] batched alerts: sent {sent} of {n_worthy} to the group"
+            + ("   ← SEND FAILED, the rest are owed and will be retried next run"
+               if (sent or 0) < n_worthy else ""))
+
+
 def _wait_for_network(timeout_s: int = 90, probe_s: int = 5) -> bool:
     """Is DNS working? Wait up to `timeout_s` for it, because a wake is not instant.
 
@@ -566,9 +587,17 @@ def run(dry_run: bool, hot: bool = False) -> None:
             # Send the run's matches as ONE ranked, capped batch to the group (see
             # notifier.send_batch) instead of one ping per post.
             if batch and alertable:
-                sent = notifier.send_batch(alertable, target="group",
-                                           top_k=getattr(config, "SCRAPER_ALERT_TOP_K", 5))
-                print(f"[main] batched alerts: sent {sent} of {len(alertable)} to the group")
+                # SAY WHICH OF THE TWO ZEROS THIS IS. `alertable` holds every
+                # MATCH/NEEDS_DATA; `send_batch` then applies the score gate. So a run
+                # whose only listing scored below MIN_ALERT_SCORE printed "sent 0 of 1",
+                # which reads as a failed send — it was read as exactly that on
+                # 2026-08-13, twice, and sent me looking for a broken notifier. Nothing
+                # had failed and nothing had even been attempted.
+                worthy = [r for r in alertable if notifier.is_alertworthy(r)]
+                sent = (notifier.send_batch(alertable, target="group",
+                                            top_k=getattr(config, "SCRAPER_ALERT_TOP_K", 5))
+                        if worthy else None)
+                print(_batch_alert_report(len(alertable), len(worthy), sent))
             # Heartbeat digest — so silence means something broke, and you get a
             # one-line pulse of each run.
             fb = f" · {llm.fallback_used} במודל מקומי" if llm.fallback_used else ""

@@ -63,6 +63,20 @@ the notification, which is the entire point of the bot, never happened.
   AND `alerted_at IS NULL`. One nullable column, no second source of truth to drift.
 - **BOUNDED BY AGE** (`config.ALERT_RETRY_MAX_AGE_HOURS`, 24): a flat found two days ago has
   probably gone, and a late alert is worse than none — it trains you to ignore the channel.
-- `sent 1 of 2` in the run log is usually NOT a failure: `send_batch` reports how many
-  cleared the notifier's own gate, which is narrower than main's `alertable` list. Check
-  `pending_alerts` before treating it as a lost alert.
+- **`sent 0 of 1` USED TO MEAN TWO OPPOSITE THINGS, AND THIS WARNING WAS NOT ENOUGH.**
+  `alertable` holds every MATCH/NEEDS_DATA; the score gate is applied afterwards inside
+  `send_batch`. So a run whose only listing scored below `MIN_ALERT_SCORE` printed the same
+  line as a run whose alerts failed to send. This bullet used to say "usually NOT a failure
+  — check `pending_alerts` first", and on 2026-08-13 it was read as a failure anyway, on two
+  consecutive runs, and reported to the user as one. The listings scored **32 and 56**
+  against a gate of 75; nothing failed, nothing was attempted, `pending_alerts` was empty.
+  - Fixed at the source in `main._batch_alert_report`, which now prints
+    `none of N reached the alert gate (score ≥ 75) — saved, not pinged` for a suppression
+    and `sent 1 of 3 ← SEND FAILED, the rest are owed` for a real one. Three tests in
+    `tests/test_notifier.py` hold the two apart.
+  - **The lesson is about the note, not the notifier.** A suppression and a failure are
+    opposite events — one is the gate working, the other means the user is owed an alert
+    they never got — and no amount of documentation makes an ambiguous line safe. When you
+    catch yourself writing "X usually doesn't mean Y, check Z first", the fix is to stop
+    printing X.
+  - `pending_alerts` is still the authority on what is genuinely owed.
