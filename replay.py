@@ -14,6 +14,10 @@ Replay the classifier over every archived post — re-test filter / zone / thres
                                 #   posts to the 58 that actually produce a listing —
                                 #   no merged DROP/NOT_AD carries a score, measured
                                 #   2026-08-05 — so it costs 58 Gemini calls, not 404.
+    python replay.py --frozen   # place from the cache + local tiers only, never a live
+                                #   geocoder — the ONLY reproducible mode. Warm the cache
+                                #   first (`warm_cache.py --archive`), or use
+                                #   `full_replay.py`, which does both in order.
     python replay.py --apply    # WRITE the results: update DB scores/tiers, add
                                 #   newly-qualifying listings, drop now-RED ones,
                                 #   and rebuild the Sheet. No Telegram (bulk change).
@@ -48,6 +52,27 @@ from models import ListingExtract, Status
 _USE_LLM = "--llm" in sys.argv
 _CHANGED_ONLY = "--changed" in sys.argv
 _APPLY = "--apply" in sys.argv
+# --frozen : place from the CACHE AND LOCAL TIERS ONLY, never a live geocoder.
+#
+# A REPLAY THAT CALLS THE NETWORK PRODUCES A SAMPLE, NOT AN ANSWER. Measured 2026-08-13:
+# two passes minutes apart over the same 10,565 posts disagreed on **1,144 rows** — 736 of
+# them `street_geom -> overpass` — purely because the mirrors answered differently the
+# second time. Only 116 rows were the code change under test. `--apply` WRITES those
+# verdicts, so an un-frozen apply bakes one roll of the dice into the DB and a re-run
+# rewrites a different set. It is the same root cause as the test-suite flake fixed in
+# `b861ddc`.
+#
+# Lossless AFTER A WARM, which is why `full_replay.py` warms and then passes this:
+# `warm_cache --archive` has already asked the network about every archived address, so
+# the cache holds everything the network could place. Measured the same day, local-only
+# places **2,425 of 2,683** archive addresses and the other 258 fail WITH the network too
+# — same coverage, no dice. Without a warm first it is NOT lossless, so it is opt-in.
+_FROZEN = "--frozen" in sys.argv
+if _FROZEN:
+    import config as _config
+    _config.USE_OVERPASS_FALLBACK = False
+    _config.USE_NOMINATIM_FALLBACK = False
+    _config.USE_GOOGLE_GEOCODE = False
 # --min-score N : only replay archived posts whose STORED score is >= N (focus the
 # refresh on the alert-worthy top listings; keeps an LLM re-parse cheap).
 _MIN_SCORE = (int(sys.argv[sys.argv.index("--min-score") + 1])

@@ -81,3 +81,37 @@ def test_the_reparse_cut_does_not_touch_the_archive(monkeypatch):
     assert "מחפשים דירה" in seen["text"]
     assert "0522629429" not in seen["text"], "the second story must not reach the LLM"
     assert post["raw_text"] == raw, "the archive itself is untouched"
+
+
+def test_frozen_turns_off_every_live_geocoder():
+    """A REPLAY THAT CALLS THE NETWORK PRODUCES A SAMPLE, NOT AN ANSWER.
+
+    Measured 2026-08-13: two passes minutes apart over the same 10,565 posts disagreed on
+    **1,144 rows** — 736 of them `street_geom -> overpass` — purely because the mirrors
+    answered differently. Only 116 rows were the code change under test. `--apply` writes
+    those verdicts, so an un-frozen apply bakes one roll of the dice into the DB.
+
+    Run in a subprocess because the flag is read from `sys.argv` at import, which is also
+    the only place the switch can be got wrong."""
+    import subprocess
+    import sys
+    probe = (
+        "import sys; sys.argv=['replay.py','--frozen']; import replay, config;"
+        "print(replay._FROZEN, config.USE_OVERPASS_FALLBACK,"
+        " config.USE_NOMINATIM_FALLBACK, config.USE_GOOGLE_GEOCODE)"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split()[-4:] == ["True", "False", "False", "False"], out.stdout
+
+
+def test_without_frozen_the_geocoders_are_left_alone():
+    """Opt-in: WITHOUT a warmed cache, freezing is not lossless, so it must not be the
+    default. `full_replay.py` is what pairs the warm with the freeze."""
+    import subprocess
+    import sys
+    probe = ("import sys; sys.argv=['replay.py']; import replay, config;"
+             "print(replay._FROZEN, config.USE_OVERPASS_FALLBACK)")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split()[-2] == "False", out.stdout

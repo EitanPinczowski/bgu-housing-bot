@@ -141,8 +141,11 @@ def main() -> int:
         else:
             say("STEP 1/2 — skipped (--skip-warm)")
 
-        say("STEP 2/2 — replaying the archive.")
-        cmd = [sys.executable, "-u", "replay.py"] + (["--apply"] if apply_mode else [])
+        say("STEP 2/2 — replaying the archive (--frozen: cache + local tiers only).")
+        say("  The warm above already asked the network about every address, so freezing")
+        say("  here costs no coverage and makes the run reproducible.")
+        cmd = ([sys.executable, "-u", "replay.py", "--frozen"]
+               + (["--apply"] if apply_mode else []))
         rc = run(cmd, "replay --apply" if apply_mode else "replay (preview)")
     finally:
         stop_awake()
