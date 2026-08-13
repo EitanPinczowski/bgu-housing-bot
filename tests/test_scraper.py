@@ -334,3 +334,36 @@ def test_the_cut_never_eats_the_post_it_belongs_to():
     cutting at index 0/1 would leave an empty body."""
     out = scraper._clean_story("Noga Erlich\n3h\nמתפנה דירה במצדה 10, 1400 לשותף")
     assert "מצדה 10" in out, out
+
+
+# --- the hover loop must not stop at the link and leave the age behind -----------------
+
+def test_hovering_continues_until_the_age_is_found_not_just_the_link(monkeypatch):
+    """IT USED TO BREAK ON THE LINK ALONE, on a comment claiming the timestamp anchor gives
+    link and tooltip together. It does not: `_age_from_aria` returns None for a
+    profile-name tooltip or one that has not rendered, and the loop gave up with no age.
+
+    Measured 2026-08-13 on the 14:00 full run: **36 of 101 posts (35%) carried an age while
+    the hover budget was only 305/800 used** — so the cap was never the constraint and
+    raising it bought nothing. This exit condition is what was losing them."""
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    # a real permalink, but a NAME tooltip -> link found, age still None
+    first = _HoverAnchor("/groups/1/posts/2/?__cft__=x", tooltip="דנה כהן")
+    second = _HoverAnchor("/groups/1/user/9/", tooltip="Tuesday, July 21, 2026 at 12:56 PM")
+    link, age = scraper._hover_reveal([first, second], "1")
+    assert link == "https://www.facebook.com/groups/1/posts/2/"
+    assert age is not None, "stopped at the link and left the age behind"
+    assert second.hovered is True, "never tried the anchor carrying the age"
+
+
+def test_hovering_stops_as_soon_as_both_are_known(monkeypatch):
+    """Bounded, or a post whose tooltip never parses would burn every allowed hover. The
+    first anchor carrying BOTH must still end the loop."""
+    monkeypatch.setattr(scraper.time, "sleep", lambda *a, **k: None)
+    scraper._hover_used = 0
+    both = _HoverAnchor("/groups/1/posts/2/", tooltip="Tuesday, July 21, 2026 at 12:56 PM")
+    extra = _HoverAnchor("/groups/1/posts/3/", tooltip="Tuesday, July 21, 2026 at 1:56 PM")
+    link, age = scraper._hover_reveal([both, extra], "1")
+    assert link == "https://www.facebook.com/groups/1/posts/2/" and age is not None
+    assert extra.hovered is False, "kept hovering after both were known"

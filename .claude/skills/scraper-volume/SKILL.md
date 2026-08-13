@@ -103,3 +103,32 @@ now carry `hovers=N/CAP`, and the summary says so when the cap is hit:
     hovers: 800/800   ← BUDGET EXHAUSTED: posts after this point have no age
 
 Read that line before changing the number again.
+
+### THE RAISE BOUGHT NOTHING, AND THE FIRST RUN AFTER IT SAID SO (2026-08-13)
+
+The 14:00 full run under the new 800 cap used **305** of it and still captured an age on
+only **36 of 101 posts (35%)**. A budget that ends a run with 62% unspent was never the
+binding constraint — so the note above is right about the symptom and was wrong about the
+CAUSE.
+
+**Measure a raise against the run that follows it, not against the reasoning that
+justified it.** The comparison that settles it is subtle: the 10:00 run under the old 300
+cap looks better at first (39 of 113 = 35%) and is in fact IDENTICAL once its **63
+impossible ages** — from the UTC-vs-local clock bug fixed the same morning — are excluded.
+Bad data was padding the old number, so the two runs read as a flat line, which is the
+shape of a fix that did not fix anything.
+
+The real cause was `_hover_reveal`'s exit condition: it broke on the **link** alone, on a
+comment asserting the timestamp anchor yields link and tooltip together. It does not —
+`_age_from_aria` returns None for a profile-name tooltip or one that has not rendered — so
+a post whose first anchor revealed a permalink was abandoned with `age` still None, no
+matter how much budget was left. Now `if link is not None and age is not None`, bounded as
+before by `SCRAPER_HOVER_MAX_PER_POST` (3); the worst case rises from the measured ~2.2
+hovers per post to ~3, which 800 has room for. Both directions are pinned in
+`tests/test_scraper.py` (`test_hovering_continues_until_the_age_is_found_not_just_the_link`
+and `test_hovering_stops_as_soon_as_both_are_known`); the first was confirmed to fail with
+the fix reverted.
+
+**A CAP AND A LOOP BOUND LOOK THE SAME FROM THE OUTSIDE.** Both produce "posts have no
+age", and both get worse late in a run. Only the `hovers=N/CAP` line separates them —
+which is why it is worth printing even now that the number is comfortable.

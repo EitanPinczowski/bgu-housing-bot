@@ -903,7 +903,21 @@ def _hover_reveal(anchors, url_gid):
             link = _clean_href(href)
         elif _STORY_RE.search(href):
             link = _clean_href(href)
-        if link is not None:                     # the timestamp anchor gave link + tooltip
+        # KEEP GOING UNTIL BOTH ARE FOUND. This used to break on the LINK alone, and the
+        # comment claimed "the timestamp anchor gave link + tooltip" — but they do not
+        # always arrive together: `_age_from_aria` returns None for a profile-name tooltip
+        # or one that has not rendered yet, and the loop then gave up with `age` still None.
+        #
+        # Measured 2026-08-13, the 14:00 full run: **36 of 101 posts (35%) carried an age
+        # while the hover budget was only 305/800 used** — so the cap was never the
+        # constraint, and raising it to 800 bought nothing. This is what was losing them.
+        # The 10:00 run under the old code scored the same 35% once its 63 known-false
+        # values are excluded, which is how the padding hid a flat line.
+        #
+        # Still bounded by SCRAPER_HOVER_MAX_PER_POST (3) and the run cap, so the worst
+        # case is ~3 hovers per post instead of the ~2.2 measured — which the 800 budget
+        # now has room for. A post whose tooltip never parses costs its 3 and moves on.
+        if link is not None and age is not None:
             break
     return link, age
 
