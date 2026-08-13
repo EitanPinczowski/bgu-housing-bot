@@ -1,5 +1,7 @@
 """doctor health checks: each dependency reports the right status, and every FAIL
 carries a remediation hint (the point of the command). All deps mocked, no network."""
+import pathlib
+
 import config
 import doctor
 import pytest
@@ -51,6 +53,13 @@ def test_data_file_missing_names_the_loader(monkeypatch, tmp_path):
 
 
 def test_every_failure_carries_remediation(monkeypatch):
+    # `checks()` shells out to wmic/powershell for process state. Reading the REAL machine
+    # here made the test non-deterministic and, on 2026-08-13, raised UnicodeDecodeError
+    # inside subprocess's reader thread when a command line held a non-UTF-8 byte. Same
+    # principle as the network guard: a test must not depend on the host.
+    import subprocess
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else "", 0, "", ""))
     monkeypatch.setattr(doctor, "_osrm_ok", lambda: False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -386,3 +395,20 @@ def test_a_dead_mirror_is_still_reported(monkeypatch):
     monkeypatch.setattr(requests, "post", boom)
     rows = doctor._overpass_live()
     assert rows and all(s == doctor.FAIL for _, s, _ in rows)
+
+
+def test_doctor_survives_output_that_is_not_utf8(monkeypatch):
+    """`text=True` decodes as UTF-8, but wmic/powershell/docker emit the Windows OEM
+    codepage. One stray byte raised UnicodeDecodeError inside subprocess's reader THREAD,
+    so it surfaced as an unhandled thread exception rather than a clean failure — and it
+    matters more now that `main.run()` calls `try_fix()` at the start of every scrape.
+
+    Every `subprocess.run` in doctor.py passes errors="replace"; this proves the call sites
+    ask for it, since a decode error raised in a thread cannot be caught from here."""
+    import re
+    src = pathlib.Path(doctor.__file__).read_text(encoding="utf-8")
+    calls = re.findall(r"subprocess\.run\((?:[^()]|\([^()]*\))*\)", src, re.S)
+    assert calls, "no subprocess.run calls found — did doctor.py change shape?"
+    for c in calls:
+        if "text=True" in c:
+            assert 'errors="replace"' in c, f"decodes host output without errors=: {' '.join(c.split())[:90]}"

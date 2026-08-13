@@ -175,8 +175,14 @@ def _task_wake_flags():
           "ForEach-Object { $_.TaskName + '=' + $_.Settings.WakeToRun }")
     # (also used by _check_hot_scheduled below — one PowerShell round-trip, not two)
     try:
+        # errors="replace" on every subprocess here: `text=True` decodes as UTF-8, but
+        # wmic/powershell/docker emit the Windows OEM codepage, so one stray byte in a
+        # process command line raised UnicodeDecodeError inside subprocess's reader THREAD
+        # — surfacing as an unhandled thread exception rather than a clean failure. Seen
+        # intermittently in the suite 2026-08-13; it matters more now that `main.run()`
+        # calls `try_fix()` at the start of every scrape.
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                           capture_output=True, text=True, timeout=25)
+                           capture_output=True, text=True, errors="replace", timeout=25)
     except Exception:
         return None
     if r.returncode != 0:
@@ -292,7 +298,7 @@ def _listener_running() -> bool:
     import subprocess
     try:
         out = subprocess.run(["wmic", "process", "get", "commandline"],
-                             capture_output=True, text=True, timeout=20).stdout
+                             capture_output=True, text=True, errors="replace", timeout=20).stdout
         if out:
             return "bot_listener" in out
     except Exception:
@@ -301,7 +307,7 @@ def _listener_running() -> bool:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }"],
-            capture_output=True, text=True, timeout=25).stdout
+            capture_output=True, text=True, errors="replace", timeout=25).stdout
         return "bot_listener" in (out or "")
     except Exception:
         return True                  # can't tell -> don't cry wolf
@@ -326,7 +332,7 @@ def _process_started(needle: str):
             ["powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "
              f"'{needle}' " + "} | ForEach-Object { $_.CreationDate.ToString('o') }"],
-            capture_output=True, text=True, timeout=25).stdout
+            capture_output=True, text=True, errors="replace", timeout=25).stdout
         for line in (out or "").splitlines():
             line = line.strip()
             if line:
@@ -587,7 +593,7 @@ def _daemon_ok(timeout: int = 12) -> bool:
     import subprocess
     try:
         r = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, errors="replace", timeout=timeout)
         return r.returncode == 0 and bool((r.stdout or "").strip())
     except Exception:
         return False                # includes the CLI HANGING, which is a known symptom
@@ -650,7 +656,7 @@ def try_fix() -> list:
     container = getattr(config, "OSRM_DOCKER_CONTAINER", "osrm_bgu")
     try:
         r = subprocess.run(["docker", "start", container],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, errors="replace", timeout=60)
         ok = r.returncode == 0 and _osrm_ok_retry()
         done.append(("start OSRM", ok,
                      f"{container} up" if ok else
