@@ -195,6 +195,23 @@ def _task_wake_flags():
     return out or None
 
 
+def _modern_standby_only():
+    """True when this machine has ONLY S0 Low Power Idle — no S3 to RTC-wake out of.
+    None if `powercfg` can't be asked. Read-only; `/a` needs no elevation."""
+    import subprocess
+    try:
+        r = subprocess.run(["powercfg", "/a"], capture_output=True, text=True,
+                           errors="replace", timeout=20)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    out, avail = r.stdout, r.stdout.split("not available")[0]
+    if "S0 Low Power Idle" not in out:
+        return False
+    return "Standby (S3)" not in avail
+
+
 def _check_wake_timers():
     """Can a scheduled run actually wake this machine?
 
@@ -207,10 +224,50 @@ def _check_wake_timers():
         return ("wake timers", SKIP, "can't query Task Scheduler", "")
     asleep = [n for n, ok in flags.items() if not ok]
     if not asleep:
+        # THE FLAG IS NOT THE CAPABILITY, AND THIS ROW SAID PASS FOR WEEKS WHILE SLOTS
+        # WERE BEING LOST. `WakeToRun` is an RTC wake out of S3, and this machine has no
+        # S3 — `powercfg /a` reports only "Standby (S0 Low Power Idle)". The checkbox is
+        # set and Task Scheduler honours it; no wake ever happens. Evidence on 2026-08-14:
+        # three resumes (08-11, 08-12, 08-14) all logged `Wake Source: Unknown`, i.e. a
+        # human opened the lid, and the scheduler recorded the 08:00 and 10:00 slots
+        # itself as `NumberOfMissedRuns: 2`.
+        if _modern_standby_only() is True:
+            return ("wake timers", WARN,
+                    f"all {len(flags)} tasks ASK to wake the PC, but this machine is "
+                    "Modern Standby only (no S3) — a scheduled wake cannot fire",
+                    "leave it on mains and awake for the hours you want covered; "
+                    "check with `powercfg /a` and the Power-Troubleshooter wake source")
         return ("wake timers", PASS, f"all {len(flags)} tasks can wake the PC", "")
     return ("wake timers", WARN,
             f"{len(asleep)}/{len(flags)} task(s) can't wake the PC: " + ", ".join(asleep[:3]),
             "run setup_always_on.cmd as Administrator (missed runs otherwise)")
+
+
+def _check_keep_awake():
+    """Will a run that starts now be able to hold the machine awake?
+
+    `scraper.start_keep_awake()` is MAINS-ONLY by the user's rule, so on battery a run
+    gets no protection and this machine — Modern Standby, no S3 — idles into standby with
+    the run inside it. What that looks like is NOT a crash: on 2026-08-14 the 11:03 run
+    froze at `post 6` three minutes in, the wall clock ran on, and the watchdog aborted at
+    212 min against a 120-minute ceiling because the watchdog was throttled too. The
+    process held the lock the whole time, so the 12:00 and 14:00 slots were refused with
+    Task Scheduler event 322 (`instance already running`). One unplugged laptop cost the
+    entire day.
+
+    `doctor` was all-green the night before, because nothing asked this question."""
+    try:
+        import scraper
+        ac = scraper.on_ac_power()
+    except Exception:
+        return ("keep-awake", SKIP, "can't read the power state", "")
+    if ac is True:
+        return ("keep-awake", PASS, "on mains — a run can hold the machine awake", "")
+    where = "on battery" if ac is False else "power state unknown (treated as battery)"
+    return ("keep-awake", WARN,
+            f"{where} — keep-awake will NOT hold, and a run may freeze mid-scrape",
+            "plug it in for the hours you want covered; a frozen run also holds the "
+            "lock, so it costs the following slots too")
 
 
 def _check_hot_scheduled():
@@ -533,7 +590,8 @@ def checks() -> list:
     out += [_check_db(), _check_backups(), _check_osrm(), _check_telegram(), _check_gemini(),
             _check_llm_budget(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
-            _check_wake_timers(), _check_hot_scheduled(), _check_geocode_placement(),
+            _check_wake_timers(), _check_keep_awake(),
+            _check_hot_scheduled(), _check_geocode_placement(),
             _check_dashboard_fresh()]
     return out
 

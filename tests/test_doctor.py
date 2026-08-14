@@ -249,6 +249,8 @@ def test_chains_report_backends(monkeypatch):
 def test_wake_timer_check(monkeypatch):
     """The silent failure behind "why didn't it run": a task that can't wake the PC is
     skipped entirely when the machine is asleep, with no error anywhere."""
+    # An S3 machine: the flag really does mean the PC can be woken.
+    monkeypatch.setattr(doctor, "_modern_standby_only", lambda: False)
     monkeypatch.setattr(doctor, "_task_wake_flags",
                         lambda: {"BGU Housing Scraper": True, "BGU Morning": True})
     assert doctor._check_wake_timers()[1] == doctor.PASS
@@ -261,6 +263,41 @@ def test_wake_timer_check(monkeypatch):
     # not Windows / no Task Scheduler -> SKIP, never a false alarm
     monkeypatch.setattr(doctor, "_task_wake_flags", lambda: None)
     assert doctor._check_wake_timers()[1] == doctor.SKIP
+
+
+def test_the_wake_flag_is_not_the_capability_on_a_modern_standby_machine(monkeypatch):
+    """Every task asks to wake the PC and none of them can. `WakeToRun` is an RTC wake out
+    of S3, and this machine has no S3 — so the row read PASS for weeks while morning slots
+    were lost. Evidence 2026-08-14: three resumes (08-11, 08-12, 08-14) all logged
+    `Wake Source: Unknown`, i.e. a human opened the lid, and Task Scheduler recorded the
+    08:00 and 10:00 slots itself as `NumberOfMissedRuns: 2`."""
+    monkeypatch.setattr(doctor, "_task_wake_flags",
+                        lambda: {"BGU Housing Scraper": True, "BGU Morning": True})
+    monkeypatch.setattr(doctor, "_modern_standby_only", lambda: True)
+    name, status, detail, rem = doctor._check_wake_timers()
+    assert status == doctor.WARN, "a wake that cannot fire must not read PASS"
+    assert "Modern Standby" in detail and "S3" in detail
+    # unknowable (not Windows, powercfg missing) must not invent a warning
+    monkeypatch.setattr(doctor, "_modern_standby_only", lambda: None)
+    assert doctor._check_wake_timers()[1] == doctor.PASS
+
+
+def test_keep_awake_row_warns_on_battery(monkeypatch):
+    """On battery `start_keep_awake` deliberately does not hold — so a run starts, the
+    machine idles into Modern Standby with the run inside it, and the run FREEZES rather
+    than crashing. On 2026-08-14 the 11:03 run stopped at `post 6` three minutes in, the
+    watchdog aborted at 212 min against a 120-minute ceiling because it was throttled too,
+    and the lock it held made Task Scheduler refuse the 12:00 and 14:00 slots with event
+    322. `doctor` was all-green the night before, because nothing asked this."""
+    import scraper
+    monkeypatch.setattr(scraper, "on_ac_power", lambda: True)
+    assert doctor._check_keep_awake()[1] == doctor.PASS
+    monkeypatch.setattr(scraper, "on_ac_power", lambda: False)
+    name, status, detail, rem = doctor._check_keep_awake()
+    assert status == doctor.WARN and "battery" in detail and "lock" in rem
+    # unknown power state is treated as battery — same reason `start_keep_awake` does
+    monkeypatch.setattr(scraper, "on_ac_power", lambda: None)
+    assert doctor._check_keep_awake()[1] == doctor.WARN
 
 
 def test_hot_pass_scheduled_check(monkeypatch):

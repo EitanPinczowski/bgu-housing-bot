@@ -134,6 +134,33 @@ The lock is an **OS file lock**, so only the holding process exiting frees it.
 - **A crawl, not a hang.** A run on Ollama at ~2 min/post has a fresh heartbeat and is
   healthy by every progress measure while holding the lock all day. `MAX_RUN_MINUTES`
   (120) is a wall-clock ceiling for exactly this.
+- **AN UNPLUGGED LAPTOP COSTS THE WHOLE DAY, NOT ONE RUN** (2026-08-14, every slot lost).
+  `start_keep_awake()` is mains-only by the user's rule, so on battery nothing holds the
+  machine and it idles into Modern Standby with the run inside it. The chain:
+
+      02:51 → 10:57  asleep. No wake. 08:00 and 10:00 never fire.
+      11:03:38  START   (StartWhenAvailable, after a HUMAN opened the lid)
+      11:06     heartbeat stops at `post 6` — machine idles into standby
+      14:36:07  ABORT   run has taken 212 min (limit 120)
+      16:35:29  SKIP    random human-like skip     ← the 1-in-8, bad luck on top
+
+  The frozen run **held the lock from 11:03 to 14:36**, so 12:00 and 14:00 were refused by
+  Task Scheduler with **event 322** (`instance already running`). That is why one unplugged
+  night costs five slots and not two.
+  - **`WakeToRun` IS SET, HONOURED, AND INERT HERE.** It is an RTC wake out of S3, and
+    `powercfg /a` shows this machine has only `Standby (S0 Low Power Idle)`. Three resumes
+    (08-11, 08-12, 08-14) all logged `Wake Source: Unknown` — a human opening the lid.
+    `doctor`'s wake-timers row read **PASS** throughout because it checked the FLAG; it now
+    consults `_modern_standby_only()` and WARNs, and a new `keep-awake` row WARNs whenever
+    the machine is on battery.
+  - **The tells, cheapest first:** `NumberOfMissedRuns` from `Get-ScheduledTaskInfo`;
+    `Wake Source` in the Power-Troubleshooter event; then the heartbeat's FROZEN timestamp
+    against the run's wall-clock age. A heartbeat that stops dead while the run keeps
+    ageing is standby — a crawl advances it, a crash ends the process.
+  - **READ `search_log.txt`, NOT ONLY `scraper_runs.log`.** The entire day above is in the
+    first and absent from the second: the frozen process could not flush, so `runs.log`
+    still ended at the previous night's `END` and the day looked like nothing had been
+    attempted at all. Two logs, and the quieter one was the honest one.
 
 ## Before concluding "the schedule is wrong"
 
