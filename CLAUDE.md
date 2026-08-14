@@ -649,6 +649,7 @@ nobody has.
 | `fb-selectors` | the scraper stopped reading posts, or FB changed its DOM |
 | `scraper-volume` | changing cadence, groups, depth, or the hot pass — **read first** |
 | `health-triage` | a run was lost, the lock is wedged, `doctor` is failing |
+| `data-recovery` | the DB is corrupt or half-written — restoring from `data/backups/` |
 | `osrm-docker` | OSRM down, Docker won't start, orphaned unix sockets |
 | `testing-conventions` | writing a test without corrupting real operational data |
 | `write-a-note` | recording a finding here or in a skill so it survives |
