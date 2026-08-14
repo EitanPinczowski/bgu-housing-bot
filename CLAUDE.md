@@ -4,29 +4,40 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-13)
+## OPEN RIGHT NOW — read this first (2026-08-14)
 
-**OPEN: post-age capture is unstable, and the next measurement arrives on its own.
-Read the 08:00 run's `tooltips:` line before touching anything in the hover path.**
+**The only open item is OPERATIONAL and it is the user's call: THIS MACHINE CANNOT WAKE
+ITSELF, so an unplugged night costs a whole day of runs. Nothing in the code can fix it.**
 
-Age capture per full run on 2026-08-13: **90% → 37% → 10% → 68% → 24%.** The 10% was a
-stale-tooltip bug and is fixed (`ba8d4e9`); the swing between the last two is NOT
-explained. Nothing is blocking — a missing age costs the detection-lag metric, not a
-listing.
+`powercfg /a` reports only `Standby (S0 Low Power Idle)` — no S3. `WakeToRun` is an RTC
+wake out of S3, so it is set on all 10 tasks, honoured by Task Scheduler, and **inert**:
+three resumes (08-11, 08-12, 08-14) all logged `Wake Source: Unknown`, i.e. a human opened
+the lid. On 2026-08-14 that cost **every slot in the day**:
 
-**Three explanations were proposed today and two were wrong. Do not add a fourth before
-reading the new line.** The 08:00 run prints:
+    02:51 → 10:57  asleep. 08:00 and 10:00 never fire.
+    11:03:38  START   (only once a human opened the lid)
+    11:06     heartbeat freezes at `post 6` — idles into Modern Standby mid-run
+    14:36:07  ABORT   run has taken 212 min (limit 120)
+    16:35:29  SKIP    random human-like skip — the 1-in-8, bad luck on top
 
-    post age: 26/66 captured (page 11 · hover 15 · none 40)
-    tooltips: 41/97 hovers popped one · 33 parsed to a date
+The frozen run **held the lock 11:03 → 14:36**, so 12:00 and 14:00 were refused with Task
+Scheduler event 322 (`instance already running`). One unplugged night costs five slots, not
+two. `doctor` now WARNs on both halves (`wake timers`, `keep-awake`); the full triage is in
+`health-triage`. **The remedy is mains + no sleep during the hours you want covered, which
+is a decision, not a patch.** `start_keep_awake` is deliberately mains-only by user rule.
 
-and the second line decides it, because the two remaining causes need opposite fixes:
+**CLOSED 2026-08-14: post-age capture. 94%, and both tooltip halves are healthy.**
 
-| reading | cause | fix |
-|---|---|---|
-| `hovers` ≫ `with_tip` | nothing rendered inside `SCRAPER_HOVER_WAIT_SEC` (0.6 s) | wait longer, or poll for the node instead of a fixed sleep |
-| `with_tip` ≫ `parsed` | it rendered and `_age_from_aria` cannot read it | a format/locale gap in the parser — capture a failing string first |
-| both healthy, capture still low | the age is not coming from tooltips at all | look at `page` vs `hover` in the line above |
+    post age: 94/102 captured (page 14 · hover 80 · none 8)
+    tooltips: 82/87 hovers popped one · 80 parsed to a date
+
+Per-run series, full runs only: **90% → 37% → 10% → 68% → 24% → 94%.** Three different
+causes are in that line — a stale tooltip node (`document.querySelector` returning the
+first `[role="tooltip"]` in document order, not the one the hover popped), a dashboard
+publish competing with the scrape, and the standby above — and **each was proposed as the
+explanation for all of it**. 94% of hovers now pop a node and 98% of those parse, so
+neither `SCRAPER_HOVER_WAIT_SEC` nor `_age_from_aria` is a constraint. Details in
+`scraper-volume`. If it regresses, read `tooltips:` first — it says which half failed.
 
 - **JUDGE THIS ON THE ARCHIVED ROWS, NOT ON THE SUMMARY LINE** — they answer different
   questions and disagreed all day. `python .claude/tools/age_capture.py` prints the

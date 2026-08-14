@@ -188,4 +188,20 @@ post against the ~2.2 measured. It should help most where the tooltip is slow, w
 exactly the contention case. Pinned both ways in `tests/test_scraper.py`
 (`test_hovering_continues_until_the_age_is_found_not_just_the_link`,
 `test_hovering_stops_as_soon_as_both_are_known`); the first fails with the fix reverted.
-**Its value is unmeasured** — judge it on a run nothing else is competing with.
+
+### MEASURED, ON THE FIRST CLEAN RUN: 94% (2026-08-14 18:00)
+
+    post age: 94/102 captured (page 14 · hover 80 · none 8)
+    tooltips: 82/87 hovers popped one · 80 parsed to a date
+
+94% per-post on the archived rows (64 of 68) — the best full run recorded, against 10% at
+the bug's worst. **Both tooltip halves are healthy**: 94% of hovers popped a node and 98%
+of those parsed, so neither `SCRAPER_HOVER_WAIT_SEC` nor `_age_from_aria` is a
+constraint, and the 68%/24% runs on 08-13 were the contention and battery-standby
+conditions rather than a second bug. `hover 80` against `page 14` confirms the premise the
+whole hover mechanism rests on: under he-IL the tooltip does nearly all the work.
+
+**The full-run series is the thing to keep, because no single run would have shown it:**
+90% → 37% → 10% → 68% → 24% → **94%**. Three separate causes are in that line — a stale
+tooltip node, a dashboard publish competing with the scrape, and an unplugged laptop
+idling into Modern Standby mid-run. Each was proposed as the explanation for all of it.
