@@ -16,10 +16,45 @@ AMBER boundary is measured with. The bot still classifies without it — a calib
 straight-line estimate stands in — so **nothing crashes, the numbers just quietly get
 worse**. That is why this is worth fixing before a `replay --apply`, not after.
 
-## First: is it just stopped?
+## FIRST, AND CHEAPEST: is it only `localhost` that is broken? (2026-08-14)
+
+    curl.exe "http://127.0.0.1:5000/route/v1/foot/34.79,31.25;34.8015,31.2622?overview=false"
+
+**If 127.0.0.1 answers and `localhost` does not, nothing is wrong with Docker or OSRM.**
+`localhost` resolves to IPv6 `::1` first on Windows, and Docker Desktop's **`wslrelay`**
+holds `[::1]:5000` separately from the IPv4 proxy (`com.docker.backend`) that actually
+forwards. After a series of sleep/resume cycles that relay wedges — it keeps the socket
+and stops forwarding.
+
+What it looked like, and why every other signal lied:
+
+| signal | said |
+|---|---|
+| `docker ps` | `osrm_bgu  Up 33 hours` |
+| `docker logs osrm_bgu` | `Listening on: 0.0.0.0:5000` … `running and waiting for requests` |
+| `netstat -ano \| grep 5000` | LISTENING on `0.0.0.0`, `[::]` **and** `[::1]` — three rows, two owners |
+| `doctor` | `osrm unreachable` |
+| `doctor --fix` | started an already-running container, and reported failure |
+| `curl localhost:5000` | timeout |
+| `curl 127.0.0.1:5000` | `{"code":"Ok", … "duration":1744.9}` |
+
+The tell is **two different PIDs listening on port 5000** — `com.docker.backend` on the
+IPv4 wildcard, `wslrelay` on `[::1]`:
+
+    netstat -ano | grep 5000        # then Get-Process -Id <pid> for each owner
+
+`config.OSRM_BASE_URL` is pinned to `http://127.0.0.1:5000` so the project cannot hit this
+again. **Do not "fix" it back to `localhost`.** Restarting Docker or WSL also clears it,
+but only until the next resume — and it costs a UAC prompt and the WSL VM.
+
+> Anything that ran during the outage used the **straight-line walk estimate**, and the
+> AMBER boundary is a walk time. `osrm.alive()` caches once per process, so a run that
+> started while it was broken keeps believing OSRM is down even after this is fixed.
+
+## Next: is it just stopped?
 
     docker start osrm_bgu
-    curl.exe "http://localhost:5000/route/v1/foot/34.79,31.25;34.8015,31.2622?overview=false"
+    curl.exe "http://127.0.0.1:5000/route/v1/foot/34.79,31.25;34.8015,31.2622?overview=false"
 
 Expect `"code":"Ok"` and a duration. If that works, you are done.
 

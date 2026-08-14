@@ -197,7 +197,15 @@ NEIGHBORHOODS_PATH = ROOT / "neighborhoods.json"
 # ---------------------------------------------------------------------------
 # OSRM — local, self-hosted foot-routing server (see README).
 # ---------------------------------------------------------------------------
-OSRM_BASE_URL = "http://localhost:5000"
+# 127.0.0.1, NOT `localhost` — the name resolves to IPv6 ::1 FIRST on Windows, and Docker
+# Desktop's `wslrelay` holds [::1]:5000 separately from the IPv4 proxy that actually
+# forwards. On 2026-08-14 that relay was wedged after a run of sleep/resume cycles: the
+# container was "Up 33 hours" and healthy (`running and waiting for requests` in its own
+# log), `netstat` showed 5000 LISTENING, and every request through `localhost` timed out
+# while 127.0.0.1 answered `{"code":"Ok"}` instantly. `doctor` reported "osrm unreachable"
+# and `--fix` kept starting an already-running container, so the real fault was invisible
+# from both ends. Pinning IPv4 removes the whole class.
+OSRM_BASE_URL = "http://127.0.0.1:5000"
 # The Docker container name for OSRM, so `python doctor.py --fix` can auto-start it
 # when it's down (self-healing) instead of only alerting.
 OSRM_DOCKER_CONTAINER = "osrm_bgu"
