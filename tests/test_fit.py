@@ -70,8 +70,11 @@ def test_fresher_beats_stale():
 
 def test_unknown_age_is_neutral():
     # a manual paste has no age and must not be punished for it
+    # 20h was the neutral exemplar until 2026-08-15, when the bands became 1/3/7 DAYS and
+    # 20h moved into the TOP band. The rule is unchanged — unknown age scores like the
+    # zero band — so only the representative age moved, now 3-7 days.
     assert fit.score(1400, 10, "GREEN", 2, 3, age_hours=None) == \
-           fit.score(1400, 10, "GREEN", 2, 3, age_hours=20)  # 18–36h band = 0
+           fit.score(1400, 10, "GREEN", 2, 3, age_hours=100)  # 72–168h band = 0
 
 
 def test_score_is_rescaled_raw():
@@ -220,3 +223,39 @@ def test_broker_penalty_lowers_but_does_not_dominate_the_score():
     brokered = fit.score(*args, broker_listings=config.BROKER_MIN_LISTINGS)
     assert brokered < clean
     assert clean - brokered <= 15          # a nudge, not a veto: location/price still rule
+
+
+# --- day-scale freshness bands (user request, 2026-08-15) -----------------------------
+
+def _fresh(age):
+    """Same listing at different ages — only the freshness factor moves."""
+    return fit.score(1400, 10, "GREEN", 2, 3, age_hours=age)
+
+
+def test_freshness_bands_are_days_not_hours():
+    """Best under a day, then under 3, then under 7, then a heavy drop. The old bands were
+    6/18/36 HOURS, which barely separated a two-day-old flat from a three-week-old one."""
+    day, three, week, old = _fresh(2), _fresh(48), _fresh(120), _fresh(24 * 30)
+    assert day > three > week > old
+    # the boundaries themselves, not just the ordering
+    assert _fresh(23) == _fresh(2)            # anything under a day is top band
+    assert _fresh(25) == _fresh(48)           # just over a day drops one band
+    assert _fresh(71) > _fresh(73)            # the 3-day edge
+    assert _fresh(167) > _fresh(169)          # the 7-day edge
+
+
+def test_a_week_old_listing_loses_enough_to_matter():
+    """THE PENALTY IS THE POINT. A stale flat has usually gone, so the drop must be able to
+    push it under MIN_ALERT_SCORE rather than merely reorder it — the old -4 floor moved a
+    score by ~3 of 100 and left week-old listings sitting at the top of the table. Measured
+    when this landed: 358 of 590 listings were older than a week, 82 of them MATCHes above
+    the gate."""
+    assert _fresh(2) - _fresh(24 * 8) >= 10
+
+
+def test_the_top_band_is_unchanged_so_scores_stay_comparable():
+    """+4 is counted in `_max_possible`; raising it would renormalise every score in the
+    table and make this change unreadable next to the drift it caused. Only the losing end
+    moves."""
+    assert dict(fit.breakdown(1400, 10, "GREEN", 2, 3, age_hours=1))["טריות"] == 4
+    assert dict(fit.breakdown(1400, 10, "GREEN", 2, 3, age_hours=24 * 9))["טריות"] == -12

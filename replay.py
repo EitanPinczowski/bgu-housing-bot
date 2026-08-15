@@ -42,6 +42,7 @@ try:
 except Exception:
     pass
 
+import dates
 import geocode
 import pipeline
 import scraper          # for cut_at_next_story only — no browser is started
@@ -124,7 +125,11 @@ def _age_hours(post):
     run supplies a real age so the freshness factor contributes, replay supplied
     nothing so it contributed 0, and every `replay --apply` therefore rewrote scores
     2-4 points downward. Same input, different number, depending on which code path
-    last touched the row. Now both paths measure freshness the same way."""
+    last touched the row. Now both paths measure freshness the same way.
+
+    UTC, NOT LOCAL. `posted_at` is stored on SQLite's UTC clock, so subtracting a local
+    `datetime.now()` added 3 hours to every replayed age — see `dates.utc_now`, which
+    exists because this is the second module to get it wrong."""
     stamp = post.get("posted_at")
     if not stamp:
         return None
@@ -132,7 +137,7 @@ def _age_hours(post):
         posted = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError):
         return None
-    return max(0.0, (datetime.now() - posted).total_seconds() / 3600.0)
+    return max(0.0, (dates.utc_now() - posted).total_seconds() / 3600.0)
 
 
 def _reclassify(post):

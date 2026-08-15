@@ -10,10 +10,11 @@ import hashlib
 import json
 import re
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 
 import config
+import dates
 from models import ListingExtract, PipelineResult
 
 _NOW = "%Y-%m-%d %H:%M:%S"
@@ -837,8 +838,12 @@ def _utc_now() -> datetime:
         whole cadence question rests on was three hours optimistic.
 
     Comparisons must be same-clock; which clock matters less than that they agree, and UTC
-    is the one the schema already chose."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    is the one the schema already chose.
+
+    Kept as a name here (the callers and this history are worth preserving) but delegating
+    to `dates.utc_now`, because `replay._age_hours` later made the identical mistake in the
+    other direction. Two modules getting it wrong is the argument for one definition."""
+    return dates.utc_now()
 
 
 def record_post(sig: str, raw_text: str, comments, images, group, source_url,

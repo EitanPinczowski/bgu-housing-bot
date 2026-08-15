@@ -101,12 +101,29 @@ def breakdown(price: Optional[int], walk_min: Optional[float], tier: Optional[st
     else:
         parts.append(("שותפים לא ידוע", 5))
 
-    # freshness — centered so it rewards a brand-new post and penalizes a stale
-    # repost, without just inflating every score. Unknown age (manual paste) = 0.
+    # freshness — DAY-SCALE bands, at the user's request (2026-08-15): best under a day,
+    # then under 3, then under 7, and a heavy drop after that. The old bands were 6/18/36
+    # HOURS with a -4 floor, which barely separated a two-day-old flat from a three-week-old
+    # one; a flat still listed after a week is usually gone.
+    #
+    # THE PENALTY IS THE POINT, so it is much bigger than the +4 reward: -12 raw is ~10 of
+    # the final 0-100 points (_max_possible is 125), enough to push a stale listing under
+    # MIN_ALERT_SCORE (75) unless it is excellent on every other factor. Measured against
+    # the live DB when this landed: 358 of 590 listings (61%) are older than a week, and 82
+    # of the 131 MATCHes sitting above the gate.
+    #
+    # The +4 top band is unchanged ON PURPOSE — it is counted in `_max_possible`, so raising
+    # it would renormalise every score in the table and make this change unreadable next to
+    # the drift it caused. Only the losing end moves.
+    #
+    # NOTE this only bites on `replay --apply`: a live run scores a post at its age WHEN
+    # SCRAPED, which SCRAPER_MAX_POST_AGE_HOURS caps at 24h, so nothing alerts with a
+    # penalty. Ranking, digests and the dashboard read the stored score, and that is what
+    # this is for. Unknown age (manual paste) contributes nothing, as before.
     if age_hours is not None:
         parts.append(("טריות",
-                      4 if age_hours < 6 else 2 if age_hours < 18
-                      else 0 if age_hours < 36 else -4))
+                      4 if age_hours < 24 else 2 if age_hours < 72
+                      else 0 if age_hours < 168 else -12))
 
     # entry date vs your target move-in month — the SMALLEST factor by design, so
     # it only nudges ties. Same month +4, an adjacent month +2, else 0.

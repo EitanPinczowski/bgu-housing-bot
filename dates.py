@@ -6,7 +6,26 @@ the hyphen pipeline added); keeping it here prevents that.
 """
 from __future__ import annotations
 import re
+from datetime import datetime, timezone
 from typing import Optional
+
+
+def utc_now() -> datetime:
+    """Naive UTC — the clock every stored timestamp in this project is written on.
+
+    SQLite's `CURRENT_TIMESTAMP` (which writes `first_seen`) is **UTC**, and `posted_at`
+    is derived from it, so anything comparing against either must be UTC too.
+    `datetime.now()` is LOCAL, which is UTC+3 here.
+
+    THIS MISTAKE HAS NOW BEEN MADE TWICE, in two modules, which is why the helper is here
+    rather than private to one of them. `storage.record_post` computed `posted_at` from
+    the local clock and put publication 3 hours AHEAD of the sighting it is compared
+    against, corrupting the detection-lag metric (fixed 2026-08-14). `replay._age_hours`
+    then made the same comparison in the other direction and inflated every replayed
+    age by 3 hours — invisible while the freshness bands were 6/18/36 hours apart and
+    material the moment they became 1/3/7 DAYS, because a 21-hour-old post reads as
+    24 and loses the top band."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Hebrew month names -> number, for lease dates written as words ("בספטמבר").
 HE_MONTHS = {

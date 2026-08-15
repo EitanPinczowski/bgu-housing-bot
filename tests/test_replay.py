@@ -26,11 +26,18 @@ def test_score_is_the_same_whichever_path_computed_it(monkeypatch):
     """Replay used to pass age_hours=None while a live run passed the real age, so
     the freshness factor contributed on one path and not the other — every
     `replay --apply` silently rewrote scores 2-4 points downward. Same post, same
-    number, whichever code path last touched the row."""
-    from datetime import datetime, timedelta
+    number, whichever code path last touched the row.
+
+    THE STAMP MUST BE BUILT ON THE UTC CLOCK, because that is the one `record_post`
+    writes on. This test used `datetime.now()` (LOCAL) until 2026-08-15, so both sides of
+    the subtraction were wrong together and it passed while `_age_hours` inflated every
+    replayed age by 3 hours. A test that models the wrong clock cannot see a clock bug —
+    the same shape as the tooltip double that ignored the script it was handed."""
+    from datetime import timedelta
+    import dates
     import fit
     import replay
-    posted = datetime.now() - timedelta(hours=3)
+    posted = dates.utc_now() - timedelta(hours=3)
     age = replay._age_hours({"posted_at": posted.strftime("%Y-%m-%d %H:%M:%S")})
     assert age is not None and 2.9 < age < 3.2
     # the freshness factor is what differed; with a real age both paths agree
