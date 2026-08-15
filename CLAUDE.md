@@ -4,7 +4,20 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-14)
+## OPEN RIGHT NOW — read this first (2026-08-15)
+
+**Nothing is open in the code.** 2026-08-15: freshness rescored to day-scale bands at the
+user's request (`< 1d +4 · < 3d +2 · < 7d 0 · ≥ 7d −12`) and applied — 187 listings down,
+104 up, 291 unchanged (their posts carry no `posted_at`), 8 MATCHes pushed below the alert
+gate and 2 pulled above. **598 listings, 323 MATCH.** Age capture is holding at 94% over
+six consecutive full runs with 57/57 tooltips parsing. Suite GREEN (736), `ruff` clean.
+- **`replay --frozen` PRINTS ONLY 50 OF ITS CHANGED ROWS**, and the sample skews: reading
+  the delta off it suggested scores mostly RISE, when 60.6% of archived posts fall by 6.
+  Compute the effect of a scoring change from the data directly; the log is capped.
+- **A WORKTREE HAS ITS OWN EMPTY `data/`**, so the session banner reported `listings: 0
+  (0 MATCH)` for three days while production held 598. The hook now resolves the main
+  checkout via `git rev-parse --git-common-dir` and says so; the statusline cache still
+  writes locally, so a worktree session never touches production `data/`.
 
 **The only open item is OPERATIONAL and it is the user's call: THIS MACHINE CANNOT WAKE
 ITSELF, so an unplugged night costs a whole day of runs. Nothing in the code can fix it.**

@@ -32,6 +32,46 @@ def _safe(label, fn):
         return f"  {label}: (could not check — {type(e).__name__})"
 
 
+_LOCAL_DATA_DIR = None      # this checkout's own data dir, set before any retargeting
+
+
+def _main_checkout():
+    """The MAIN working tree, when this session is running inside a linked git worktree —
+    otherwise None.
+
+    `data/` is git-ignored, so a worktree gets its OWN empty one. `config.DB_PATH` is
+    derived from the checkout root, so every probe below silently measured the worktree
+    and this banner reported **`listings: 0 (0 MATCH)`** for three days while production
+    held 598. That is worse than printing nothing: the whole point of the hook is that
+    measured state beats a typed-out summary, and an unlabelled 0 is a measurement that
+    lies. The bot only ever runs from the main checkout, so that is what "live" means.
+
+    `--git-common-dir` is the discriminator: in a linked worktree it points at the main
+    repo's `.git` while `--git-dir` points into `.git/worktrees/<name>`."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10,
+                           cwd=os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        main_root = os.path.dirname(os.path.abspath(r.stdout.strip()))
+        here = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+        return main_root if os.path.normcase(main_root) != os.path.normcase(here) else None
+    except Exception:
+        return None
+
+
+def _retarget(main_root: str) -> None:
+    """Point `config`'s data paths at the main checkout for the life of this hook.
+
+    Safe because the hook is its own short-lived process — nothing it mutates outlives it,
+    and every probe here is read-only."""
+    import config
+    from pathlib import Path
+    config.DATA_DIR = Path(main_root) / "data"
+    config.DB_PATH = config.DATA_DIR / "listings.sqlite"
+
+
 def _scrape():
     import scraper
     r = scraper.run_in_progress()
@@ -118,7 +158,10 @@ def _write_cache(values: dict) -> None:
     import json
     try:
         import config
-        path = config.DATA_DIR / ".claude_state.json"
+        # The LOCAL data dir, never the retargeted one: the statusline of THIS checkout
+        # reads this file, and a worktree session must not write into the production
+        # data directory the live bot is using.
+        path = (_LOCAL_DATA_DIR or config.DATA_DIR) / ".claude_state.json"
         values["generated"] = datetime.now().isoformat(timespec="seconds")
         path.write_text(json.dumps(values), encoding="utf-8")
     except Exception:
@@ -126,9 +169,21 @@ def _write_cache(values: dict) -> None:
 
 
 def main() -> int:
+    global _LOCAL_DATA_DIR
+    banner = []
+    try:
+        import config
+        _LOCAL_DATA_DIR = config.DATA_DIR
+        main_root = _main_checkout()
+        if main_root:
+            _retarget(main_root)
+            banner.append(f"  (worktree — state read from the main checkout at {main_root})")
+    except Exception:
+        pass                       # a banner must never fail because retargeting did
+
     probes = {"scrape": _scrape, "osrm": _osrm, "listings": _listings,
               "gemini": _quota, "last run": _last_run, "notes": _notes_drift}
-    rows, values = [], {}
+    rows, values = list(banner), {}
     for label, fn in probes.items():
         try:
             v = fn()
