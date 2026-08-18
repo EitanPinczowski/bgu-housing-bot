@@ -4,9 +4,33 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## OPEN RIGHT NOW — read this first (2026-08-15)
+## OPEN RIGHT NOW — read this first (2026-08-18)
 
-**Nothing is open in the code.** 2026-08-15: freshness rescored to day-scale bands at the
+**Nothing is open in the code.** 2026-08-18: a review of five areas found that most of what
+looks improvable is already built; four gaps were real and all four are done. **629
+listings, 336 MATCH, suite GREEN (775).**
+- **A VOTE NOW OUTLIVES ITS LISTING.** 2 of 5 marks were orphaned — 40% of the scarcest
+  data here, with `MIN_ALERT_SCORE` blocked until ~20 exist. `delete_listing` left them
+  dangling and `prune_orphan_listings` deleted them outright, while `_collapse` had been
+  re-pointing them correctly all along. `doctor` has a `votes` row that WARNs.
+- **THE DASHBOARD SHOWS AGE** (`גיל`, sortable), computed server-side because `first_seen`
+  is UTC and the browser is local. **The pin queue retires resolved names** on
+  `replay --apply`: it read 199 items of which 66 were real, and one pin has ever been
+  placed.
+- **`guard.py` MATCHED A WORD WHERE A COMMAND WAS MEANT** — 7 false positives, 2 that day.
+  Narrowed to command position, and `tests/test_guard_rules.py` now covers both directions
+  for four rules. The guard had none despite seven false positives.
+- **SMART APP CONTROL BLOCKS pre-commit's venv-copied python** (`WinError 4551`), so
+  gitleaks and the safety nets could not run and `git commit` failed outright. SAC has no
+  allow-list and disabling it is irreversible, so the hooks are now `language: system`
+  under the signed interpreter. `precommit_checks.py` is NARROWER than gitleaks and says so.
+- **`yad2_mail.py` is built and unvalidated.** Scraping Yad2 stays rejected; this reads its
+  saved-search emails read-only over IMAP and feeds `pipeline.process_post`, so both
+  sources are judged by one set of rules. **The block splitting is still a GUESS at Yad2's
+  template** — run `python yad2_mail.py --file <saved.eml> --dump` against one real alert
+  before `--live`. No mailbox is configured yet, and the credentials are the user's to add.
+
+2026-08-15: freshness rescored to day-scale bands at the
 user's request (`< 1d +4 · < 3d +2 · < 7d 0 · ≥ 7d −12`) and applied — 187 listings down,
 104 up, 291 unchanged (their posts carry no `posted_at`), 8 MATCHes pushed below the alert
 gate and 2 pulled above. **598 listings, 323 MATCH.** Age capture is holding at 94% over
