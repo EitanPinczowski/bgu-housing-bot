@@ -454,6 +454,15 @@ Modules whose notes are short enough to live here:
 - `replay.py` / `stats.py` — offline re-classify (+`--apply`) and funnel stats.
   **`replay.py --frozen` is the only reproducible mode**; `full_replay.py` warms the
   geocode cache then replays frozen, and refuses on battery / no OSRM / a scrape due.
+- `yad2_mail.py` — Yad2 as a SECOND SOURCE, via its own saved-search alert emails read
+  read-only over IMAP. Scraping Yad2 stays rejected (`dead-ends`); this is the route that
+  note names as legitimate. No bespoke Yad2 parser: blocks go through `pipeline.process_post`
+  like any Facebook post, so both sources are judged by one set of rules. Dry-run by
+  default; `--dump` first, because the block splitting is a GUESS at Yad2's template until
+  someone reads real mail. Credentials live in `.env` (app password, never the account one).
+- `precommit_checks.py` — the secret scan and safety nets, as `language: system` hooks.
+  Smart App Control now refuses pre-commit's venv-copied python, so gitleaks and friends
+  could not run at all; this is NARROWER than gitleaks and says so.
 - `load_zone_from_kmz.py` — regenerate `green_zone.json` from a new My Maps export.
 - `green_zone.json` / `no_amber_zones.json` — the walkable polygon + no-amber (ד') areas.
 - `README.md` — full Windows setup (Python, Docker OSRM Israel extract, Telegram bot, .env).
