@@ -89,6 +89,36 @@ def _check_db():
                 "restore from data/backups/ (see backup_db.py)")
 
 
+def _check_votes():
+    """The ⭐/🗑 votes, and whether any have been LOST.
+
+    This is the scarcest data in the project: `MIN_ALERT_SCORE` and `fit.py`'s weights are
+    both explicitly blocked until ~20 votes exist, and there were 5. Two of those five had
+    already been lost before anyone looked — `delete_listing` dropped the listing and left
+    the mark pointing at nothing, `prune_orphan_listings` deleted the mark outright, and
+    `effective_score` reads marks only for keys that still exist. So the signal vanished
+    while the vote COUNT stayed 5 and the loop looked merely starved rather than leaking.
+
+    An orphan is reported, never cleaned up: deleting it would hide the leak, and a vote
+    whose listing is gone cannot be paired with a score, so it is unusable for tuning and
+    worth knowing about."""
+    try:
+        with sqlite3.connect(config.DB_PATH) as c:
+            n = c.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
+        import storage
+        orphans = storage.orphaned_marks()
+    except Exception as exc:
+        return ("votes", SKIP, f"can't read marks ({type(exc).__name__})", "")
+    detail = f"{n} vote(s)"
+    if orphans:
+        return ("votes", WARN,
+                f"{detail}, {len(orphans)} ORPHANED (their listing is gone, so they can "
+                "never be paired with a score)",
+                "votes are now carried across deletes; these predate that and cannot be "
+                "recovered — check `storage.orphaned_marks()` if the count grows")
+    return ("votes", PASS, detail + ", none orphaned", "")
+
+
 def _check_backups():
     """Is there a RECENT snapshot of the one thing that cannot be re-derived?
 
@@ -587,7 +617,7 @@ def chains() -> list:
 def checks() -> list:
     out = [_check_config()]
     out += _check_data_files()
-    out += [_check_db(), _check_backups(), _check_osrm(), _check_telegram(), _check_gemini(),
+    out += [_check_db(), _check_votes(), _check_backups(), _check_osrm(), _check_telegram(), _check_gemini(),
             _check_llm_budget(), _check_sheets(),
             _check_last_run(), _check_listener(), _check_wedged_scraper(),
             _check_wake_timers(), _check_keep_awake(),

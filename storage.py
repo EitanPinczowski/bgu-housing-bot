@@ -957,9 +957,63 @@ def group_yield() -> list:
     return [(g, tot, m or 0, n or 0, d or 0, na or 0) for g, tot, m, n, d, na in rows]
 
 
+def _successor_key(c, dead: str) -> Optional[str]:
+    """A live listing the same flat now lives under, or None.
+
+    A dedup key is `phone:N|address`, `phone:N`, or `hash:…` (`make_dedup_key`). The phone
+    survives cross-posting and re-extraction, so a vote cast on `phone:N` belongs to
+    whatever `phone:N|address` row exists today. A content hash carries nothing to match
+    on, so those cannot be followed and are reported instead."""
+    if not dead.startswith("phone:"):
+        return None
+    phone = dead.split("|", 1)[0]
+    # `dedup_key != ?` is load-bearing: the dying row matches its own phone prefix, and
+    # returning it made `_rescue_marks` see keep == dead and skip the rescue entirely —
+    # a silent no-op that looked exactly like "no successor exists".
+    row = c.execute(
+        "SELECT dedup_key FROM listings WHERE (dedup_key=? OR dedup_key LIKE ?) "
+        "AND dedup_key != ? ORDER BY score DESC LIMIT 1",
+        (phone, phone + "|%", dead)).fetchone()
+    return row[0] if row else None
+
+
+def _rescue_marks(c, dead: str) -> None:
+    """Carry votes off a listing that is about to be deleted.
+
+    A VOTE IS THE SCARCEST DATA IN THIS PROJECT — 5 of them against 623 listings, and
+    `MIN_ALERT_SCORE` and `fit.py` are both explicitly blocked until there are 20. Two of
+    the five were already lost before this existed: `delete_listing` dropped the row and
+    left the mark pointing at nothing, and `prune_orphan_listings` deleted the mark
+    outright. `effective_score` only reads marks for a key that still exists, so either way
+    the signal vanished silently while `stats.py` still counted it.
+
+    Re-point when the flat still exists under another key; otherwise LEAVE the mark alone
+    so `orphaned_marks()` can report it. Never delete a vote to tidy up."""
+    keep = _successor_key(c, dead)
+    if not keep or keep == dead:
+        return
+    c.execute("UPDATE OR IGNORE marks SET dedup_key=? WHERE dedup_key=?", (keep, dead))
+    # Whatever is left collided on (dedup_key, user_id) — the same person already voted on
+    # the surviving row, and THAT vote is the current one. Only then is dropping it right.
+    c.execute("DELETE FROM marks WHERE dedup_key=?", (dead,))
+
+
+def orphaned_marks() -> list:
+    """Votes whose listing no longer exists — a signal that was cast and then lost.
+
+    Reported rather than cleaned up: deleting them would hide the leak, and the rows still
+    say which flats the group rejected. `doctor` shows the count beside the vote total."""
+    with _conn() as c:
+        return c.execute(
+            "SELECT m.dedup_key, m.user_id, m.mark, m.ts FROM marks m "
+            "LEFT JOIN listings l USING(dedup_key) WHERE l.dedup_key IS NULL "
+            "ORDER BY m.ts").fetchall()
+
+
 def delete_listing(dedup_key: str) -> None:
     """Remove a listing (e.g. replay --apply found it now classifies RED/NOT_AD)."""
     with _conn() as c:
+        _rescue_marks(c, dedup_key)          # a vote outlives the row it was cast on
         c.execute("DELETE FROM listings WHERE dedup_key=?", (dedup_key,))
 
 
@@ -1005,8 +1059,11 @@ def prune_orphan_listings() -> int:
         for k, addr in rows:
             if k in live or seen.get(_group_key(k, addr), 0) < 2:
                 continue                   # still reachable, or the only row for its flat
+            # Carry the votes to the surviving row for this flat first. This used to be a
+            # bare `DELETE FROM marks`, which destroyed the scarcest data in the project to
+            # tidy up a row the same flat still occupies elsewhere.
+            _rescue_marks(c, k)
             c.execute("DELETE FROM listings WHERE dedup_key=?", (k,))
-            c.execute("DELETE FROM marks WHERE dedup_key=?", (k,))
             c.execute("DELETE FROM post_fingerprints WHERE dedup_key=?", (k,))
             seen[_group_key(k, addr)] -= 1     # never take the last row of a flat
             removed += 1

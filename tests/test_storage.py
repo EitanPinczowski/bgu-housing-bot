@@ -896,3 +896,66 @@ def test_a_publication_after_the_first_sighting_is_never_stored(temp_db):
     with sqlite3.connect(config.DB_PATH) as c:
         p = c.execute("SELECT posted_at FROM posts WHERE sig='s-late'").fetchone()[0]
     assert p is None, f"stored an impossible publication time: {p}"
+
+
+# --- a vote must outlive the listing it was cast on -----------------------------------
+
+def _voted_listing(key, addr="רגר 1", user="u1", mark="saved"):
+    """One saved listing with one vote on it, through the normal write paths."""
+    e = ListingExtract(is_apartment_ad=True, price_per_room_ils=1500,
+                       available_rooms_count=2, total_roommates_in_apt=3,
+                       street_address_or_neighborhood=addr)
+    storage.save_listing(PipelineResult(status=Status.MATCH, dedup_key=key,
+                                        location_tier="GREEN", score=80, extract=e))
+    storage.set_mark(key, user, mark)
+
+
+def test_deleting_a_listing_carries_its_vote_to_the_surviving_row(temp_db):
+    """A VOTE IS THE SCARCEST DATA HERE — 5 against 623 listings, and MIN_ALERT_SCORE is
+    blocked until there are ~20. `delete_listing` used to drop the row and leave the mark
+    pointing at nothing; `effective_score` reads marks only for keys that still exist, so
+    the signal vanished while the vote COUNT stayed the same."""
+    import storage
+    _voted_listing("phone:5551234", "רגר 1")
+    _voted_listing("phone:5551234|רגר 1", "רגר 1", user="u2")   # same flat, keyed with address
+    storage.delete_listing("phone:5551234")
+    assert storage.orphaned_marks() == [], "the vote was orphaned instead of carried"
+    assert storage.mark_adjustment("phone:5551234|רגר 1") != 0, "vote lost its effect"
+
+
+def test_a_vote_with_nowhere_to_go_is_kept_and_reported(temp_db):
+    """Reported, never cleaned up. Deleting it would hide the leak, and the row still
+    records which flat the group rejected. A content-hash key carries nothing to match on,
+    so it cannot be followed — which is exactly the case of the two real orphans."""
+    import storage
+    _voted_listing("hash:deadbeef", "רגר 2")
+    storage.delete_listing("hash:deadbeef")
+    orphans = storage.orphaned_marks()
+    assert [r[0] for r in orphans] == ["hash:deadbeef"]
+
+
+def test_pruning_never_destroys_a_vote(temp_db):
+    """`prune_orphan_listings` used to run a bare `DELETE FROM marks`, destroying the vote
+    to tidy up a row the same flat still occupies under another key."""
+    import storage
+    _voted_listing("phone:5559999", "מצדה 5")
+    _voted_listing("phone:5559999|מצדה 5", "מצדה 5", user="u2")
+    with storage._conn() as c:
+        storage._rescue_marks(c, "phone:5559999")
+        c.execute("DELETE FROM listings WHERE dedup_key=?", ("phone:5559999",))
+    assert storage.orphaned_marks() == []
+    assert storage.mark_adjustment("phone:5559999|מצדה 5") != 0
+
+
+def test_the_newer_vote_wins_when_both_rows_were_voted_on(temp_db):
+    """(dedup_key, user_id) is the primary key, so a re-point can collide. The surviving
+    row's own vote is the current one — that is the only case where dropping a mark is
+    right, and it mirrors what `_collapse` already does on a merge."""
+    import storage
+    _voted_listing("phone:5557777", "הרצל 3")
+    _voted_listing("phone:5557777|הרצל 3", "הרצל 3", mark="dismissed")
+    storage.delete_listing("phone:5557777")
+    assert storage.orphaned_marks() == []
+    with storage._conn() as c:
+        marks = c.execute("SELECT mark FROM marks WHERE user_id='u1'").fetchall()
+    assert [m[0] for m in marks] == ["dismissed"], "the surviving row's vote must stand"

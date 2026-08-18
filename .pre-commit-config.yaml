@@ -9,20 +9,37 @@ repos:
       - id: ruff
         args: [--fix]
 
-  # Secret scan — a hard guard so .env, auth/, or a pasted token can never be
-  # committed (the account is the user's only Facebook account; see CLAUDE.md).
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.21.2
+  # Secret scan + the small safety nets, as LOCAL hooks running under the installed
+  # python. They used to come from gitleaks and pre-commit-hooks, and on 2026-08-18
+  # Smart App Control (VerifiedAndReputablePolicyState: 1) began refusing every one with
+  # `[WinError 4551] An Application Control policy has blocked this file` — `git commit`
+  # could not complete at all. Each blocked hook ran from a pre-commit venv holding a
+  # COPIED python.exe, and a copy has no signature and no reputation. SAC has no
+  # allow-list and no per-folder exclusion, and disabling it is irreversible without
+  # reinstalling Windows, so the fix is to stop needing a venv: `language: system` runs
+  # these under the same signed interpreter pre-commit already launches.
+  #
+  # `precommit_checks.py secrets` is NARROWER than gitleaks (see its docstring) — gitleaks
+  # is a Go program pre-commit builds from source, which needs a toolchain SAC would also
+  # refuse. `.gitignore` and `.claude/hooks/guard.py` still keep .env / auth/ / data/ out.
+  - repo: local
     hooks:
-      - id: gitleaks
-
-  # Small safety nets.
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-      - id: detect-private-key
-      - id: check-added-large-files
-        args: [--maxkb=2048]
-      - id: check-merge-conflict
-      - id: check-json
-      - id: check-yaml
+      - id: secret-scan
+        name: Detect hardcoded secrets
+        entry: python precommit_checks.py secrets
+        language: system
+        types: [text]
+      - id: large-files
+        name: check for added large files
+        entry: python precommit_checks.py large --maxkb 2048
+        language: system
+      - id: merge-conflicts
+        name: check for merge conflicts
+        entry: python precommit_checks.py conflict
+        language: system
+        types: [text]
+      - id: parse-data-files
+        name: check json / yaml parse
+        entry: python precommit_checks.py parse
+        language: system
+        files: \.(json|ya?ml)$
