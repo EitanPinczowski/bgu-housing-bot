@@ -141,3 +141,65 @@ def test_live_sends_each_block_through_the_normal_pipeline(monkeypatch, capsys):
     assert len(seen) == 2, seen
     assert all(kw.get("group") == "yad2" for _, kw in seen)
     assert "MATCH: 2" in capsys.readouterr().out
+
+
+# --- found by running --dump on a realistic HTML alert ---------------------------------
+
+def test_numeric_html_entities_are_decoded():
+    """NUMERIC entities are how Hebrew survives a mail template. The first version listed
+    six NAMED entities by hand and left `&#1502;` untouched, so a whole heading reached the
+    splitter as `&#1502;&#1493;…` and would have been handed to the LLM as a "post"."""
+    msg = _msg([("text/html", "<div>&#1491;&#1497;&#1512;&#1492; 3 &#1495;&#1491;&#1512;&#1497;&#1501;</div>")])
+    text = yad2_mail.message_text(msg)
+    assert "דירה 3 חדרים" in text
+    assert "&#" not in text
+
+
+def test_a_blank_line_inside_a_flat_does_not_split_it():
+    """`_text_from_html` turns every `</div>` into a newline, so blank lines fall INSIDE a
+    listing — between its address and its price. Splitting on them cut each flat into
+    fragments that the 40-char floor then dropped: a two-flat email came out as ONE
+    truncated block, losing the price, the features, the link and the second flat entirely.
+
+    The heading is the seam whenever the template provides one."""
+    text = ("דירה 3 חדרים בבאר שבע\n שדרות רגר 90, באר שבע\n\n 2,500 ש\"ח לחודש\n"
+            " קומה 2, מרפסת\n\n לצפייה במודעה \n"
+            "דירה 4 חדרים בבאר שבע\n מצדה 12, שכונה ג\n\n 3,100 ש\"ח לחודש\n"
+            " משופצת, מעלית\n\n לצפייה במודעה")
+    blocks = yad2_mail.listing_blocks(text)
+    assert len(blocks) == 2, blocks
+    assert "רגר 90" in blocks[0] and "2,500" in blocks[0] and "מרפסת" in blocks[0]
+    assert "מצדה 12" in blocks[1] and "3,100" in blocks[1] and "מעלית" in blocks[1]
+
+
+def test_blank_lines_are_still_the_seam_for_plain_text_mail():
+    """The fallback earns its place: a plain-text alert has no heading to split on, and
+    blank lines are then the only structure there is."""
+    text = ("שלום, נמצאו עבורך דירות חדשות בחיפוש השמור\n\n"
+            "רחוב שדרות רגר 90, שלושה חדרים, 2500 שקל לחודש, קומה שנייה\n\n"
+            "רחוב מצדה 12, ארבעה חדרים, 3100 שקל לחודש, משופצת עם מעלית")
+    blocks = yad2_mail.listing_blocks(text)
+    assert len(blocks) >= 2, blocks
+    assert any("רגר 90" in b for b in blocks) and any("מצדה 12" in b for b in blocks)
+
+
+def test_a_saved_eml_can_be_read_without_a_mailbox(tmp_path, monkeypatch):
+    """`--file` exists so the template guess can be checked against ONE saved email.
+    Configuring IMAP behind an app password just to find out whether the splitting works
+    is a large first step; saving an alert to disk is a small one."""
+    eml = tmp_path / "alert.eml"
+    body = ('MIME-Version: 1.0\nFrom: noreply@yad2.co.il\nSubject: alert\n'
+            'Content-Type: text/html; charset="utf-8"\n'
+            'Content-Transfer-Encoding: 8bit\n\n'
+            '<div>דירה 3 חדרים בבאר שבע</div><div>שדרות רגר 90</div>'
+            '<div>2,500 ש"ח לחודש</div>')
+    eml.write_bytes(body.encode("utf-8"))
+    mails = yad2_mail.load_eml([str(eml)])
+    assert len(mails) == 1
+    assert "רגר 90" in mails[0][1]
+    # and a directory works too
+    assert len(yad2_mail.load_eml([str(tmp_path)])) == 1
+    # reading files must never touch the mailbox
+    monkeypatch.setattr(yad2_mail, "fetch",
+                        lambda days=2: pytest.fail("--file must not open the mailbox"))
+    assert yad2_mail.main(["--file", str(eml)]) == 0

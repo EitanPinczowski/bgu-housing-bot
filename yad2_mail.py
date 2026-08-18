@@ -47,8 +47,10 @@ from __future__ import annotations
 
 import argparse
 import email
+import html as _html
 import imaplib
 import os
+import pathlib
 import re
 from datetime import datetime, timedelta
 from email.header import decode_header, make_header
@@ -66,10 +68,11 @@ DUMP_DIR = config.DATA_DIR / "yad2_dump"
 # list is deliberately loose because the template WILL change, and a missed seam merges two
 # flats into one block rather than losing either — the same failure the Facebook scraper
 # already handles in `_clean_story`, and the reason `--dump` exists.
-_BLOCK_SPLIT = re.compile(
-    r"(?:\n\s*){2,}|"                       # a blank-line gap
-    r"(?=\bדירה\b.{0,40}\bבבאר שבע\b)",      # a new "flat in Beer Sheva" heading
-)
+#
+# TWO SEAMS, AND THEY ARE NOT INTERCHANGEABLE — `listing_blocks` picks between them.
+_HEADING = re.compile(r"(?=\bדירה\b.{0,40}\bבבאר שבע\b)")   # a new flat starts here
+_BLANK_LINE = re.compile(r"(?:\n\s*){2,}")                   # plain-text mail only
+#
 # NOT the item URL. Splitting before `yad2.co.il/item/…` looks like the natural seam and is
 # exactly backwards: the link FOLLOWS the flat it belongs to, so cutting there strands every
 # permalink in a block of its own, each short enough for the length floor to drop — which in
@@ -96,9 +99,11 @@ def _text_from_html(html: str) -> str:
     s = _STYLE.sub(" ", html)
     s = re.sub(r"<br\s*/?>|</(p|div|tr|td|li|h\d)>", "\n", s, flags=re.I)
     s = _TAG.sub(" ", s)
-    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
-                         ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
-        s = s.replace(entity, char)
+    # `html.unescape`, NOT a hand-written table. The first version listed six named
+    # entities and left `&#1502;` alone — and NUMERIC entities are exactly how Hebrew
+    # survives a mail template, so an entire heading reached the block splitter as
+    # `&#1502;&#1493;...` and would have been handed to the LLM as a "post".
+    s = _html.unescape(s)
     s = re.sub(r"[ \t]+", " ", s)
     return re.sub(r"\n{3,}", "\n\n", s).strip()
 
@@ -126,18 +131,56 @@ def message_text(msg) -> str:
 def listing_blocks(text: str) -> list:
     """Split one alert email into one text block per flat.
 
+    THE HEADING IS THE SEAM; A BLANK LINE IS NOT — unless there is no heading to use.
+    `_text_from_html` turns every `</div>` into a newline, so blank lines fall INSIDE a
+    listing, between its address and its price. Splitting on them cut each flat into
+    fragments, and the fragments were then short enough for the length floor to drop: a
+    two-flat email came out as one truncated block, losing the price, the features, the
+    link and the entire second flat. Blank lines are the right seam only for plain-text
+    mail, which has no headings to find — so they are the FALLBACK, not the rule.
+
     Blocks shorter than 40 characters are dropped: a nav link or a stray heading is not a
     flat, and handing it to the LLM would spend quota to be told so."""
     if not text:
         return []
+    # Two or more headings means the template gives us real seams; trust them alone.
+    pattern = _HEADING if len(_HEADING.findall(text)) >= 2 else _BLANK_LINE
     out = []
-    for chunk in _BLOCK_SPLIT.split(text):
+    for chunk in pattern.split(text):
         if not chunk:
             continue
         chunk = "\n".join(ln for ln in chunk.splitlines()
                           if not _BOILERPLATE.search(ln)).strip()
         if len(chunk) >= 40:
             out.append(chunk)
+    return out
+
+
+def load_eml(paths) -> list:
+    """[(subject, text)] from saved `.eml` files — the same shape `fetch()` returns.
+
+    THE POINT IS TO VALIDATE THE TEMPLATE GUESS WITHOUT A MAILBOX. The block splitting is
+    the one part of this module that depends on Yad2's markup, and until someone reads real
+    mail it is only a guess. Configuring IMAP just to find that out is a large first step
+    behind an app password; saving ONE alert email to disk is a small one.
+
+    In most mail clients: open the alert, "Save as" / "Export" (or forward it to yourself
+    and use "Show original" → download), then
+
+        python yad2_mail.py --file that.eml --dump
+
+    A directory is accepted too, and every `.eml` inside it is read."""
+    out = []
+    for path in paths:
+        p = pathlib.Path(path)
+        files = sorted(p.glob("*.eml")) if p.is_dir() else [p]
+        for f in files:
+            try:
+                msg = email.message_from_bytes(f.read_bytes())
+            except OSError as exc:
+                print(f"[yad2] cannot read {f}: {exc}")
+                continue
+            out.append((_subject(msg) or f.name, message_text(msg)))
     return out
 
 
@@ -198,16 +241,25 @@ def main(argv=None) -> int:
     ap.add_argument("--dump", action="store_true",
                     help="write each extracted block to data/yad2_dump/ and stop")
     ap.add_argument("--days", type=int, default=2, help="how far back to look (default 2)")
+    ap.add_argument("--file", nargs="+", metavar="PATH",
+                    help="read saved .eml file(s) or a directory instead of the mailbox — "
+                         "validates the block splitting without configuring IMAP")
     args = ap.parse_args(argv)
 
-    try:
-        mails = fetch(args.days)
-    except RuntimeError as exc:
-        print(f"[yad2] {exc}")
-        return 2
-    except Exception as exc:
-        print(f"[yad2] mailbox unreachable: {type(exc).__name__}: {exc}")
-        return 2
+    if args.file:
+        mails = load_eml(args.file)
+        if not mails:
+            print("[yad2] no .eml files read")
+            return 2
+    else:
+        try:
+            mails = fetch(args.days)
+        except RuntimeError as exc:
+            print(f"[yad2] {exc}")
+            return 2
+        except Exception as exc:
+            print(f"[yad2] mailbox unreachable: {type(exc).__name__}: {exc}")
+            return 2
 
     blocks = []
     for subject, text in mails:
