@@ -221,10 +221,17 @@ def main() -> None:
         # Re-deriving from the archive can re-introduce phone/hash duplicates that were
         # merged earlier — collapse them again before mirroring to the sheet.
         merged = storage.merge_duplicate_listings()
+        # Retire pin-queue names the geocoder now answers. This is the moment to do it:
+        # an apply has just re-placed every listing, so whatever is still unplaceable is
+        # genuinely unplaceable. Left alone the queue read 199 items of which 66 were real,
+        # and a list that is two-thirds dead work does not get worked.
+        retired = storage.retire_unknown_locations(
+            geocode.resolved_unknown_names(storage.unknown_locations(days=3650)))
         n = sheets.rebuild_from_db()
         sheets.sort_by_score()
         print(f"APPLIED → DB updated ({rescued} rescued to MATCH, {demoted} dropped, "
-              f"{pruned} orphans pruned, {merged} duplicates merged); sheet rebuilt "
+              f"{pruned} orphans pruned, {merged} duplicates merged, "
+              f"{retired} resolved names retired from the pin queue); sheet rebuilt "
               f"({n} rows). Run top_listings.py to broadcast the new top.")
     elif not changes:
         print("(nothing changed — current code agrees with the stored verdicts)")

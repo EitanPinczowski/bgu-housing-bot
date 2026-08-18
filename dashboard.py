@@ -24,6 +24,7 @@ import webbrowser
 
 import amenities
 import config
+import dates
 import fit
 import geocode
 import map_listings
@@ -41,6 +42,21 @@ _SQL = """
            l.price_from_comment, l.geocode_source, l.lat, l.lon
     FROM listings l
 """
+
+
+def _age_days(first_seen) -> float | None:
+    """Whole days since the listing was first seen, or None when unknown.
+
+    UTC on both sides: `first_seen` is SQLite's `CURRENT_TIMESTAMP`, so comparing it with a
+    local `datetime.now()` would report this listing as 3 hours younger than it is here —
+    the mistake `dates.utc_now` exists to stop, already made twice in this project."""
+    if not first_seen:
+        return None
+    try:
+        seen = dt.datetime.strptime(str(first_seen)[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (dates.utc_now() - seen).total_seconds() / 86400.0)
 
 
 def _rows() -> list:
@@ -66,6 +82,15 @@ def _rows() -> list:
         r["saved"] = key in saved
         r["contacted"] = key in contacted
         r["stale"] = key in stale
+        # AGE IN DAYS, computed HERE and not in the browser. `first_seen` is written by
+        # SQLite's CURRENT_TIMESTAMP, i.e. UTC, while the browser's clock is local — the
+        # same mismatch that put publication 3 hours ahead of the sighting and cost 39% of
+        # the archive (see `dates.utc_now`). One clock, server-side, once.
+        #
+        # It exists because freshness now swings a score by 16 raw points (+4 under a day
+        # to -12 past a week) and the table had no way to see how old anything was: the
+        # only cue was a `חדש` badge measured against YOUR last visit, not the flat's age.
+        r["age_days"] = _age_days(r.get("first_seen"))
         r["broker"] = storage.phone_listing_count(r["contact"])
         r["note"] = notes.get(key, "")
         r["post_text"] = post_text.get(key, "")
@@ -180,7 +205,7 @@ def rows_for_api() -> list:
             "dedup_key", "status", "location_tier", "eff_score", "score",
             "price_per_room", "available_rooms", "total_roommates", "address",
             "walk_minutes", "lease_start", "contact", "source_url", "group", "floor",
-            "amenity_text", "first_seen", "summary", "saved", "contacted", "stale",
+            "amenity_text", "first_seen", "age_days", "summary", "saved", "contacted", "stale",
             "broker", "note", "post_text", "lat", "lon", "photos", "breakdown",
             "geocode_source", "geo_confidence", "manual_location",
             "amenity_points", "street")}
@@ -230,6 +255,10 @@ tr.row.cursor td{box-shadow:inset 2px 0 0 var(--accent)}
 .thumb{width:54px;height:40px;object-fit:cover;border-radius:4px;cursor:zoom-in;
        background:var(--card);border:1px solid var(--line)}
 .new{background:var(--accent);color:#fff;border-radius:99px;padding:0 6px;font-size:10px}
+.age-old{color:#c0392b;font-weight:600}
+.age-ok{color:var(--muted,#888)}
+.age-recent{color:inherit}
+.age-fresh{color:#1e8449;font-weight:600}
 .act button{padding:2px 6px;font-size:13px;line-height:1.2}
 .exp td{background:var(--card);white-space:normal}
 .chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
@@ -453,6 +482,20 @@ localStorage.setItem('bgu_last_visit',
   new Date().toISOString().slice(0, 19).replace('T', ' '));
 const isNew = r => LAST && r.first_seen && r.first_seen > LAST;
 
+/* How old the FLAT is, which is a different question from `isNew` (new to YOU, since your
+   last visit). The bands are fit.py's freshness bands, so the column explains a score
+   rather than merely decorating it: under a day is the +4 top band, a week or more is the
+   -12 that pushes a stale listing under MIN_ALERT_SCORE. `age_days` is computed server
+   side on the UTC clock — see _age_days. */
+const ageCell = r => {
+  const d = r.age_days;
+  if (d === null || d === undefined) return '';
+  const txt = d < 1 ? Math.max(1, Math.round(d * 24)) + 'ש׳' : Math.round(d) + 'י׳';
+  const band = d < 1 ? 'fresh' : d < 3 ? 'recent' : d < 7 ? 'ok' : 'old';
+  return '<span class="age-' + band + '" title="' +
+         (band === 'old' ? 'מעל שבוע — ציון מופחת' : 'טרי') + '">' + txt + '</span>';
+};
+
 /* the SAME projection the backdrop was drawn with (mirrors map_listings.xy_from) */
 const P = window.__PROJ__ || null;
 const project = (la, lo) => [P.pad + (lo - P.min_lon) * P.kx * P.scale,
@@ -551,6 +594,7 @@ function rowHtml(r){
       ' <span class="muted">' + flags + '</span></td>' +
     '<td data-lbl="הליכה">' +
       (r.walk_minutes === null ? '' : Math.round(r.walk_minutes)) + '</td>' +
+    '<td data-lbl="גיל" class="age">' + ageCell(r) + '</td>' +
     '<td data-lbl="כניסה" class="hide-sm">' + esc(r.lease_start || '') + '</td>' +
     '<td data-lbl="תחבורה" class="am">' + esc(r.amenity_text || '') + '</td>' +
     '<td data-lbl="קשר">' + contact + '</td>' +
@@ -2190,7 +2234,7 @@ if (window.__LIVE__){ window.__VER__ = null; poll(); setInterval(poll, window.__
 _HEAD = [("", ""), ("ציון", "eff_score"), ("סטטוס", "status"), ("אזור", "location_tier"),
          ("מחיר", "price_per_room"), ("פנויים", "available_rooms"),
          ("שותפים", "total_roommates"), ("כתובת", "address"), ("הליכה", "walk_minutes"),
-         ("כניסה", "lease_start"), ("תחבורה ושירותים", "amenity_text"),
+         ("גיל", "age_days"), ("כניסה", "lease_start"), ("תחבורה ושירותים", "amenity_text"),
          ("קשר", "contact"), ("", "")]
 
 

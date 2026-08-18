@@ -56,8 +56,20 @@ RULES = [
     #  * ANY pipe, not just one straight into tail/head. `pytest | tr | grep | tail`
     #    slipped through and discards the exit code exactly as much — CLAUDE.md's rule is
     #    "read the count, or drop the pipe", not "avoid one particular pipeline".
+    # A THIRD correction, and the same root cause as the first two: matching a WORD where
+    # a COMMAND was meant. `grep -l "pytest\|ruff" .github/workflows/*` and
+    # `grep -n "pytest" -A3 file | head` were both blocked on 2026-08-18 — neither runs
+    # anything. That is the 7th false positive this guard has produced, every one from a
+    # pattern that matched text rather than an invocation.
+    #
+    # `executable_part()` deliberately does NOT strip quoted strings, and its docstring is
+    # right that stripping them everywhere would hide a real `docker rmi "osrm_bgu"`. That
+    # argument is about the DESTRUCTIVE rules. This rule protects an exit code: a false
+    # negative costs a re-run, a false positive blocks correct work, and a guard that
+    # blocks correct work is a guard that gets switched off. So require an invocation —
+    # start of the command, after a separator, or `python -m pytest`.
     ("pytest exit code",
-     r"(?<!\|\s)\bpytest(?![-\w])[^|]*\|",
+     r"(?:^|[;&|]\s*|\bpython[\d.]*\s+(?:-\w+\s+)*-m\s+)pytest(?![-\w])[^|]*\|",
      {"never": "piping pytest discards its EXIT CODE (CLAUDE.md) — a failing suite then "
                "reads as a passing one. Read the count, or drop the pipe"}),
 

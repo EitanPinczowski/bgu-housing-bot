@@ -646,6 +646,19 @@ def still_unplaceable(location_text: Optional[str]) -> bool:
     return geocode_cached(location_text) is None
 
 
+def resolved_unknown_names(rows) -> list:
+    """The names in a `storage.unknown_locations` log that the geocoder answers TODAY.
+
+    The complement of what `pinnable_unknowns` keeps, and the same `still_unplaceable`
+    test, so the two can never disagree about what counts as resolved. Separate rather
+    than folded into that function's return because four reports unpack its three values,
+    and a queue sweep is not worth changing their signature over."""
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        return [r[0] for r in rows if not still_unplaceable(r[0])]
+
+
 def pinnable_unknowns(rows):
     """Split a `storage.unknown_locations` log into the names actually worth pinning.
 

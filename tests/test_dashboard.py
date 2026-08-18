@@ -830,3 +830,47 @@ def test_a_row_older_than_the_lat_lon_column_still_gets_a_dot(temp_db, monkeypat
     monkeypatch.setattr(geocode, "geocode_cached", lambda a: (31.2555, 34.8031))
     row = next(r for r in dashboard._rows() if r["dedup_key"] == "k-old")
     assert (round(row["lat"], 4), round(row["lon"], 4)) == (31.2555, 34.8031)
+
+
+# --- the age column: freshness must be visible, and measured on the right clock --------
+
+def test_age_is_measured_on_the_utc_clock(monkeypatch):
+    """`first_seen` is SQLite's CURRENT_TIMESTAMP — UTC. Measuring it against a LOCAL
+    `datetime.now()` reports every listing ~3h younger than it is here, which is the exact
+    mistake `dates.utc_now` exists to stop and which this project has already made twice
+    (storage.record_post, then replay._age_hours)."""
+    import dashboard
+    import dates
+    from datetime import timedelta
+    stamp = (dates.utc_now() - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    age = dashboard._age_days(stamp)
+    assert age is not None and 1.99 < age < 2.01, f"got {age} — wrong clock?"
+
+
+def test_age_is_absent_not_zero_when_unknown():
+    """None sorts last rather than pretending a listing is brand new; a row with no
+    first_seen must not masquerade as the freshest thing in the table."""
+    import dashboard
+    assert dashboard._age_days(None) is None
+    assert dashboard._age_days("") is None
+    assert dashboard._age_days("not-a-date") is None
+
+
+def test_a_future_timestamp_clamps_to_zero():
+    """Defensive: a clock skew must not produce a negative age that sorts above everything
+    real. The archive has carried impossible timestamps before."""
+    import dashboard
+    import dates
+    from datetime import timedelta
+    stamp = (dates.utc_now() + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+    assert dashboard._age_days(stamp) == 0.0
+
+
+def test_the_age_column_is_wired_end_to_end():
+    """A column the sort cannot see is decoration. `_HEAD` names the key, and the payload
+    whitelist must carry it or `sortCol` has nothing to compare."""
+    import dashboard
+    assert ("גיל", "age_days") in dashboard._HEAD
+    src = open(dashboard.__file__, encoding="utf-8").read()
+    assert '"age_days", "summary"' in src, "age_days missing from the payload whitelist"
+    assert "ageCell" in src, "the cell renderer is not shipped to the page"

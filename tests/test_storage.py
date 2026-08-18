@@ -959,3 +959,25 @@ def test_the_newer_vote_wins_when_both_rows_were_voted_on(temp_db):
     with storage._conn() as c:
         marks = c.execute("SELECT mark FROM marks WHERE user_id='u1'").fetchall()
     assert [m[0] for m in marks] == ["dismissed"], "the surviving row's vote must stand"
+
+
+def test_retiring_a_resolved_name_clears_it_from_the_pin_queue(temp_db):
+    """`unknown_locations` is a WORK QUEUE, not a record — the pipeline re-logs a name the
+    moment it fails to place again, which is how every row got there. Left unswept it read
+    199 items of which 66 were real, and a list that is two-thirds dead work does not get
+    worked: exactly one pin has ever been placed."""
+    storage.record_unknown_location("רחוב שנפתר")
+    storage.record_unknown_location("רחוב שעדיין לא")
+    assert len(storage.unknown_locations(days=3650)) == 2
+    assert storage.retire_unknown_locations(["רחוב שנפתר"]) == 1
+    left = [r[0] for r in storage.unknown_locations(days=3650)]
+    assert left == ["רחוב שעדיין לא"]
+
+
+def test_retiring_nothing_is_a_no_op(temp_db):
+    """The sweep runs on every `replay --apply`, including the ones where the queue is
+    already clean."""
+    storage.record_unknown_location("רחוב כלשהו")
+    assert storage.retire_unknown_locations([]) == 0
+    assert storage.retire_unknown_locations([None, ""]) == 0
+    assert len(storage.unknown_locations(days=3650)) == 1

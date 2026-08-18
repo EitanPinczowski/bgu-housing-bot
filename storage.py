@@ -772,6 +772,27 @@ def unknown_locations(days: int = 7) -> list:
                          (since,)).fetchall()
 
 
+def retire_unknown_locations(names) -> int:
+    """Drop names from the pin queue that the geocoder now answers. Returns how many.
+
+    THE QUEUE WAS 199 ROWS OF WHICH 66 WERE REAL (measured 2026-08-18): 113 already
+    resolved and 20 can never be pinned. Nothing retired the resolved ones, so every
+    report re-ran the geocoder over all 199 to filter them out again, and a human opening
+    the list saw mostly dead work — which is a fair description of why exactly one pin has
+    ever been placed.
+
+    Deleting is safe and is not data loss: `unknown_locations` is a WORK QUEUE, not a
+    record. `pipeline` re-logs a name the moment it fails to place again, which is how
+    every row here got written in the first place."""
+    names = [n for n in names if n]
+    if not names:
+        return 0
+    with _conn() as c:
+        cur = c.executemany("DELETE FROM unknown_locations WHERE location=?",
+                            [(n,) for n in names])
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(names)
+
+
 def low_confidence_geocodes(limit: int = 15) -> list:
     """[(address, tier, geocode_source)] for kept listings resolved by a FUZZY geocoder
     (overpass/nominatim) rather than the trusted static table — worth a human glance

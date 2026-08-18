@@ -1516,3 +1516,35 @@ def test_the_mirror_list_is_deduped_by_host_and_fails_open(monkeypatch):
         raise OSError("no DNS")
     monkeypatch.setattr(socket, "gethostbyname", unresolvable)
     assert len(geocode._overpass_mirrors()) == 3, "must keep every URL when DNS is unavailable"
+
+
+def test_resolved_unknown_names_is_the_exact_complement_of_pinnable(monkeypatch):
+    """The sweep and the display filter must never disagree about what "resolved" means,
+    or the queue would retire a name a report is still offering. Both go through
+    `still_unplaceable`, and this pins that they stay in step.
+
+    Measured on the live queue when this landed: 199 rows -> 113 resolved + 66 pinnable +
+    20 unpinnable by design."""
+    rows = [("שדרות רגר 1", 3, "2026-08-10"),      # resolves
+            ("ליד האוניברסיטה", 9, "2026-08-10"),   # a bearing — never pinnable
+            ("רחוב שלא קיים כלל 999", 1, "2026-08-10")]
+    monkeypatch.setattr(geocode, "still_unplaceable",
+                        lambda name: name != "שדרות רגר 1")
+    monkeypatch.setattr(geocode, "names_only_a_landmark",
+                        lambda name: name == "ליד האוניברסיטה")
+    resolved = geocode.resolved_unknown_names(rows)
+    pin, n_resolved, n_by_design = geocode.pinnable_unknowns(rows)
+    assert resolved == ["שדרות רגר 1"]
+    assert len(resolved) == n_resolved, "the sweep and the filter disagree"
+    assert [r[0] for r in pin] == ["רחוב שלא קיים כלל 999"]
+    assert n_by_design == 1
+
+
+def test_the_sweep_stays_quiet(monkeypatch, capsys):
+    """`still_unplaceable` narrates its rejections, and this runs inside `replay --apply`
+    whose output is read for the `changed:` summary. Same reason `pinnable_unknowns`
+    redirects stdout."""
+    monkeypatch.setattr(geocode, "still_unplaceable",
+                        lambda name: print("[geocode] rejected …") or True)
+    geocode.resolved_unknown_names([("שדרות רגר 999", 1, "2026-08-10")])
+    assert capsys.readouterr().out == ""
