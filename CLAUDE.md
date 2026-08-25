@@ -4,6 +4,42 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
+## ⏸ THE BOT IS PAUSED — deliberately, since 2026-08-25 19:36
+
+**Nothing is broken. Do not diagnose it.** All 10 scheduled tasks are `Disabled` and
+`bot_listener` is stopped, at the user's request. Resume is MANUAL and only on their word.
+
+The session banner and `doctor` will look alarming and are correct to: `last run` climbs
+past `MAX_HOURS_BETWEEN_RUNS` (5), `backups` FAILs once the newest passes 48h, and no new
+`START` appears in `data/search_log.txt`. That is what a pause looks like — the hook is
+built to make silence suspicious, so this block is the thing that tells you the silence was
+asked for. A fresh backup was taken first: `listings-20260825-193558.sqlite`.
+
+**To resume**, re-enable the same 10 and restart the listener:
+
+    powershell -Command "'BGU Housing Scraper','BGU Housing Scraper Hot','BGU Watchdog','BGU Digest','BGU Morning','BGU DM Digest','BGU Weekly','BGU Dashboard Publish','BGU Dashboard Share','BGU Backup' | ForEach-Object { Enable-ScheduledTask -TaskName $_ }"
+    run_listener.cmd
+    python doctor.py
+
+**TWO TASKS NEED AN ELEVATED SHELL, NOT ONE.** `BGU Housing Scraper Hot` is the documented
+one; **`BGU Dashboard Share` also returns "Access is denied"** unelevated — found while
+pausing on 08-25, and worth knowing because the unelevated pass reports success for the
+other eight and leaves those two `Ready`. A single live scraper task defeats a pause, so
+always re-read the state rather than trusting the loop's own output. Elevate with
+`Start-Process powershell.exe -Verb RunAs` and log to a file; you cannot read an elevated
+process's stdout.
+
+On resume, expect `backups` to FAIL if the pause ran past 48h — fix that by running
+`backup_db.py` once, not by moving the threshold. `StartWhenAvailable` means a missed slot
+may fire immediately; that is one scrape, not a burst. **Do not `--apply` a replay just
+because listings look stale — a pause changes no stored verdict.**
+
+**What the pause costs, and it is not recoverable:** `SCRAPER_MAX_POST_AGE_HOURS = 24`, so
+anything posted during the pause is age-skipped once it is a day old. The backlog does not
+wait. Votes survive ~24h too — `bot_listener` long-polls `getUpdates` with an offset and
+Telegram retains undelivered updates about that long, after which taps are silently
+dropped.
+
 ## OPEN RIGHT NOW — read this first (2026-08-18)
 
 **Nothing is open in the code.** 2026-08-18: a review of five areas found that most of what
