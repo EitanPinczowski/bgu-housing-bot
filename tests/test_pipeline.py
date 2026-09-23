@@ -1,6 +1,29 @@
 """pipeline helpers — the שכונה ד' no-amber rule and the text fingerprint."""
+import pytest
+
 import pipeline
 from models import ListingExtract
+
+
+@pytest.fixture
+def routed(monkeypatch):
+    """A walk time for every placed point, the way a live OSRM would give one.
+
+    The suite has no OSRM, and the conftest guard keeps it from reading production's
+    `data/walk_cache.json`, so without this the walk is None and the listing loses the
+    20-25 walk points of its fit score. The tests that use it are about gates the SCORE
+    decides, and the scores they quote (50 / 52) are with a walk. Those scores used to
+    come from production's cached OSRM minutes, which is why they passed on Windows and
+    failed on every CI run.
+
+    The straight-line estimate stands in for OSRM. For the two fixture points it lands
+    in the same fit band as the cached OSRM minutes did (10.4 vs 10.2 min, 2.7 vs 2.6),
+    so the quoted scores are unchanged. It is deterministic, and it changes with the
+    coordinate, which is what the hand-placed test needs."""
+    monkeypatch.setattr(pipeline.osrm, "walk_to_nearest",
+                        lambda lat, lon: ((None, None) if lat is None or lon is None
+                                          else (pipeline.zones.est_walk_to_gate_min(lat, lon),
+                                                "test gate")))
 
 
 def test_price_second_chance():
@@ -142,7 +165,7 @@ def _placeless(rooms):
                           price_per_room_ils=1990)      # near the ceiling -> low score
 
 
-def test_no_address_and_a_poor_score_is_dropped():
+def test_no_address_and_a_poor_score_is_dropped(routed):
     """Kept-not-lost is right for a flat we merely cannot place, but one that names no
     street AND scores poorly is not a lead — it sits in the list forever unactionable."""
     res = pipeline._classify(_placeless(2), "", None, None, [], None, commit=False)
@@ -173,7 +196,7 @@ def _bearing(text, rooms=3):
                           price_per_room_ils=1990)
 
 
-def test_a_bearing_off_a_landmark_is_dropped_whatever_it_scores():
+def test_a_bearing_off_a_landmark_is_dropped_whatever_it_scores(routed):
     """`באר שבע, קרוב לאוניברסיטת בן גוריון וסורוקה` scored 55 and so survived the score
     gate. "Near the university" is not an address at any score (user, 2026-08-03)."""
     for text in ("ליד האוניברסיטה", "מול שער האוניברסיטה", "אזור האוניברסיטה וסורוקה",
@@ -628,7 +651,7 @@ def test_a_no_amber_area_is_never_graced_into_green():
 
 
 # --- a location corrected by hand is authoritative --------------------------------
-def test_a_hand_placed_listing_beats_the_geocoder(temp_db, monkeypatch):
+def test_a_hand_placed_listing_beats_the_geocoder(temp_db, monkeypatch, routed):
     """The whole point of the dashboard's place-mode. _classify is also what
     replay.py re-runs, so if the override were consulted anywhere else instead, every
     re-apply would silently drag the dot back to the geocoder's guess."""
@@ -656,7 +679,7 @@ def test_a_hand_placed_listing_beats_the_geocoder(temp_db, monkeypatch):
                                     commit=False).lat, 4) == 31.2631
 
 
-def test_a_bare_quarter_is_dropped_whatever_it_scores():
+def test_a_bare_quarter_is_dropped_whatever_it_scores(routed):
     """User, 2026-08-04: "keep them only if in a known location like הבלוק". שכונה ד is
     2,375 m across — its centroid is a dot in the middle of thousands of flats. 14
     listings sat on those, one scoring 97, all kept by the score gate."""
@@ -670,7 +693,7 @@ def test_a_bare_quarter_is_dropped_whatever_it_scores():
                               commit=False).score > config.MIN_SCORE_WITHOUT_ADDRESS
 
 
-def test_a_street_survives_even_when_we_cannot_place_it():
+def test_a_street_survives_even_when_we_cannot_place_it(routed):
     """"A street is okay" is the user's wording. `אנדלה אמבלו` is missing from OSM, so it
     still lands on the שכונה ד centroid — but failing to geocode a street is OUR
     limitation, not the post's, and the flat is not a bare quarter."""

@@ -4,6 +4,7 @@ Context: on 2026-07-27 a run worked for ~7h (local-LLM fallback) and then wedged
 ~30h, silently blocking every later run. The guard therefore keys on PROGRESS, never on
 elapsed time — a slow-but-working run must be left completely alone.
 """
+import sys
 import time
 
 import pytest
@@ -542,6 +543,10 @@ def test_a_readable_live_process_still_returns_its_command_line():
     assert "python" in (scraper._pid_command_line(os.getpid()) or "").lower()
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="PowerCreateRequest is Windows-only. Elsewhere ctypes.windll does "
+                           "not exist, _set_awake logs and holds nothing, and on_ac_power() "
+                           "is None, so the guard is never asked to hold anyway")
 def test_keep_awake_holds_and_releases_an_execution_power_request():
     """The guard must survive MODERN STANDBY, which is all this machine has.
 

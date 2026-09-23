@@ -1,6 +1,6 @@
 """The conftest guards that keep this suite offline and reproducible.
 
-A guard that can only ever say PASS is not a guard, so each of the three is exercised
+A guard that can only ever say PASS is not a guard, so each one is exercised
 against the thing it is supposed to catch. They exist because `tests/test_geocode.py` was
 geocoding against live Overpass and Nominatim: 3 of 7 `pytest-randomly` seeds failed on
 2026-08-12, and once two mirrors' disagreeing answers reached `data/geocode_cache.json`
@@ -48,6 +48,29 @@ def test_writing_the_cache_cannot_reach_the_real_file():
     assert geocode._CACHE_PATH.exists(), "it wrote somewhere"
     after = real.read_bytes() if real.exists() else None
     assert after == before, "the real cache changed"
+
+
+def test_the_walk_cache_path_is_not_the_real_one():
+    """Reading it is how the pipeline tests passed on Windows and failed on every CI run
+    for a month: production's cached OSRM walk times were quietly part of their input."""
+    import osrm
+    assert osrm._WALK_CACHE_PATH != config.DATA_DIR / "walk_cache.json"
+    assert not osrm._WALK_CACHE_PATH.exists(), "each test starts from an empty cache"
+    assert osrm._walk_cache is None, "nothing left in memory from an earlier test"
+
+
+def test_writing_the_walk_cache_cannot_reach_the_real_file(monkeypatch):
+    """Prove it by caching a walk through a faked-alive OSRM, which is the path that
+    writes."""
+    import osrm
+    real = config.DATA_DIR / "walk_cache.json"
+    before = real.read_bytes() if real.exists() else None
+    monkeypatch.setattr(osrm, "_alive", True)
+    monkeypatch.setattr(osrm, "_table_walk", lambda lat, lon: (7.0, "test gate"))
+    assert osrm.walk_to_nearest(31.2601, 34.8001) == (7.0, "test gate")
+    assert osrm._WALK_CACHE_PATH.exists(), "it wrote somewhere"
+    after = real.read_bytes() if real.exists() else None
+    assert after == before, "the real walk cache changed"
 
 
 # These two are a PAIR and the order is the point: the killer runs first in file order, so

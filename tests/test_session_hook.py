@@ -24,10 +24,20 @@ def _load():
 
 def test_a_normal_checkout_is_not_retargeted(monkeypatch):
     """`_main_checkout` must return None outside a worktree, or the hook would rewrite
-    config's paths on every ordinary session for no reason."""
+    config's paths on every ordinary session for no reason.
+
+    Faked like the worktree test below rather than asked of the real repo: run from a
+    worktree, git correctly names the main checkout, and this test failed for being run
+    somewhere it was not written for."""
     hook = _load()
-    root = str(_HOOK.parent.parent.parent)
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", root)
+    here = os.path.join("C:", os.sep, "repo")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", here)
+
+    class _R:
+        returncode = 0
+        stdout = os.path.join(here, ".git")
+
+    monkeypatch.setattr(hook.subprocess, "run", lambda *a, **k: _R())
     assert hook._main_checkout() is None
 
 

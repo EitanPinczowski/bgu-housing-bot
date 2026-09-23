@@ -155,6 +155,33 @@ def _no_test_may_touch_the_real_geocode_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_test_may_touch_the_real_walk_cache(tmp_path, monkeypatch):
+    """NO TEST MAY READ OR WRITE data/walk_cache.json — the geocode cache's sibling, and
+    missed when that one was guarded.
+
+    READING it is what hid five failures for over a month. `osrm.walk_to_nearest` answers
+    from this file before it ever checks whether OSRM is up, so on the Windows machine the
+    pipeline tests were scored against OSRM walk times production had cached, and the
+    scores their docstrings quote (50 / 52) depended on them. CI and a worktree have an
+    empty `data/`: the walk came back None, the listing lost its 20-25 walk points, and
+    every run on `main` from 2026-08-14 to 2026-09-23 was red while the Windows suite was
+    green. A test that needs a walk time now says so and supplies one.
+
+    WRITING it is the operational hazard, as with the geocode cache: every successful
+    lookup is cached, so a test with a stubbed OSRM would add its fake minutes to the file
+    the live pipeline reads.
+
+    `_walk_cache` and `_alive` are reset too, because both are module-level and set once
+    per process: repointing the path alone leaves the first test's copy in memory, and one
+    test that faked a live OSRM would leave every later test believing it."""
+    import osrm
+    monkeypatch.setattr(osrm, "_WALK_CACHE_PATH", tmp_path / "walk_cache.json")
+    monkeypatch.setattr(osrm, "_walk_cache", None)
+    monkeypatch.setattr(osrm, "_alive", None)
+    monkeypatch.setattr(osrm, "osrm_down", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_test_may_leave_a_mirror_marked_dead():
     """Confine `geocode._dead_mirrors` to the test that filled it.
 
