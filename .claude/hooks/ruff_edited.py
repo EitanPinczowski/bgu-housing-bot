@@ -15,6 +15,7 @@ invoked through sys.executable rather than as a bare command.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -22,6 +23,13 @@ import sys
 
 BLOCK = 2          # PostToolUse: exit 2 feeds stderr back so the finding can be fixed
 ALLOW = 0
+
+
+def _ruff_installed() -> bool:
+    try:
+        return importlib.util.find_spec("ruff") is not None
+    except Exception:
+        return False
 
 
 def main() -> int:
@@ -32,6 +40,13 @@ def main() -> int:
 
     path = (payload.get("tool_input") or {}).get("file_path") or ""
     if not path.endswith(".py") or not os.path.exists(path):
+        return ALLOW
+
+    # A missing ruff is not a finding. Without this, `python -m ruff` exits 1 with
+    # "No module named ruff" and that was reported as a problem in the file — every .py
+    # written in a fresh cloud session was blocked for it.
+    if not _ruff_installed():
+        print("[ruff] not installed — skipping", file=sys.stderr)
         return ALLOW
 
     project = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
@@ -51,6 +66,10 @@ def main() -> int:
 
     out = (r.stdout or r.stderr or "").strip()
     if not out:
+        return ALLOW
+    if "No module named ruff" in (r.stderr or ""):
+        # Backstop for the check above: the module was findable but did not run.
+        print("[ruff] not installed — skipping", file=sys.stderr)
         return ALLOW
     print(f"ruff found problems in {os.path.basename(path)}:\n{out}", file=sys.stderr)
     return BLOCK
