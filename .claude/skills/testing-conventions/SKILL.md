@@ -13,7 +13,8 @@ description: >
 
 **Do not pipe it to `tail` or `head`** — that discards pytest's exit code, so a failing
 suite reads as a passing one. Read the count, or drop the pipe. (`guard.py` blocks the
-pipe.) 672 passing at last check, plus the docs-integrity ones.
+pipe.) 780 passing at last check (2026-09-23), docs-integrity included; CI on Linux reads
+779 passed, 1 skipped, the skip being the Windows-only power-request test.
 
 ## ⛔ The rule that exists because it was broken twice
 
@@ -72,6 +73,35 @@ geocoding test starts failing on every run, look at the cache before you look at
 record of, so it only ever passed because Overpass answered — `static` is the *correct*
 offline verdict for a number we cannot place. Switching to `רגר 153`, a number in our own
 data, tests the ranking rule instead of the mirror.
+
+### `data/walk_cache.json` — handled for you
+
+**A CACHE THE SUITE CAN READ IS AN INPUT NOBODY DECLARED** (2026-09-23). The walk cache
+was missed when the geocode cache was guarded, and it hid **6 red tests on every CI run
+from 2026-08-14 to 2026-09-23** while the Windows suite read green.
+`osrm.walk_to_nearest` answers from `data/walk_cache.json` *before* it checks whether
+OSRM is up. So on the Windows machine, `test_pipeline.py`'s score-gate tests were scored
+against production's cached OSRM minutes (10.2 and 2.6 min), and the scores their
+docstrings quote (50 / 52) came from that file. CI and every worktree have an empty
+`data/`. There the walk came back None, the listing lost its 20–25 walk points and fell
+under `MIN_SCORE_WITHOUT_ADDRESS`, so all five were one cause. The sixth CI failure was
+the unrelated Windows-only power-request test, now skipped off Windows.
+
+- **`_no_test_may_touch_the_real_walk_cache`** repoints `osrm._WALK_CACHE_PATH` at
+  `tmp_path` and resets `_walk_cache`, `_alive` and `osrm_down`. They are module-level and
+  set once per process, so one test faking a live OSRM would otherwise leave every later
+  test believing it. It is proved in `tests/test_offline_guards.py`, including a real
+  write through a faked-alive OSRM that must leave the production file byte-identical.
+- **A test that needs a walk time now says so.** `test_pipeline.py`'s `routed` fixture
+  stubs `osrm.walk_to_nearest` with `zones.est_walk_to_gate_min`. Do not "fix" such a test
+  by seeding the cache or loosening the score. The straight-line estimate lands in the
+  same fit bands as the cached OSRM minutes did (10.4 vs 10.2, 2.7 vs 2.6), so the quoted
+  scores stand. It is deterministic, and it moves with the coordinate, which
+  `test_a_hand_placed_listing_beats_the_geocoder` relies on.
+- **Reproduce a CI-only failure from a worktree, not the main checkout.** A worktree's
+  `data/` is empty exactly as CI's is, so it fails the same way, while the main checkout
+  passes on production data. That is how this one was pinned down: same 5 failures,
+  locally, with no guessing.
 
 ### `config.DATA_DIR` — you must patch this yourself
 
