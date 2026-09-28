@@ -13,8 +13,8 @@ description: >
 
 **Do not pipe it to `tail` or `head`** — that discards pytest's exit code, so a failing
 suite reads as a passing one. Read the count, or drop the pipe. (`guard.py` blocks the
-pipe.) 780 passing at last check (2026-09-23), docs-integrity included; CI on Linux reads
-779 passed, 1 skipped, the skip being the Windows-only power-request test.
+pipe.) 785 passing at last check (2026-09-28), docs-integrity included; CI on Linux reads
+784 passed, 1 skipped, the skip being the Windows-only power-request test.
 
 ## ⛔ The rule that exists because it was broken twice
 
@@ -114,15 +114,40 @@ comment at `tests/test_scraper_lock.py:322`.
 monkeypatch.setattr(config, "DATA_DIR", tmp_path)
 ```
 
-### The database — use the fixture
+**PATCHING `DATA_DIR` DOES NOT REACH A PATH COMPUTED AT IMPORT.** `geocode._CACHE_PATH`,
+`osrm._WALK_CACHE_PATH`, `amenities._CACHE_PATH`, `scraper._HEARTBEAT_PATH` and
+`scraper._LOCK_PATH` are all `config.DATA_DIR / …`, evaluated once when the module loads.
+On 2026-09-28 `test_scraper.py` was found rewriting the real `data/scraper.heartbeat` on
+every run. That is the file the watchdog reads to decide a live run has wedged. The first
+four paths now have autouse guards in `tests/conftest.py` (the heartbeat's is
+`_no_test_may_beat_the_real_heartbeat`). **A new module-level path needs its own guard.**
+
+`_LOCK_PATH` has no guard, deliberately: no test reaches the real `acquire_lock`, because
+every caller stubs it (`test_main_groups.py`). Keep it that way. The real one also runs
+`reap_orphan_browsers()`, so a test that took the lock would kill browser processes as
+well as blocking the next scheduled slot.
+
+### The database — handled for you, and still say so
+
+`_no_test_may_open_the_real_database` repoints `config.DB_PATH` at `tmp_path` for every
+test (2026-09-28). Before it, only the tests that asked for `temp_db` got a throwaway DB.
+`pipeline._classify` calls `storage.phone_listing_count` on every listing, so the pipeline
+tests opened production's `listings.sqlite` and read broker counts off live data.
+`storage._conn()` also creates the schema on any connection, which hid an order
+dependency. Two `test_stats.py` tests query `listings` directly, and they passed only
+because the real file, or an earlier test, had created the table. On CI's empty `data/`
+that depended on `pytest-randomly`'s shuffle, and it turned `main` red on a docs-only
+commit (`7029498`). **A test that passes only after another test is not a test of the
+code.** If it needs a table, create it with `storage._conn().close()`.
 
 ```python
 def test_something(temp_db):
     ...
 ```
 
-`temp_db` points `config.DB_PATH` at a fresh SQLite file. Patching the attribute is enough
-because **storage reads `config.DB_PATH` on every call**.
+Still use `temp_db` when a test uses storage: it names the dependency, and it wins because
+it is applied after the autouse guard. Patching the attribute is enough because **storage
+reads `config.DB_PATH` on every call**.
 
 ## House style
 
