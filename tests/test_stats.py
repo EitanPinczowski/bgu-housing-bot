@@ -199,7 +199,13 @@ def test_a_run_past_the_ceiling_is_not_called_close_to_it(tmp_path, monkeypatch)
 
 def _runs_log(tmp_path, monkeypatch, search_log: str, runs_log: str) -> str:
     """`_osrm_degraded` reads scraper_runs.log while the rest of the row reads
-    search_log.txt — the OSRM warning is only ever written to the former."""
+    search_log.txt — the OSRM warning is only ever written to the former.
+
+    The row also counts estimated tiers in `listings`, so the (throwaway) DB needs the
+    schema. These tests used to get it from the REAL `data/listings.sqlite`, or from
+    whichever earlier test had created one there — order-dependent under pytest-randomly."""
+    import storage
+    storage._conn().close()
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     (tmp_path / "search_log.txt").write_text(search_log, encoding="utf-8")
     (tmp_path / "scraper_runs.log").write_text(runs_log, encoding="utf-8")

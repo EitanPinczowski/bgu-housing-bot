@@ -73,6 +73,38 @@ def test_writing_the_walk_cache_cannot_reach_the_real_file(monkeypatch):
     assert after == before, "the real walk cache changed"
 
 
+def test_the_amenity_cache_is_not_the_real_one():
+    """Same shape as the walk cache, and read on every kept listing by `_classify`."""
+    import amenities
+    assert amenities._CACHE_PATH != config.DATA_DIR / "amenity_cache.json"
+    assert not amenities._CACHE_PATH.exists(), "each test starts from an empty cache"
+    assert amenities._cache is None, "nothing left in memory from an earlier test"
+
+
+def test_writing_the_amenity_cache_cannot_reach_the_real_file(monkeypatch):
+    import amenities
+    real = config.DATA_DIR / "amenity_cache.json"
+    before = real.read_bytes() if real.exists() else None
+    monkeypatch.setattr(amenities, "_cache", {"31.26,34.8": {"gym": "test"}})
+    amenities._save_cache()
+    assert amenities._CACHE_PATH.exists(), "it wrote somewhere"
+    after = real.read_bytes() if real.exists() else None
+    assert after == before, "the real amenity cache changed"
+
+
+def test_a_test_without_temp_db_cannot_open_the_real_database():
+    """`_classify` opens the DB for broker counts, so any pipeline test did — against
+    production, from the main checkout. Compared by stat, not bytes: it is the live DB."""
+    import storage
+    real = config.DATA_DIR / "listings.sqlite"
+    assert config.DB_PATH != real
+    before = (real.stat().st_mtime_ns, real.stat().st_size) if real.exists() else None
+    storage._conn().close()                          # creates the schema: a write
+    assert config.DB_PATH.exists(), "it wrote somewhere"
+    after = (real.stat().st_mtime_ns, real.stat().st_size) if real.exists() else None
+    assert after == before, "the real database was touched"
+
+
 # These two are a PAIR and the order is the point: the killer runs first in file order, so
 # the checker below can only pass because the fixture cleaned up between them. Run them the
 # other way round and the checker proves nothing — it would pass in a fresh process anyway.
