@@ -92,6 +92,24 @@ def test_writing_the_amenity_cache_cannot_reach_the_real_file(monkeypatch):
     assert after == before, "the real amenity cache changed"
 
 
+def test_a_beat_cannot_reach_the_real_heartbeat():
+    """`scrape_group` beats as it goes; four scraper tests were writing pytest's PID into
+    the file the watchdog reads to decide whether a live run is wedged."""
+    import scraper
+    real = config.DATA_DIR / "scraper.heartbeat"
+    assert scraper._HEARTBEAT_PATH != real
+    before = real.read_bytes() if real.exists() else None
+    scraper.beat("offline-guard proof")
+    assert scraper._HEARTBEAT_PATH.exists(), "it wrote somewhere"
+    after = real.read_bytes() if real.exists() else None
+    assert after == before, "the real heartbeat changed"
+
+
+def test_the_dashboard_image_cache_is_not_the_real_one():
+    """`_cached_image` mkdirs this before looking anything up."""
+    assert config.DASHBOARD_IMAGE_DIR != config.DATA_DIR / "images"
+
+
 def test_a_test_without_temp_db_cannot_open_the_real_database():
     """`_classify` opens the DB for broker counts, so any pipeline test did — against
     production, from the main checkout. Compared by stat, not bytes: it is the live DB."""

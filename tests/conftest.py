@@ -194,6 +194,27 @@ def _no_test_may_touch_the_real_amenity_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_test_may_beat_the_real_heartbeat(tmp_path, monkeypatch):
+    """NO TEST MAY WRITE data/scraper.heartbeat or data/images/.
+
+    The heartbeat is how `is_wedged`, the watchdog and `doctor` tell a working run from a
+    hung one. `scrape_group` calls `beat()` as it goes, so four `test_scraper.py` tests
+    wrote pytest's PID and a fresh timestamp into the real file — measured 2026-09-28 by
+    snapshotting `data/` around every test, and the only file any test still changed.
+    From the main checkout that is a live run's progress signal, overwritten by a test.
+    `test_scraper_lock.py` already repointed it for its own tests; nobody else did.
+
+    `data/images/` is the dashboard's image cache: `serve_dashboard._cached_image`
+    creates it before looking anything up, so the suite made one wherever it was missing.
+
+    A test that sets `_HEARTBEAT_PATH` itself still wins, because it is applied after this
+    one."""
+    import scraper
+    monkeypatch.setattr(scraper, "_HEARTBEAT_PATH", tmp_path / "scraper.heartbeat")
+    monkeypatch.setattr(config, "DASHBOARD_IMAGE_DIR", tmp_path / "images")
+
+
+@pytest.fixture(autouse=True)
 def _no_test_may_open_the_real_database(tmp_path, monkeypatch):
     """NO TEST MAY OPEN data/listings.sqlite. `temp_db` existed, but only the tests that
     asked for it got it: `pipeline._classify` calls `storage.phone_listing_count` on every
