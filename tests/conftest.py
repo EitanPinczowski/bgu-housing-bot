@@ -182,6 +182,35 @@ def _no_test_may_touch_the_real_walk_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_test_may_touch_the_real_amenity_cache(tmp_path, monkeypatch):
+    """NO TEST MAY READ OR WRITE data/amenity_cache.json — the third cache of the same
+    shape (a module-level dict loaded once from `data/`, written back on every miss), and
+    the one the walk-cache guard above did not cover. `pipeline._classify` calls
+    `amenities.nearby` on every kept listing, so a pipeline test read production's cached
+    bus/gym walks, and one with a stubbed router would write its fake minutes back."""
+    import amenities
+    monkeypatch.setattr(amenities, "_CACHE_PATH", tmp_path / "amenity_cache.json")
+    monkeypatch.setattr(amenities, "_cache", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_test_may_open_the_real_database(tmp_path, monkeypatch):
+    """NO TEST MAY OPEN data/listings.sqlite. `temp_db` existed, but only the tests that
+    asked for it got it: `pipeline._classify` calls `storage.phone_listing_count` on every
+    listing, so a pipeline test WITHOUT `temp_db` opened `config.DB_PATH` — in the main
+    checkout, the production database — read broker counts off live data, and created the
+    file (with a schema) wherever `data/` had none. Found 2026-09-23, when a run recreated
+    `data/listings.sqlite` in a worktree whose `data/` had been moved aside.
+
+    It also hid an order dependency: two `test_stats.py` tests query `listings` and only
+    passed because the real file, or an earlier test, had already created the table.
+
+    Every test gets a throwaway path; `temp_db` still works, and wins, because it is
+    applied after this one."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "autouse_listings.sqlite")
+
+
+@pytest.fixture(autouse=True)
 def _no_test_may_leave_a_mirror_marked_dead():
     """Confine `geocode._dead_mirrors` to the test that filled it.
 
