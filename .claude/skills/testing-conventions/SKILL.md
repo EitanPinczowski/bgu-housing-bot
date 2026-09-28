@@ -14,7 +14,8 @@ description: >
 **Do not pipe it to `tail` or `head`** — that discards pytest's exit code, so a failing
 suite reads as a passing one. Read the count, or drop the pipe. (`guard.py` blocks the
 pipe.) 785 passing at last check (2026-09-28), docs-integrity included; CI on Linux reads
-784 passed, 1 skipped, the skip being the Windows-only power-request test.
+784 passed, 1 skipped, the skip being the Windows-only power-request test. That CI run
+(PR #2) was the first green one since at least 2026-08-14.
 
 ## ⛔ The rule that exists because it was broken twice
 
@@ -92,6 +93,12 @@ the unrelated Windows-only power-request test, now skipped off Windows.
   set once per process, so one test faking a live OSRM would otherwise leave every later
   test believing it. It is proved in `tests/test_offline_guards.py`, including a real
   write through a faked-alive OSRM that must leave the production file byte-identical.
+- **`_no_test_may_touch_the_real_amenity_cache`** (2026-09-28) does the same for
+  `amenities._CACHE_PATH` / `_cache`: the third cache of the same shape (a module-level
+  dict loaded once from `data/`, written back on every miss), and missed again when the
+  walk cache was guarded. `pipeline._classify` calls `amenities.nearby` on every kept
+  listing. **When you guard one cache, grep for the pattern, not the file** — the command
+  is in the `DATA_DIR` section below.
 - **A test that needs a walk time now says so.** `test_pipeline.py`'s `routed` fixture
   stubs `osrm.walk_to_nearest` with `zones.est_walk_to_gate_min`. Do not "fix" such a test
   by seeding the cache or loosening the score. The straight-line estimate lands in the
@@ -122,6 +129,18 @@ every run. That is the file the watchdog reads to decide a live run has wedged. 
 four paths now have autouse guards in `tests/conftest.py` (the heartbeat's is
 `_no_test_may_beat_the_real_heartbeat`). **A new module-level path needs its own guard.**
 
+Those five are not the whole list. Counted 2026-09-28: **20** module-level constants are
+`config.DATA_DIR / "..."`, among them `main._SEARCH_LOG`, `main._SCRAPES_PATH`,
+`config.SITE_DIR` and `backup_db.BACKUP_DIR`. None of the rest is touched by the suite
+today (measured — see the snapshot section below); a test for code that uses one must
+patch that constant, not `DATA_DIR`. List them with:
+
+    grep -rnE "^_?[A-Z_]+ *= *(config\.)?DATA_DIR */" --include=*.py .
+
+The heartbeat guard also repoints `config.DASHBOARD_IMAGE_DIR`:
+`serve_dashboard._cached_image` mkdirs it before any lookup, so the suite created
+`data/images/` wherever it was missing.
+
 `_LOCK_PATH` has no guard, deliberately: no test reaches the real `acquire_lock`, because
 every caller stubs it (`test_main_groups.py`). Keep it that way. The real one also runs
 `reap_orphan_browsers()`, so a test that took the lock would kill browser processes as
@@ -148,6 +167,37 @@ def test_something(temp_db):
 Still use `temp_db` when a test uses storage: it names the dependency, and it wins because
 it is applied after the autouse guard. Patching the attribute is enough because **storage
 reads `config.DB_PATH` on every call**.
+
+### How to prove nothing leaks: snapshot `data/` around every test
+
+Do not guess which files a test touches — measure it. A throwaway pytest plugin that
+records every file's `(mtime, size)` under the real `data/` before and after each test,
+and prints the test and path when they differ, is how the heartbeat was found. It is also
+how its absence was confirmed: **785 passed, no test changed anything in `data/`**
+(2026-09-28). Two rules for the plugin:
+
+- **Capture the real path once, at import** — not from `config.DATA_DIR` at call time.
+  A first version read it per test and reported `test_publish.py` writing
+  `data/site/index.html`. That was the tmp dir those tests patch `DATA_DIR` to — the
+  import-time trap above, biting the measurement instead of the test.
+- **Check both directions.** A snapshot only sees files that already exist. Also run the
+  suite once with `data/` renamed aside, as on CI, and look for anything created. That is
+  how `data/images/` showed up. `config.py` itself mkdirs an empty `data/` at import; that
+  is production behaviour and expected.
+
+Restore `data/` by explicit path, and only if the run did not recreate it. `mv data.aside
+data` when `data/` already exists moves the backup INSIDE it.
+
+### Proving a guard — fail on the PATH, before the write
+
+Every autouse guard has a proof in `tests/test_offline_guards.py` that must FAIL with the
+guard disabled (the rule in "The trap that makes a test agree with itself" below). **Order
+the proof's asserts so it fails before it writes**: assert the path is not the real one
+first, then do the write. A write-proof that writes first does exactly what it guards
+against when you switch the guard off to check it. On 2026-09-28 the amenity proof,
+checked that way, overwrote a worktree's `data/amenity_cache.json` with its one-entry test
+dict. Every write-proof there is now ordered path-first (walk, amenity, heartbeat, DB), and
+the DB proof compares `stat()` rather than bytes, because the real file is the live database.
 
 ## House style
 

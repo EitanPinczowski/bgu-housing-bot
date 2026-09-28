@@ -64,6 +64,7 @@ def test_writing_the_walk_cache_cannot_reach_the_real_file(monkeypatch):
     writes."""
     import osrm
     real = config.DATA_DIR / "walk_cache.json"
+    assert osrm._WALK_CACHE_PATH != real, "fail here, before the write reaches it"
     before = real.read_bytes() if real.exists() else None
     monkeypatch.setattr(osrm, "_alive", True)
     monkeypatch.setattr(osrm, "_table_walk", lambda lat, lon: (7.0, "test gate"))
@@ -84,6 +85,7 @@ def test_the_amenity_cache_is_not_the_real_one():
 def test_writing_the_amenity_cache_cannot_reach_the_real_file(monkeypatch):
     import amenities
     real = config.DATA_DIR / "amenity_cache.json"
+    assert amenities._CACHE_PATH != real, "fail here, before the write reaches it"
     before = real.read_bytes() if real.exists() else None
     monkeypatch.setattr(amenities, "_cache", {"31.26,34.8": {"gym": "test"}})
     amenities._save_cache()
