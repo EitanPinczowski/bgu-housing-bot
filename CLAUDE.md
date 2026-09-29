@@ -4,18 +4,42 @@ Personal tool to find apartment-share listings near Ben-Gurion University
 (Be'er Sheva) from Hebrew Facebook group posts, filter them against fixed rules,
 check they're within a hand-drawn walkable zone, and alert on Telegram.
 
-## ⏸ THE BOT IS PAUSED — deliberately, since 2026-08-25 19:36
+## ▶ THE BOT IS RUNNING — resumed 2026-09-29 10:18, after a pause since 2026-08-25 19:36
 
-**Nothing is broken. Do not diagnose it.** All 10 scheduled tasks are `Disabled` and
-`bot_listener` is stopped, at the user's request. Resume is MANUAL and only on their word.
+**The pause is over.** On 2026-09-29, at the user's word, all 10 scheduled tasks were
+re-enabled and read back `Ready` one by one. A fresh backup was taken
+(`listings-20260929-101905.sqlite`), and `doctor` was run from the main checkout. Silence
+from here on is a fault again: diagnose it with `health-triage`. The first scheduled slots
+after resuming were the hot pass at 12:00 and a full run at 14:00. At resume, `last run`
+was the one `doctor` FAIL left, expected to clear with the first completed scrape. That
+is unverified at the time of writing, so check `data/search_log.txt` for a `START`/`END`
+pair after 12:00 before assuming it did.
 
-The session banner and `doctor` will look alarming and are correct to: `last run` climbs
-past `MAX_HOURS_BETWEEN_RUNS` (5), `backups` FAILs once the newest passes 48h, and no new
-`START` appears in `data/search_log.txt`. That is what a pause looks like — the hook is
-built to make silence suspicious, so this block is the thing that tells you the silence was
-asked for. A fresh backup was taken first: `listings-20260825-193558.sqlite`.
+The pause ran ~35 days. The first run reads back only `SCRAPER_MAX_POST_AGE_HOURS` (24h),
+so anything posted from 08-25 until a day before that run was never read. See "What a
+pause costs" below.
 
-**To resume**, re-enable the same 10 and restart the listener:
+### How to pause and resume — kept for next time
+
+**A PAUSE MUST ALSO REMOVE THE LISTENER'S STARTUP SHORTCUT, OR IT COMES BACK AT LOGON**
+(found 2026-09-29). The 08-25 pause stopped `bot_listener`. On 2026-09-21 20:44 it was
+running again, launched by `explorer.exe` from `BGU Bot Listener.lnk` in the Windows Startup
+folder (`shell:startup`, target `pythonw.exe bot_listener.py`). It then ran for 8 days of a
+"paused" bot. That was harmless this time: no runtime code had changed since it loaded,
+and it kept receiving vote taps. But it is not what "paused" meant. To pause, stop the
+process AND move that shortcut out of `shell:startup`. On resume, put it back.
+
+**ON RESUME, CHECK FOR A RUNNING LISTENER BEFORE STARTING ONE.** Two processes long-polling
+`getUpdates` on one bot token conflict, and Telegram answers the second with 409. Look first:
+
+    powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -match 'bot_listener' } | Select-Object ProcessId, CreationDate"
+
+Start `run_listener.cmd` only if nothing is there. A listener that IS running must be
+restarted if any runtime `.py` changed since its `CreationDate`, because it loads its code
+once.
+
+To pause, a fresh backup first, then disable the 10 tasks and stop the listener (and its
+shortcut, above). **To resume**, re-enable the same 10 and restart the listener:
 
     powershell -Command "'BGU Housing Scraper','BGU Housing Scraper Hot','BGU Watchdog','BGU Digest','BGU Morning','BGU DM Digest','BGU Weekly','BGU Dashboard Publish','BGU Dashboard Share','BGU Backup' | ForEach-Object { Enable-ScheduledTask -TaskName $_ }"
     run_listener.cmd
@@ -27,18 +51,28 @@ pausing on 08-25, and worth knowing because the unelevated pass reports success 
 other eight and leaves those two `Ready`. A single live scraper task defeats a pause, so
 always re-read the state rather than trusting the loop's own output. Elevate with
 `Start-Process powershell.exe -Verb RunAs` and log to a file; you cannot read an elevated
-process's stdout.
+process's stdout. (Confirmed again resuming on 2026-09-29: the same two, the other way
+round — eight went `Ready`, those two stayed `Disabled` until the elevated pass, which
+needs the user to accept a UAC prompt.)
+
+While paused, the session banner and `doctor` look alarming and are correct to: `last run`
+climbs past `MAX_HOURS_BETWEEN_RUNS` (5), `backups` FAILs once the newest passes 48h, and
+no new `START` appears in `data/search_log.txt`. That is what a pause looks like — the hook
+is built to make silence suspicious, so a pause section at the top of this file is the
+thing that says the silence was asked for. Write one when pausing.
 
 On resume, expect `backups` to FAIL if the pause ran past 48h — fix that by running
-`backup_db.py` once, not by moving the threshold. `StartWhenAvailable` means a missed slot
-may fire immediately; that is one scrape, not a burst. **Do not `--apply` a replay just
-because listings look stale — a pause changes no stored verdict.**
+`backup_db.py` once, not by moving the threshold. (2026-09-29: 831 h old; one run cleared
+it.) `StartWhenAvailable` means a missed slot may fire immediately; that is one scrape,
+not a burst. **Do not `--apply` a replay just because listings look stale — a pause
+changes no stored verdict.**
 
-**What the pause costs, and it is not recoverable:** `SCRAPER_MAX_POST_AGE_HOURS = 24`, so
+**What a pause costs, and it is not recoverable:** `SCRAPER_MAX_POST_AGE_HOURS = 24`, so
 anything posted during the pause is age-skipped once it is a day old. The backlog does not
 wait. Votes survive ~24h too — `bot_listener` long-polls `getUpdates` with an offset and
 Telegram retains undelivered updates about that long, after which taps are silently
-dropped.
+dropped. (The 2026-08-25 → 09-29 pause lost votes only until 09-21, when the Startup
+shortcut brought the listener back.)
 
 ## OPEN RIGHT NOW — read this first (2026-09-29)
 
