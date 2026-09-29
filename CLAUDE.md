@@ -40,7 +40,40 @@ wait. Votes survive ~24h too — `bot_listener` long-polls `getUpdates` with an 
 Telegram retains undelivered updates about that long, after which taps are silently
 dropped.
 
-## OPEN RIGHT NOW — read this first (2026-08-18)
+## OPEN RIGHT NOW — read this first (2026-09-29)
+
+**Nothing is open in the code, and CI is GREEN for the first time since at least
+2026-08-14** (2026-09-28, `c340158`: 784 passed, 1 skipped on ubuntu-latest; 785 on
+Windows).
+- **CI WAS RED FOR SIX WEEKS WHILE THE LOCAL SUITE READ GREEN, BECAUSE THE SUITE WAS
+  READING PRODUCTION.** Every one of 40+ `main` runs failed the same 6 tests. Five were one
+  cause: `osrm.walk_to_nearest` answers from `data/walk_cache.json` before it checks OSRM,
+  so on Windows the pipeline tests were scored against production's cached walk minutes.
+  CI's `data/` is empty. Fixing that exposed the rest of the pattern: production's
+  `listings.sqlite`, the amenity cache and the scraper heartbeat were all reachable from
+  tests too. All are now autouse guards in `tests/conftest.py`, each proved in
+  `test_offline_guards.py`. The trap and the full list are in `testing-conventions`.
+  **A worktree's empty `data/` reproduces a CI-only failure locally**; the main checkout
+  cannot.
+- **A GREEN RUN CAN STILL BE ORDER-DEPENDENT.** `main` then went red on a docs-only commit
+  (`7029498`): two `test_stats.py` tests passed only when `pytest-randomly` ran a
+  table-creating test before them. When a suite goes red on a change that cannot have
+  caused it, suspect the order before the change.
+- **SCORING WITH OSRM DOWN WAS LOOKED AT AND DELIBERATELY LEFT ALONE** (2026-09-29). With
+  OSRM down, a placed listing gets its tier from the straight-line estimate, but its score
+  gets a neutral 13 walk points (`הליכה לא ידועה`) and `walk_minutes` stays NULL. That
+  looks like a missing fallback, and it is not one:
+  - The NULL is the provenance. `stats._osrm_degraded_rows` counts placed-but-unwalked
+    listings and names the repair (`full_replay.py --apply` with OSRM up). It works:
+    **0 of 668** placed listings were in that state on 2026-09-29.
+  - Storing the estimate would erase that marker, and alerts and the dashboard would show
+    an estimate as a measured `X דק׳ הליכה`.
+  - Scoring with the estimate but storing NULL is worse. `digest.py:47` and every
+    `fit.breakdown` consumer rebuild the score from stored `walk_minutes`, so they would
+    disagree with the stored score.
+  - Doing it properly needs a provenance column plus five consumers taught to label an
+    estimate. Worth it only if OSRM-down runs start leaving listings unrepaired, which
+    `stats` will show.
 
 **Nothing is open in the code.** 2026-08-18: a review of five areas found that most of what
 looks improvable is already built; four gaps were real and all four are done. **629
