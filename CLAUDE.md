@@ -11,9 +11,11 @@ re-enabled and read back `Ready` one by one. A fresh backup was taken
 (`listings-20260929-101905.sqlite`), and `doctor` was run from the main checkout. Silence
 from here on is a fault again: diagnose it with `health-triage`. The first scheduled slots
 after resuming were the hot pass at 12:00 and a full run at 14:00. At resume, `last run`
-was the one `doctor` FAIL left, expected to clear with the first completed scrape. That
-is unverified at the time of writing, so check `data/search_log.txt` for a `START`/`END`
-pair after 12:00 before assuming it did.
+was the one `doctor` FAIL left, expected to clear with the first completed scrape.
+**Verified 2026-10-02:** the 12:00 hot pass logged `START`/`END` (564 s, 60 read), and the
+14:00 full run completed (203 read, 2 MATCH). OSRM was down at resume and back from
+2026-09-29 10:46 (see `osrm-docker`), so every run from 14:00 that day had real walk
+times. By 10-02 18:54: 25 `START`, 21 `END`, 4 `SKIP`, 3 `ABORT`; `doctor` exit 0.
 
 The pause ran ~35 days. The first run reads back only `SCRAPER_MAX_POST_AGE_HOURS` (24h),
 so anything posted from 08-25 until a day before that run was never read. See "What a

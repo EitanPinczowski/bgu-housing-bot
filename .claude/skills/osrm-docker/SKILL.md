@@ -110,6 +110,25 @@ these directories can hold more than the socket.
    further. Four attempts in one elevated script cleared it on 2026-08-11; chasing them
    one restart at a time costs a UAC prompt per hop.
 
+   **2026-09-29, two attempts, and the second crash looks like a failure.** 10:35, crash on
+   `Docker\run\dockerInference`. Attempt 1 renamed both roots at 10:41:19; Docker recreated
+   `run\` at 10:41:20 with a fresh `dockerInference` in it — that socket now WORKED — and
+   crashed at 10:41:23 on `docker-secrets-engine\engine.sock` instead. The dialog is
+   identical apart from that path, so to a person watching it reads as "same problem";
+   read the path in `%LOCALAPPDATA%\Docker\log\host\com.docker.backend.exe.log` (grep
+   `backend crashed`), not the dialog. Attempt 2 (~10:46:50) came up clean, with
+   `osrm_bgu` answering on 127.0.0.1. Each attempt waits for the engine with a 10 s
+   `docker version` job up to 15 times, so one attempt takes ~5 min, not 2.5.
+
+   **Do not hold the elevated script's log open while it runs.** Its `Add-Content` writes
+   stopped landing within a second of a `tail -f` being attached from Git Bash — the
+   likeliest cause, not a proven one, since the script swallowed its own write errors
+   (`$ErrorActionPreference = 'Continue'`). The log showed
+   attempt 1's process kills and then nothing — the renames, the engine coming up and the
+   probe were all missing, and the outcome had to be reconstructed from the folder
+   timestamps, the backend log and `docker ps`. Read the log with a one-shot
+   `Get-Content` when you need it; or write each attempt's lines to its own file.
+
 > **The listing command in this skill used to be wrong, and its wrongness was invisible.**
 > `Get-ChildItem -Recurse -Force -ErrorAction SilentlyContinue` returns **nothing** here:
 > it cannot enumerate a directory that holds one of these files, and the suppressed error
@@ -159,6 +178,15 @@ socket behind:
 Back the file up first (`settings-store.json.bak-<date>`); it is a one-key revert if the
 feature is ever wanted. Cleaning the socket only fixes it until the next crash — this is
 the part that stops the loop.
+
+**SUPERSEDED IN PART (2026-09-29): `EnableDockerAI: false` DOES NOT STOP THE INFERENCE
+SOCKET.** It had been `false` since 08-11 (the `.bak-20260811` is still beside it), and
+Docker Desktop 4.83.0 — the same build as in August, installed 07-17 — still crashed on
+start with `initializing Inference manager: listening on unix://…/Docker/run/dockerInference`.
+The backend log shows the inference component registering its settings subscriber
+regardless of the flag. Keep the flag off — it costs nothing — but do not read it as the
+thing that prevents this. The socket dance below is still the only fix, and it is still
+needed after an unclean shutdown.
 
 ## Verify, and re-check what depended on it
 
