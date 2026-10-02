@@ -658,6 +658,21 @@ the scraper MUST be conservative and the user must stay in control:
   comparable in total work to the old 4×/day deep scans. The real protections (real
   logged-in profile, home IP, read-only, human-like pacing, checkpoint-abort) are
   unchanged. Do not raise volume/cadence further without an explicit, informed request.
+- **2026-10-02 — "DAYTIME ONLY" IS NOW ENFORCED IN CODE, AND THE JITTER ABOVE DOES NOT
+  EXIST.** Both corrections to the bullet above, measured, not reworded into it.
+  - **Daytime was enforced by the SCHEDULE alone**, and `StartWhenAvailable` runs a
+    missed slot whenever the machine next becomes available, at any hour. On 2026-10-02
+    a hot slot missed during a lid-closed standby fired at **05:24 and read 41 posts**,
+    and a full run started at 05:22. `main.run` now refuses a LIVE start outside
+    `config.SCRAPER_DAYTIME_HOURS` (08:00–21:00) before the random skip, the lock or the
+    browser, and logs `SKIP outside daytime hours`. `stats.py` counts that as by design.
+    Dry runs are not gated: they are the user at the keyboard. A run already in progress
+    at 21:00 is not cut off, because `MAX_RUN_MINUTES` bounds it.
+  - **No start jitter is configured.** Both scraper tasks' triggers carry no
+    `RandomDelay`, there is none in the code, and `START` lines land at `:00:07`. The
+    "+up to 25 min jitter" above describes nothing that runs (checked 2026-10-02).
+    Restoring it would be a schedule change: see `scraper-volume`, and it is the user's
+    call. Until then, read the cadence as clockwork apart from the ~1-in-8 random skip.
 - **2026-07-27 — yield-scaled depth + a `--hot` pass (net volume DOWN ~21%).** Requested
   explicitly by the user (to be first to contact a new listing), knowing it touches this
   constraint. Two paired changes, deliberately budget-neutral:

@@ -278,9 +278,25 @@ def _bounded_teardown(context, p) -> None:
                   "abandoning it and releasing the lock anyway")
 
 
+def _is_daytime(now: datetime) -> bool:
+    """True if a LIVE run may start at `now` (local time) — see SCRAPER_DAYTIME_HOURS."""
+    start_h, end_h = config.SCRAPER_DAYTIME_HOURS
+    return start_h <= now.hour < end_h
+
+
 def run(dry_run: bool, hot: bool = False) -> None:
     config.validate()                 # fail fast on a broken config, before opening a browser
     mode = "DRY RUN" if dry_run else "LIVE"
+    # DAYTIME ONLY, ENFORCED HERE AND NOT ONLY BY THE SCHEDULE. `StartWhenAvailable` runs
+    # a missed slot whenever the machine next wakes, at any hour: on 2026-10-02 a hot
+    # slot missed during a lid-closed standby fired at 05:24 and read 41 posts. Checked
+    # first, before the random skip and the lock, so a night slot opens nothing.
+    if not dry_run and not _is_daytime(datetime.now()):
+        start_h, end_h = config.SCRAPER_DAYTIME_HOURS
+        _log_search("SKIP", f"outside daytime hours ({start_h:02d}:00-{end_h:02d}:00)")
+        print(f"[main] {datetime.now():%H:%M} is outside daytime hours "
+              f"({start_h:02d}:00-{end_h:02d}:00) — not reading Facebook; logged as SKIP")
+        return
     # Occasionally skip a live run so the cadence isn't clockwork (see config).
     if not dry_run and random.random() < config.SCRAPER_SKIP_RUN_PROBABILITY:
         _log_search("SKIP", "random human-like skip")

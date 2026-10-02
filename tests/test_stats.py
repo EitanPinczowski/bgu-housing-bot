@@ -246,3 +246,17 @@ def test_no_degraded_row_when_osrm_was_up_all_week(tmp_path, monkeypatch):
     line = "2026-08-05 08:00:02  END    LIVE  100s  posts=5"
     out = _runs_log(tmp_path, monkeypatch, line, line)
     assert "STRAIGHT-LINE" not in out
+
+
+def test_a_night_slot_refused_by_the_daytime_gate_is_not_a_fault(tmp_path, monkeypatch):
+    """`StartWhenAvailable` fires a missed slot when the machine next wakes, at any hour,
+    and `main.run` now refuses a LIVE one outside SCRAPER_DAYTIME_HOURS. That is the guard
+    working — the slot was already lost to the sleep that delayed it — so it belongs with
+    the designed skips, not with `lock held` as a lost run."""
+    monkeypatch.setattr(config, "SCRAPER_RUNS_PER_DAY", 1)
+    out = _log(tmp_path, monkeypatch, "\n".join([
+        "2026-10-02 05:24:08  SKIP   outside daytime hours (08:00-21:00)",
+        "2026-10-02 08:00:02  END    LIVE  100s  posts=5",
+    ]))
+    assert "LOST" not in out, out
+    assert "1 skipped by design" in out, out
