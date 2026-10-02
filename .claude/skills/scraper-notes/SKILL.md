@@ -74,6 +74,13 @@ How a run is started, kept alive, and stopped. To DIAGNOSE a lost run use `healt
     never finished".
   - **`_abort` writes through `config.DATA_DIR`** — a test that does not patch it appends
     fake aborts to the real operational log. That happened; the fixture patches it now.
+- **THE ORDER AT THE TOP OF `main.run` IS LOAD-BEARING** (2026-10-02): daytime gate →
+  random skip → lock → self-watchdog → keep-awake → network wait. The daytime gate is
+  FIRST so a night slot fired by `StartWhenAvailable` takes no lock, starts no watchdog,
+  holds nothing awake and opens no browser — `test_a_live_run_at_night_skips_before_it_
+  touches_anything` fails if anything moves above it. It gates LIVE runs only, like the
+  random skip. `_SEARCH_LOG` is a path fixed at import, so a test of any SKIP line must
+  patch `main._SEARCH_LOG`, not `DATA_DIR`.
 - **A hung run must not block the day.** `scraper.start_self_watchdog()` (started by
   `main.py` right after the lock) aborts a run that makes no progress for
   `STALL_MINUTES`. Before it existed, `is_wedged()` was only consulted by the NEXT run,

@@ -162,6 +162,39 @@ The lock is an **OS file lock**, so only the holding process exiting frees it.
     still ended at the previous night's `END` and the day looked like nothing had been
     attempted at all. Two logs, and the quieter one was the honest one.
 
+- **A CLOSED LID BEATS THE KEEP-AWAKE GUARD, EVEN ON MAINS** (2026-10-01/02, ~27 h lost).
+  The 16:00 full run started on 10-01 and the machine entered Modern Standby **4 minutes
+  later**, on AC, with the lid closed. It stayed there until a human opened the lid at
+  18:53 the next day. The keep-awake guard did not keep it out — whether it was even set
+  for that run is unknown, since the frozen run never flushed its log, but every logged
+  run on mains shows `keep-awake ON` and the lid won anyway. The fix is the lid, or the user setting "When I close the lid → Do nothing" on
+  AC in Windows power settings, which is theirs to change, not ours. The cost:
+  - the 16:00 run froze and was aborted at 23:22:59, 443 min, 13 s after a standby phase
+    change; then `no progress for 130 min` at 05:22:47;
+  - a full run started at 05:22:58 froze in the next standby phase and held the lock
+    until 18:53:40 (ABORT, 329 min). The 13:24 hot pass logged `lock held`, and no
+    daytime slot on 10-02 completed until the 18:00 slot fired late, at 18:54;
+  - neither frozen run wrote a line to `scraper_runs.log` — read `search_log.txt`, as the
+    entry above says.
+
+  **HOW TO SEE IT: Kernel-Power 506/507, NOT 42/107.** On this machine a lid-closed
+  standby logs no 42/107 sleep/wake pair — filtering on those, or on
+  `ProviderName='Microsoft-Windows-Kernel-Power'`, returned NOTHING and looked like "the
+  machine was awake". Query by id and read the event data:
+
+      Get-WinEvent -FilterHashtable @{LogName='System'; Id=506,507; StartTime=$since} |
+        ForEach-Object { ([xml]$_.ToXml()).Event.EventData.Data }
+
+  A 507 and a 506 in the SAME second are a phase change INSIDE standby, not a wake. Each
+  507's `DurationInUs` chains exactly onto the previous one. The real wake is the 507 with
+  `LidOpenState=true`, `MonitorPowerOnTime > 0` and `IsCsSessionInProgressOnExit=false`.
+  `PowerStateAc=true` throughout is what rules out the unplugged case above.
+
+  **It also produced NIGHT RUNS.** `StartWhenAvailable` fired missed slots during
+  brief standby activations at 05:22 and 05:24, and the hot pass read 41 posts.
+  `main.run` now refuses a LIVE start outside `SCRAPER_DAYTIME_HOURS` and logs
+  `SKIP outside daytime hours`. A burst of those after a night is this, not a fault.
+
 ## Before concluding "the schedule is wrong"
 
 **The lag is lost runs, not cadence.** Only 20 of 42 scheduled full runs completed in the

@@ -729,6 +729,14 @@ OCR_MIN_TEXT_CHARS = 40
 # The skip is logged (SKIP line in data/search_log.txt) and sends no Telegram, so
 # it just looks like a quiet slot. 0 disables. Only affects --live runs.
 SCRAPER_SKIP_RUN_PROBABILITY = 0.12
+# A LIVE run may only START in [start, end) local time; outside it, it logs
+# `SKIP outside daytime hours` and opens nothing. "Daytime only, no night runs" was
+# enforced by the SCHEDULE alone (slots 08:00–20:00), and `StartWhenAvailable` runs a
+# missed slot whenever the machine next becomes available — at ANY hour. 2026-10-02
+# 05:24, during a Modern Standby activation, a missed hot slot read 41 posts off the
+# user's account. 21 leaves the 20:00 slot an hour to fire late; a run already in
+# progress at 21:00 is not cut off (MAX_RUN_MINUTES bounds that).
+SCRAPER_DAYTIME_HOURS = (8, 21)
 # Click "See more" to expand truncated long posts before reading them, so buried
 # details (price, dates) aren't lost. This is the ONLY place the scraper clicks
 # anything — it's a harmless in-place expand, not a post/comment/like, but it is
@@ -775,6 +783,11 @@ def validate() -> None:
                         f"({STALL_MINUTES}) — the wall-clock ceiling would fire before a "
                         "stall could ever be detected, making STALL_MINUTES dead code "
                         "and killing healthy runs")
+    _start, _end = SCRAPER_DAYTIME_HOURS
+    if not (0 <= _start < _end <= 24):
+        problems.append(f"SCRAPER_DAYTIME_HOURS {SCRAPER_DAYTIME_HOURS} must be "
+                        "(start, end) with 0 <= start < end <= 24 — a window that wraps "
+                        "midnight is a night run, which the safety constraints forbid")
     if LOCAL_FALLBACK_MAX_POSTS_PER_RUN < 1:
         problems.append(f"LOCAL_FALLBACK_MAX_POSTS_PER_RUN "
                         f"({LOCAL_FALLBACK_MAX_POSTS_PER_RUN}) must be >= 1 — 0 would "

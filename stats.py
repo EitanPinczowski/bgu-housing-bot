@@ -377,7 +377,9 @@ def _run_reliability() -> None:
                 hot[day] += 1
             else:
                 full[day] += 1
-        elif "random" in rest:
+        elif "random" in rest or "outside daytime" in rest:
+            # the daytime gate refusing a missed slot at night is the guard working, not a
+            # lost run — the slot was already lost to the sleep that delayed it
             by_design[day] += 1
         else:
             lost[day] += 1
@@ -395,7 +397,8 @@ def _run_reliability() -> None:
     if n_lost:
         print(f"  {n_lost} slot(s) LOST to a held lock / other fault"
               f" — a wedged run eats the slot it holds")
-    print(f"  {sum(by_design[d] for d in days)} skipped by design (random human-like)")
+    print(f"  {sum(by_design[d] for d in days)} skipped by design "
+          f"(random human-like, or outside daytime hours)")
     # a run in flight right now has a START and no END yet, and is not a crash
     in_flight = 0
     try:

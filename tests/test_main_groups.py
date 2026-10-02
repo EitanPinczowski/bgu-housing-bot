@@ -1,5 +1,9 @@
 """main: yield-scaled scan depth and the --hot group selection. The point is to raise
 matches per run WITHOUT increasing total reads on the single Facebook account."""
+from datetime import datetime
+
+import pytest
+
 import config
 import main
 
@@ -260,3 +264,78 @@ def test_the_osrm_heal_never_takes_a_run_down_with_it(monkeypatch):
     import inspect
     src = inspect.getsource(main.run)
     assert "osrm heal skipped" in src, "the try_fix call must be wrapped, not bare"
+
+
+# --- daytime only, enforced in code ------------------------------------------------
+# "Daytime only, no night runs" was enforced by the SCHEDULE alone. `StartWhenAvailable`
+# runs a missed slot whenever the machine next becomes available, so on 2026-10-02 a hot
+# slot missed during a lid-closed standby fired at 05:24 and read 41 posts off the user's
+# only Facebook account.
+
+@pytest.mark.parametrize("hhmm, ok", [
+    ("05:24", False),      # the run that prompted this
+    ("07:59", False),
+    ("08:00", True),       # the first slot
+    ("20:00", True),       # the last slot
+    ("20:59", True),       # the last slot, fired late after a short sleep
+    ("21:00", False),
+    ("23:22", False),
+])
+def test_only_daytime_starts_are_allowed(hhmm, ok):
+    import main
+    h, m = map(int, hhmm.split(":"))
+    assert main._is_daytime(datetime(2026, 10, 2, h, m)) is ok
+
+
+def _at(monkeypatch, main, hour, minute=0):
+    """Pin main's clock. `main` imports the `datetime` CLASS, so patch that name."""
+    class _Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 2, hour, minute, 0)
+    monkeypatch.setattr(main, "datetime", _Fixed)
+
+
+def test_a_live_run_at_night_skips_before_it_touches_anything(tmp_path, monkeypatch):
+    """Checked FIRST: a night slot must not take the lock, start the watchdog, hold the
+    machine awake or open a browser. `_SEARCH_LOG` is a path fixed at import, so patching
+    DATA_DIR would not move it — patch the constant (testing-conventions)."""
+    import main
+    log = tmp_path / "search_log.txt"
+    monkeypatch.setattr(main, "_SEARCH_LOG", log)
+    _at(monkeypatch, main, 5, 24)
+
+    def must_not_run(*a, **k):
+        raise AssertionError("a night run got past the daytime gate")
+    monkeypatch.setattr(main.scraper, "acquire_lock", must_not_run)
+    monkeypatch.setattr(main.scraper, "start_keep_awake", must_not_run)
+    monkeypatch.setattr(main.random, "random", must_not_run)    # before the random skip too
+
+    main.run(dry_run=False)
+    line = log.read_text(encoding="utf-8").strip()
+    assert line.startswith("2026-10-02 05:24:00  SKIP"), line
+    assert "outside daytime hours (08:00-21:00)" in line, line
+
+
+def test_a_dry_run_at_night_is_not_gated(tmp_path, monkeypatch):
+    """A dry run is the user at the keyboard, not the schedule. Gating only LIVE runs, like
+    the random skip, so a hand-run check at night still works. Proved by reaching the lock,
+    which the gate returns before."""
+    import main
+    monkeypatch.setattr(main, "_SEARCH_LOG", tmp_path / "search_log.txt")
+    _at(monkeypatch, main, 5, 24)
+    reached = []
+
+    def lock_and_stop():
+        reached.append(True)
+        return False                         # "lock held" -> run() returns right after
+    monkeypatch.setattr(main.scraper, "acquire_lock", lock_and_stop)
+    main.run(dry_run=True)
+    assert reached, "a dry run at night was gated"
+
+
+def test_validate_rejects_a_window_that_wraps_midnight(monkeypatch):
+    monkeypatch.setattr(config, "SCRAPER_DAYTIME_HOURS", (20, 6))
+    with pytest.raises(SystemExit) as e:
+        config.validate()
+    assert "SCRAPER_DAYTIME_HOURS" in str(e.value)
